@@ -1,0 +1,3604 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# models.toml - the blessed-models manifest this paddock release ships with.
+#
+# This file is the catalog. It is compiled into the binary (include_str!), so a
+# given paddock build only ever offers models it was built to load - compatibility
+# is guaranteed by construction. There is no remote catalog to fetch; the origin
+# (models.truespar.io / Cloudflare R2) is a dumb file host, and each `url` is
+# stable and immutable once published.
+#
+# Schema 3: a model is a FAMILY of artifacts, not a file list.
+#   [[model]]            one entry per model people talk about ("Qwen3.5 9B")
+#   [[model.artifact]]   the pieces, each independently downloadable:
+#     kind   = "weights"       alternatives - a server picks exactly one
+#            | "vision"        mmproj vision tower (optional companion)
+#            | "audio"         mmproj AUDIO tower - a speech encoder. Its own
+#                              kind, not a vision reuse: the two imply
+#                              different input capabilities, and the picker
+#                              must never offer image input for a model that
+#                              only hears. Charged identically (estimate.rs
+#                              `tower_bytes`), since both are resident from
+#                              startup.
+#            | "drafter"       MTP drafter sideload (optional companion;
+#                              in-file MTP exports need none)
+#            | "fp8-snapshot"  official FP8/bf16 safetensors checkpoint dir -
+#                              today a native-plane source over a GGUF base
+#                              (PADDOCK_FP8_NATIVE); becomes a weights
+#                              alternative when the engine serves it directly
+#     format = "gguf" | "safetensors"
+#     default = true    the row-level Download bundle = default weights +
+#                       every default companion
+#     quant             the honest label for weights (drives the quality tag)
+#
+# Adding a model (all one release):
+#   1. `powershell -File the publish tool`   # upload bytes + emit
+#      a catalog manifest (url + dest + sha256 + size per file)
+#   2. paste the [[model]] + [[model.artifact]] blocks here; specs from the
+#      vendor's model card - sourced, never guessed
+#   3. cut the release
+# ─────────────────────────────────────────────────────────────────────────────
+
+schema = 3
+
+# ── generative (chat) ────────────────────────────────────────────────────────
+
+[[model]]
+id = "gpt-oss-20b"
+vendor = "OpenAI"
+display = "GPT-OSS 20B"
+family = "gpt-oss"
+capability = ["chat", "tools", "reasoning"]
+license = "apache-2.0"
+revision = "2026-08-01"
+
+  [model.specs]
+  params = "21B · 3.6B active"
+  context = "128K"
+  homepage = "https://huggingface.co/openai/gpt-oss-20b"
+  # user-facing copy: PLAIN language (- no MTP/MoE/mmproj
+  # talk), factual and sourced, both sides - never marketing
+  about = "OpenAI's open model - light and quick for its size, with strong tool calling and adjustable reasoning effort."
+  strengths = [
+    "Fast for its size - only part of the model runs per token",
+    "Adjustable reasoning effort, strong tool calling",
+    "Smallest chat download here (12 GB)",
+  ]
+  tradeoffs = [
+    "Text only - no image input",
+    "128K context, the smallest window in this catalog",
+  ]
+
+  # MXFP4 is what the lab trained and shipped - the native artifact, not a quant.
+  [[model.artifact]]
+  id = "mxfp4"
+  kind = "weights"
+  format = "gguf"
+  label = "Native MXFP4"
+  quant = "MXFP4"
+  default = true
+
+  [model.artifact.shape]
+  weight_bytes = 13229950080
+  kind = "generative"
+  vocab = 201088
+  max_ctx = 131072
+  nextn_bytes = 0
+  source = "measured"
+  kv_layers = [
+    { k_dim = 512, v_dim = 512, window = 128, count = 1 },
+    { k_dim = 512, v_dim = 512, count = 1 },
+    { k_dim = 512, v_dim = 512, window = 128, count = 1 },
+    { k_dim = 512, v_dim = 512, count = 1 },
+    { k_dim = 512, v_dim = 512, window = 128, count = 1 },
+    { k_dim = 512, v_dim = 512, count = 1 },
+    { k_dim = 512, v_dim = 512, window = 128, count = 1 },
+    { k_dim = 512, v_dim = 512, count = 1 },
+    { k_dim = 512, v_dim = 512, window = 128, count = 1 },
+    { k_dim = 512, v_dim = 512, count = 1 },
+    { k_dim = 512, v_dim = 512, window = 128, count = 1 },
+    { k_dim = 512, v_dim = 512, count = 1 },
+    { k_dim = 512, v_dim = 512, window = 128, count = 1 },
+    { k_dim = 512, v_dim = 512, count = 1 },
+    { k_dim = 512, v_dim = 512, window = 128, count = 1 },
+    { k_dim = 512, v_dim = 512, count = 1 },
+    { k_dim = 512, v_dim = 512, window = 128, count = 1 },
+    { k_dim = 512, v_dim = 512, count = 1 },
+    { k_dim = 512, v_dim = 512, window = 128, count = 1 },
+    { k_dim = 512, v_dim = 512, count = 1 },
+    { k_dim = 512, v_dim = 512, window = 128, count = 1 },
+    { k_dim = 512, v_dim = 512, count = 1 },
+    { k_dim = 512, v_dim = 512, window = 128, count = 1 },
+    { k_dim = 512, v_dim = 512, count = 1 },
+  ]
+
+    [[model.artifact.file]]
+    url = "https://models.truespar.io/models/gpt-oss-20b-GGUF/gpt-oss-20b-mxfp4.gguf"
+    dest = "gpt-oss-20b-GGUF/gpt-oss-20b-mxfp4.gguf"
+    sha256 = "be37a636aca0fc1aae0d32325f82f6b4d21495f06823b5fbc1898ae0303e9935"
+    size = 12109566560
+
+# Same lineage as the 20b above: ggml-org's MXFP4 conversion of OpenAI's own
+# release, which is the file the engine was built and benched against (see the
+# named gpt-oss exception in the project's sourcing policy). Upstream has since
+# consolidated the 3-shard family this model used to ship as into one file, so
+# the split path an earlier change added is no longer exercised here.
+[[model]]
+id = "gpt-oss-120b"
+vendor = "OpenAI"
+display = "GPT-OSS 120B"
+family = "gpt-oss"
+capability = ["chat", "tools", "reasoning"]
+license = "apache-2.0"
+revision = "2026-08-15"
+
+  [model.specs]
+  params = "117B · 5.1B active"
+  context = "128K"
+  homepage = "https://huggingface.co/openai/gpt-oss-120b"
+  about = "OpenAI's larger open model - the same design as the 20B with far more experts, for stronger reasoning and tool use on a card big enough to hold it."
+  strengths = [
+    "The most capable open model in this catalog for reasoning and tool use",
+    "Only 5.1B of 117B runs per token - quick for its weight",
+    "Adjustable reasoning effort, strong tool calling",
+  ]
+  tradeoffs = [
+    "Text only - no image input",
+    "59 GiB of weights before any conversation context - needs a big card",
+    "128K context",
+  ]
+
+  # MXFP4 is what the lab trained and shipped - the native artifact, not a
+  # quant. Measured on this file: 108 expert tensors MXFP4 (56.73 GiB), 146
+  # dense Q8_0 (2.09 GiB), 433 F32 (0.20 GiB). Every other build of this model
+  # on the Hub is the same MXFP4 experts with the small dense half re-done, so
+  # a "Q2_K" of it saves ~3 GB of 63 and only costs quality - there is no
+  # smaller arm worth publishing.
+  [[model.artifact]]
+  id = "mxfp4"
+  kind = "weights"
+  format = "gguf"
+  label = "Native MXFP4"
+  quant = "MXFP4"
+  default = true
+
+  [model.artifact.shape]
+  weight_bytes = 63387346208
+  kind = "generative"
+  vocab = 201088
+  max_ctx = 131072
+  nextn_bytes = 0
+  source = "probed"
+  kv_layers = [
+    { k_dim = 512, v_dim = 512, window = 128, count = 1 },
+    { k_dim = 512, v_dim = 512, count = 1 },
+    { k_dim = 512, v_dim = 512, window = 128, count = 1 },
+    { k_dim = 512, v_dim = 512, count = 1 },
+    { k_dim = 512, v_dim = 512, window = 128, count = 1 },
+    { k_dim = 512, v_dim = 512, count = 1 },
+    { k_dim = 512, v_dim = 512, window = 128, count = 1 },
+    { k_dim = 512, v_dim = 512, count = 1 },
+    { k_dim = 512, v_dim = 512, window = 128, count = 1 },
+    { k_dim = 512, v_dim = 512, count = 1 },
+    { k_dim = 512, v_dim = 512, window = 128, count = 1 },
+    { k_dim = 512, v_dim = 512, count = 1 },
+    { k_dim = 512, v_dim = 512, window = 128, count = 1 },
+    { k_dim = 512, v_dim = 512, count = 1 },
+    { k_dim = 512, v_dim = 512, window = 128, count = 1 },
+    { k_dim = 512, v_dim = 512, count = 1 },
+    { k_dim = 512, v_dim = 512, window = 128, count = 1 },
+    { k_dim = 512, v_dim = 512, count = 1 },
+    { k_dim = 512, v_dim = 512, window = 128, count = 1 },
+    { k_dim = 512, v_dim = 512, count = 1 },
+    { k_dim = 512, v_dim = 512, window = 128, count = 1 },
+    { k_dim = 512, v_dim = 512, count = 1 },
+    { k_dim = 512, v_dim = 512, window = 128, count = 1 },
+    { k_dim = 512, v_dim = 512, count = 1 },
+    { k_dim = 512, v_dim = 512, window = 128, count = 1 },
+    { k_dim = 512, v_dim = 512, count = 1 },
+    { k_dim = 512, v_dim = 512, window = 128, count = 1 },
+    { k_dim = 512, v_dim = 512, count = 1 },
+    { k_dim = 512, v_dim = 512, window = 128, count = 1 },
+    { k_dim = 512, v_dim = 512, count = 1 },
+    { k_dim = 512, v_dim = 512, window = 128, count = 1 },
+    { k_dim = 512, v_dim = 512, count = 1 },
+    { k_dim = 512, v_dim = 512, window = 128, count = 1 },
+    { k_dim = 512, v_dim = 512, count = 1 },
+    { k_dim = 512, v_dim = 512, window = 128, count = 1 },
+    { k_dim = 512, v_dim = 512, count = 1 },
+  ]
+
+    [[model.artifact.file]]
+    url = "https://models.truespar.io/models/gpt-oss-120b-GGUF/gpt-oss-120b-mxfp4.gguf"
+    dest = "gpt-oss-120b-GGUF/gpt-oss-120b-mxfp4.gguf"
+    sha256 = "582bd40f6886200101f4c4ed9f25f3fe80cc14c86e9e2b37746cd8904a0c622d"
+    size = 63387346208
+
+[[model]]
+id = "gemma-4-31b"
+vendor = "Google"
+display = "Gemma 4 31B"
+family = "gemma-4"
+# No "tools": paddock cannot parse gemma-4's tool dialect
+# (<|tool_call>call:NAME{...}<tool_call|>) - parsers.rs documents the gap and
+# ToolSyntax has no GemmaChannel arm, so tool_calls comes back null with the
+# raw call text as content. The label returns with the gemma4 tools milestone.
+capability = ["chat", "vision", "reasoning", "speculative"]
+license = "gemma"
+revision = "2026-08-01"
+# the one family whose KV pool is fp8 by default (gpu_model/gemma4/batch.rs
+# alloc_kv); everything else serves f16. Keep in step with the engine.
+kv_default = "fp8_e4m3"
+
+  [model.specs]
+  params = "31B"
+  context = "256K"
+  homepage = "https://huggingface.co/google/gemma-4-31B-it"
+  about = "Google's strongest open model - the best single-answer quality in this catalog, and it reads images."
+  strengths = [
+    "The strongest single answers in this catalog",
+    "Reads images · 256K context",
+    "Extra speed from a small companion draft model",
+  ]
+  tradeoffs = [
+    "33 GB at full quality - wants a big card",
+    "Gemma license (use terms), not Apache",
+  ]
+
+  [[model.artifact]]
+  id = "q8"
+  kind = "weights"
+  format = "gguf"
+  label = "Full quality"
+  quant = "Q8_0"
+  default = true
+
+  [model.artifact.shape]
+  weight_bytes = 34117208576
+  kind = "generative"
+  vocab = 262144
+  max_ctx = 262144
+  nextn_bytes = 0
+  source = "measured"
+  kv_layers = [
+    { k_dim = 4096, v_dim = 4096, window = 1024, count = 5 },
+    { k_dim = 2048, v_dim = 2048, count = 1 },
+    { k_dim = 4096, v_dim = 4096, window = 1024, count = 5 },
+    { k_dim = 2048, v_dim = 2048, count = 1 },
+    { k_dim = 4096, v_dim = 4096, window = 1024, count = 5 },
+    { k_dim = 2048, v_dim = 2048, count = 1 },
+    { k_dim = 4096, v_dim = 4096, window = 1024, count = 5 },
+    { k_dim = 2048, v_dim = 2048, count = 1 },
+    { k_dim = 4096, v_dim = 4096, window = 1024, count = 5 },
+    { k_dim = 2048, v_dim = 2048, count = 1 },
+    { k_dim = 4096, v_dim = 4096, window = 1024, count = 5 },
+    { k_dim = 2048, v_dim = 2048, count = 1 },
+    { k_dim = 4096, v_dim = 4096, window = 1024, count = 5 },
+    { k_dim = 2048, v_dim = 2048, count = 1 },
+    { k_dim = 4096, v_dim = 4096, window = 1024, count = 5 },
+    { k_dim = 2048, v_dim = 2048, count = 1 },
+    { k_dim = 4096, v_dim = 4096, window = 1024, count = 5 },
+    { k_dim = 2048, v_dim = 2048, count = 1 },
+    { k_dim = 4096, v_dim = 4096, window = 1024, count = 5 },
+    { k_dim = 2048, v_dim = 2048, count = 1 },
+  ]
+
+    [[model.artifact.file]]
+    url = "https://models.truespar.io/models/gemma-4-31B-it-GGUF/gemma-4-31B-it-Q8_0.gguf"
+    dest = "gemma-4-31B-it-GGUF/gemma-4-31B-it-Q8_0.gguf"
+    sha256 = "85c623b5383e5b462e3d49490990a3cdfd0abf6b09f8f5e6c5881903d7de67cc"
+    size = 32635675648
+
+  [[model.artifact]]
+  id = "vision"
+  kind = "vision"
+  format = "gguf"
+  label = "Vision (image input)"
+  default = true
+
+    [[model.artifact.file]]
+    url = "https://models.truespar.io/models/gemma-4-31B-it-GGUF/gemma-4-31B-it-mmproj-BF16.gguf"
+    dest = "gemma-4-31B-it-GGUF/gemma-4-31B-it-mmproj-BF16.gguf"
+    sha256 = "7a4601b12ec680f706a7e0c7e1f78f579b1db64d485a9e352ee87d4b9daa45e4"
+    size = 1200726496
+
+  # separate 470M gemma4-assistant drafter - gemma4's MTP is not in-file
+  [[model.artifact]]
+  id = "drafter"
+  kind = "drafter"
+  format = "gguf"
+  label = "Faster generation (470M drafter)"
+  default = true
+
+    [[model.artifact.file]]
+    url = "https://models.truespar.io/models/gemma-4-31B-it-GGUF/gemma-4-31B-it-mtp.gguf"
+    dest = "gemma-4-31B-it-GGUF/gemma-4-31B-it-mtp.gguf"
+    sha256 = "5ae8b0117bed601e8924c6305bd5b0585de361d51f0e77091bcb4252cf1f27de"
+    size = 514687104
+
+# Gemma 4 26B-A4B (Google's MoE sibling: 128 routed experts, top-8, plus a
+# shared expert - ~4B active per token on a 26B checkpoint). Same family
+# module, template and drafter design as the 31B, so it inherits the same
+# capability caveats (no "tools" until the gemma4 tools milestone). All three
+# capabilities below were live-probed: chat + vision
+# (mmproj described a test image correctly) + speculative (/metrics counted
+# 214 drafted / 208 accepted with the sideloaded drafter).
+[[model]]
+id = "gemma-4-26b-a4b"
+vendor = "Google"
+display = "Gemma 4 26B A4B"
+family = "gemma-4"
+capability = ["chat", "vision", "reasoning", "speculative"]
+license = "gemma"
+revision = "2026-08-13"
+# family default, same as the 31B (gpu_model/gemma4/batch.rs alloc_kv)
+kv_default = "fp8_e4m3"
+
+  [model.specs]
+  params = "26B-A4B"
+  context = "256K"
+  homepage = "https://huggingface.co/google/gemma-4-26B-A4B-it"
+  about = "The mixture-of-experts Gemma - 26 billion parameters of knowledge with only 4 billion doing the work per word, so it answers close to the 31B's class while running noticeably faster."
+  strengths = [
+    "Near-31B answer quality at a fraction of the per-word compute",
+    "Reads images · 256K context",
+    "Extra speed from a small companion draft model",
+  ]
+  tradeoffs = [
+    "27 GB of weights plus ~6 GB of expert working memory - the fit chart counts both",
+    "Gemma license (use terms), not Apache",
+  ]
+
+  [[model.artifact]]
+  id = "q8"
+  kind = "weights"
+  format = "gguf"
+  label = "Full quality"
+  quant = "Q8_0"
+  default = true
+  # MoE expert serving scratch the engine pins beyond the file: the runner's
+  # own scratch_mem self-report (/api/stats) at the default 32-slot width,
+  # measured at 3.81 GiB at 1 slot and 5.79 GiB
+  # at 32 - the field carries the width the runner defaults to, so narrow
+  # envelopes are over-stated by ~2 GiB, which is the safe direction.
+  workspace = 6070491580
+
+  [model.artifact.shape]
+  weight_bytes = 27645605376
+  kind = "generative"
+  vocab = 262144
+  max_ctx = 262144
+  nextn_bytes = 0
+  source = "measured"
+  kv_layers = [
+    { k_dim = 2048, v_dim = 2048, window = 1024, count = 5 },
+    { k_dim = 1024, v_dim = 1024, count = 1 },
+    { k_dim = 2048, v_dim = 2048, window = 1024, count = 5 },
+    { k_dim = 1024, v_dim = 1024, count = 1 },
+    { k_dim = 2048, v_dim = 2048, window = 1024, count = 5 },
+    { k_dim = 1024, v_dim = 1024, count = 1 },
+    { k_dim = 2048, v_dim = 2048, window = 1024, count = 5 },
+    { k_dim = 1024, v_dim = 1024, count = 1 },
+    { k_dim = 2048, v_dim = 2048, window = 1024, count = 5 },
+    { k_dim = 1024, v_dim = 1024, count = 1 },
+  ]
+
+    [[model.artifact.file]]
+    url = "https://models.truespar.io/models/gemma-4-26B-A4B-it-GGUF/gemma-4-26B-A4B-it-Q8_0.gguf"
+    dest = "gemma-4-26B-A4B-it-GGUF/gemma-4-26B-A4B-it-Q8_0.gguf"
+    sha256 = "5f7cbd0f4564e84342fc34321a09acb54b1a3da9215124e5bf444baa6dda152c"
+    size = 26859861728
+
+  [[model.artifact]]
+  id = "vision"
+  kind = "vision"
+  format = "gguf"
+  label = "Vision (image input)"
+  default = true
+
+    [[model.artifact.file]]
+    url = "https://models.truespar.io/models/gemma-4-26B-A4B-it-GGUF/gemma-4-26B-A4B-it-mmproj-BF16.gguf"
+    dest = "gemma-4-26B-A4B-it-GGUF/gemma-4-26B-A4B-it-mmproj-BF16.gguf"
+    sha256 = "41926ed5f1403cf5add23b0684992805ea6f97253096132e769e65646b8cef9d"
+    size = 1194828256
+
+  # separate gemma4-assistant drafter - same design as the 31B's, MTP is not
+  # in-file for this family
+  [[model.artifact]]
+  id = "drafter"
+  kind = "drafter"
+  format = "gguf"
+  label = "Faster generation (drafter)"
+  default = true
+
+    [[model.artifact.file]]
+    url = "https://models.truespar.io/models/gemma-4-26B-A4B-it-GGUF/gemma-4-26B-A4B-it-mtp.gguf"
+    dest = "gemma-4-26B-A4B-it-GGUF/gemma-4-26B-A4B-it-mtp.gguf"
+    sha256 = "6326fb9f5e487aa8dcdd313a091e3c67724cb2a666ec3b7d2895b5b26d93ed1b"
+    size = 461766816
+
+# Qwen3.5/3.6 sourcing: official + unsloth ONLY.
+# Elected line = the unsloth *-MTP-GGUF repos - the MTP/nextn tensors are
+# IN-FILE (built-in speculative decoding, no drafter artifact needed) and the
+# mmproj tower is one artifact per model, shared by every weights choice.
+# Official FP8 snapshots become fp8-snapshot artifacts here once staged on the
+# origin.
+
+[[model]]
+id = "qwen3.5-9b"
+mtp_in_file = true
+vendor = "Alibaba"
+display = "Qwen 3.5 9B"
+family = "qwen3.5"
+capability = ["chat", "vision", "tools", "reasoning", "speculative"]
+license = "apache-2.0"
+revision = "2026-08-01"
+
+  [model.specs]
+  params = "9B"
+  context = "256K"
+  context_max = "up to 1M with YaRN"
+  homepage = "https://huggingface.co/Qwen/Qwen3.5-9B"
+  about = "The small, fast all-rounder - reads images, handles very long documents, and leaves the most VRAM free."
+  strengths = [
+    "Lightest chat pick - most room left for context and concurrency",
+    "Reads images · 256K context (up to 1M)",
+    "Extra generation speed built in",
+  ]
+  tradeoffs = [
+    "Its bigger siblings answer hard questions better",
+  ]
+
+  [[model.artifact]]
+  id = "q8"
+  kind = "weights"
+  format = "gguf"
+  label = "Full quality"
+  quant = "Q8_0"
+  default = true
+
+  [model.artifact.shape]
+  weight_bytes = 9800257600
+  kind = "generative"
+  vocab = 248320
+  max_ctx = 262144
+  nextn_bytes = 258557952
+  source = "measured"
+  kv_layers = [
+    { k_dim = 1024, v_dim = 1024, count = 8 },
+  ]
+
+    [model.artifact.shape.recurrent]
+    layers = 24
+    state_elems = 524288
+    conv_elems = 24576
+    conv_dim = 8192
+    elem_bytes = 4
+
+    [[model.artifact.file]]
+    url = "https://models.truespar.io/models/Qwen3.5-9B-MTP-GGUF/Qwen3.5-9B-Q8_0.gguf"
+    dest = "Qwen3.5-9B-MTP-GGUF/Qwen3.5-9B-Q8_0.gguf"
+    sha256 = "107125cda29dc42d62f5ba8ffac8817d21a9d7bd06c1b35860491a00a170ad4e"
+    size = 9786061152
+
+  [[model.artifact]]
+  id = "q4"
+  kind = "weights"
+  format = "gguf"
+  label = "Compact"
+  quant = "UD-Q4_K_XL"
+
+  [model.artifact.shape]
+  weight_bytes = 6380851264
+  kind = "generative"
+  vocab = 248320
+  max_ctx = 262144
+  nextn_bytes = 154781696
+  source = "measured"
+  kv_layers = [
+    { k_dim = 1024, v_dim = 1024, count = 8 },
+  ]
+
+    [model.artifact.shape.recurrent]
+    layers = 24
+    state_elems = 524288
+    conv_elems = 24576
+    conv_dim = 8192
+    elem_bytes = 4
+
+    [[model.artifact.file]]
+    url = "https://models.truespar.io/models/Qwen3.5-9B-MTP-GGUF/Qwen3.5-9B-UD-Q4_K_XL.gguf"
+    dest = "Qwen3.5-9B-MTP-GGUF/Qwen3.5-9B-UD-Q4_K_XL.gguf"
+    sha256 = "362f85a2d7dbc0259e926d5ac33ca0d0f17fd3753496d65bfd2106384c929d3f"
+    size = 6135034208
+
+  [[model.artifact]]
+  id = "vision"
+  kind = "vision"
+  format = "gguf"
+  label = "Vision (image input)"
+  default = true
+
+    [[model.artifact.file]]
+    url = "https://models.truespar.io/models/Qwen3.5-9B-MTP-GGUF/mmproj-BF16.gguf"
+    dest = "Qwen3.5-9B-MTP-GGUF/mmproj-BF16.gguf"
+    sha256 = "73c90471c349fec797f3969b59249259318ee3fa855a684da7ef35a46f063a9e"
+    size = 921704928
+
+[[model]]
+id = "qwen3.6-27b"
+mtp_in_file = true
+vendor = "Alibaba"
+display = "Qwen 3.6 27B"
+family = "qwen3.6"
+capability = ["chat", "vision", "tools", "reasoning", "speculative"]
+license = "apache-2.0"
+revision = "2026-08-01"
+
+  [model.specs]
+  params = "27B"
+  context = "256K"
+  context_max = "up to 1M with YaRN"
+  homepage = "https://huggingface.co/Qwen/Qwen3.6-27B"
+  about = "The quality pick for coding and agent work - reads images and handles very long documents."
+  strengths = [
+    "Best coding and agent quality in this catalog",
+    "Reads images · 256K context (up to 1M)",
+    "Extra generation speed built in",
+  ]
+  tradeoffs = [
+    "The whole model runs on every token - the slower of the big Qwens",
+  ]
+
+  [[model.artifact]]
+  id = "q8"
+  kind = "weights"
+  format = "gguf"
+  label = "Full quality"
+  quant = "Q8_0"
+  default = true
+
+  [model.artifact.shape]
+  weight_bytes = 29130461280
+  kind = "generative"
+  vocab = 248320
+  max_ctx = 262144
+  nextn_bytes = 451319808
+  source = "measured"
+  kv_layers = [
+    { k_dim = 1024, v_dim = 1024, count = 16 },
+  ]
+
+    [model.artifact.shape.recurrent]
+    layers = 48
+    state_elems = 786432
+    conv_elems = 30720
+    conv_dim = 10240
+    elem_bytes = 4
+
+    [[model.artifact.file]]
+    url = "https://models.truespar.io/models/Qwen3.6-27B-MTP-GGUF/Qwen3.6-27B-Q8_0.gguf"
+    dest = "Qwen3.6-27B-MTP-GGUF/Qwen3.6-27B-Q8_0.gguf"
+    sha256 = "9408dcb356cc061a05c139e5647cbde0698ff980c6a69f7fc214e9989f86cfa8"
+    size = 29047084160
+
+  [[model.artifact]]
+  id = "q4"
+  kind = "weights"
+  format = "gguf"
+  label = "Compact"
+  quant = "UD-Q4_K_XL"
+
+  [model.artifact.shape]
+  weight_bytes = 18663542880
+  kind = "generative"
+  vocab = 248320
+  max_ctx = 262144
+  nextn_bytes = 266549248
+  source = "measured"
+  kv_layers = [
+    { k_dim = 1024, v_dim = 1024, count = 16 },
+  ]
+
+    [model.artifact.shape.recurrent]
+    layers = 48
+    state_elems = 786432
+    conv_elems = 30720
+    conv_dim = 10240
+    elem_bytes = 4
+
+    [[model.artifact.file]]
+    url = "https://models.truespar.io/models/Qwen3.6-27B-MTP-GGUF/Qwen3.6-27B-UD-Q4_K_XL.gguf"
+    dest = "Qwen3.6-27B-MTP-GGUF/Qwen3.6-27B-UD-Q4_K_XL.gguf"
+    sha256 = "4085665ee36d82a672a238a43f0e5643f2f0e39f2d7bd5d373f0ef10ecf53095"
+    size = 17909097600
+
+  [[model.artifact]]
+  id = "vision"
+  kind = "vision"
+  format = "gguf"
+  label = "Vision (image input)"
+  default = true
+
+    [[model.artifact.file]]
+    url = "https://models.truespar.io/models/Qwen3.6-27B-MTP-GGUF/mmproj-BF16.gguf"
+    dest = "Qwen3.6-27B-MTP-GGUF/mmproj-BF16.gguf"
+    sha256 = "05353347512982ee62317b9d8c89372bc815f4b4043580e7ef3ad411ec1a1cd3"
+    size = 931146304
+
+[[model]]
+id = "qwen3.6-35b-a3b"
+mtp_in_file = true
+vendor = "Alibaba"
+display = "Qwen 3.6 35B A3B"
+family = "qwen3.6"
+capability = ["chat", "vision", "tools", "reasoning", "speculative"]
+license = "apache-2.0"
+revision = "2026-08-01"
+
+  [model.specs]
+  params = "35B · 3B active"
+  context = "256K"
+  context_max = "up to 1M with YaRN"
+  homepage = "https://huggingface.co/Qwen/Qwen3.6-35B-A3B"
+  about = "Near-flagship answers at much higher speed - only a small part of the model runs per token."
+  strengths = [
+    "Fast - close to the 27B in quality at a fraction of the compute",
+    "Reads images · 256K context (up to 1M)",
+    "Extra generation speed built in",
+  ]
+  tradeoffs = [
+    "Biggest download here - 38 GB at full quality",
+  ]
+
+  [[model.artifact]]
+  id = "q8"
+  kind = "weights"
+  format = "gguf"
+  label = "Full quality"
+  quant = "Q8_0"
+  default = true
+
+  [model.artifact.shape]
+  weight_bytes = 37801097504
+  kind = "generative"
+  vocab = 248320
+  max_ctx = 262144
+  nextn_bytes = 897955840
+  source = "probed"
+  kv_layers = [
+    { k_dim = 512, v_dim = 512, count = 10 },
+  ]
+
+    [model.artifact.shape.recurrent]
+    layers = 30
+    state_elems = 524288
+    conv_elems = 24576
+    conv_dim = 8192
+    elem_bytes = 4
+
+    [[model.artifact.file]]
+    url = "https://models.truespar.io/models/Qwen3.6-35B-A3B-MTP-GGUF/Qwen3.6-35B-A3B-Q8_0.gguf"
+    dest = "Qwen3.6-35B-A3B-MTP-GGUF/Qwen3.6-35B-A3B-Q8_0.gguf"
+    sha256 = "c1283d8b80c3e38b2735ddbc9766d3b3126f44d6c484be419d4e101d09a76131"
+    size = 37801097504
+
+  [[model.artifact]]
+  id = "q4"
+  kind = "weights"
+  format = "gguf"
+  label = "Compact"
+  quant = "UD-Q4_K_XL"
+
+  [model.artifact.shape]
+  weight_bytes = 23869231680
+  kind = "generative"
+  vocab = 248320
+  max_ctx = 262144
+  nextn_bytes = 528857088
+  source = "measured"
+  kv_layers = [
+    { k_dim = 512, v_dim = 512, count = 10 },
+  ]
+
+    [model.artifact.shape.recurrent]
+    layers = 30
+    state_elems = 524288
+    conv_elems = 24576
+    conv_dim = 8192
+    elem_bytes = 4
+
+    [[model.artifact.file]]
+    url = "https://models.truespar.io/models/Qwen3.6-35B-A3B-MTP-GGUF/Qwen3.6-35B-A3B-UD-Q4_K_XL.gguf"
+    dest = "Qwen3.6-35B-A3B-MTP-GGUF/Qwen3.6-35B-A3B-UD-Q4_K_XL.gguf"
+    sha256 = "55983c5a75a1ab969824077b3bb3de4146e82a9234072b48ad4e8f92ad3fe9f1"
+    size = 22853663008
+
+  [[model.artifact]]
+  id = "vision"
+  kind = "vision"
+  format = "gguf"
+  label = "Vision (image input)"
+  default = true
+
+    [[model.artifact.file]]
+    url = "https://models.truespar.io/models/Qwen3.6-35B-A3B-MTP-GGUF/mmproj-BF16.gguf"
+    dest = "Qwen3.6-35B-A3B-MTP-GGUF/mmproj-BF16.gguf"
+    sha256 = "da63cb47a76763c712393f8a017070188a304fa39f8aeea6edc629ed7b975cfa"
+    size = 902822528
+
+[[model]]
+id = "qwen3.8-27b"
+mtp_in_file = true
+vendor = "Alibaba"
+display = "Qwen 3.8 27B"
+family = "qwen3.8"
+capability = ["chat", "vision", "tools", "reasoning", "speculative"]
+license = "apache-2.0"
+revision = "2026-08-15"
+
+  [model.specs]
+  params = "27B"
+  context = "256K"
+  context_max = "up to 1M with YaRN"
+  homepage = "https://huggingface.co/Qwen/Qwen3.8-27B"
+  about = "The newest Qwen flagship - best coding and agent quality in this catalog, reads images, with tunable reasoning depth."
+  strengths = [
+    "Most capable dense Qwen to date - coding, research and agent work",
+    "Reads images · 256K context (up to 1M)",
+    "Extra generation speed built in",
+    "Reasoning depth tunable per request (reasoning_effort)",
+  ]
+  tradeoffs = [
+    "The whole model runs on every token - dense, not a MoE speedster",
+  ]
+
+  [[model.artifact]]
+  id = "q8"
+  kind = "weights"
+  format = "gguf"
+  label = "Full quality"
+  quant = "Q8_0"
+  default = true
+  [model.artifact.shape]
+  weight_bytes = 29047086048
+  kind = "generative"
+  vocab = 248320
+  max_ctx = 262144
+  nextn_bytes = 451319808
+  source = "probed"
+  kv_layers = [
+    { k_dim = 1024, v_dim = 1024, count = 16 },
+  ]
+
+    [model.artifact.shape.recurrent]
+    layers = 48
+    state_elems = 786432
+    conv_elems = 30720
+    conv_dim = 10240
+    elem_bytes = 4
+
+    [[model.artifact.file]]
+    url = "https://models.truespar.io/models/Qwen3.8-27B-GGUF/Qwen3.8-27B-Q8_0.gguf"
+    dest = "Qwen3.8-27B-GGUF/Qwen3.8-27B-Q8_0.gguf"
+    sha256 = "a680f44a06920e5d689774823782006aa3acc8db95750323373b24139b67e348"
+    size = 29047086048
+
+  # The 4-bit lane every box can use, as opposed to the NVFP4 one below which
+  # needs Blackwell. unsloth's UD recipe here is not the one 3.6 shipped -
+  # measured on the file: Q5_K x325 / Q4_K x97 / IQ4_XS x65 / Q6_K x19 / F32
+  # x360, where 3.6 was Q4_K-heavy with Q8_0 and no IQ4_XS. Every one of those
+  # is a type the loader dispatches per-tensor (gpu/types.rs kq_params), so the
+  # near-identical file size to 3.6 is a coincidence, not a cloned recipe.
+  # Keeps the nextn block, so spec/MTP survives the quantisation.
+  [[model.artifact]]
+  id = "q4"
+  kind = "weights"
+  format = "gguf"
+  label = "Compact"
+  quant = "UD-Q4_K_XL"
+
+  [model.artifact.shape]
+  weight_bytes = 17923394624
+  kind = "generative"
+  vocab = 248320
+  max_ctx = 262144
+  nextn_bytes = 285800448
+  source = "probed"
+  kv_layers = [
+    { k_dim = 1024, v_dim = 1024, count = 16 },
+  ]
+
+    [model.artifact.shape.recurrent]
+    layers = 48
+    state_elems = 786432
+    conv_elems = 30720
+    conv_dim = 10240
+    elem_bytes = 4
+
+    [[model.artifact.file]]
+    url = "https://models.truespar.io/models/Qwen3.8-27B-GGUF/Qwen3.8-27B-UD-Q4_K_XL.gguf"
+    dest = "Qwen3.8-27B-GGUF/Qwen3.8-27B-UD-Q4_K_XL.gguf"
+    sha256 = "bee238bbeb3dc0a34bde4d0dedbaee1f98c009e8bb4226f03070054c12fb1372"
+    size = 17923394624
+
+  [[model.artifact]]
+  id = "vision"
+  kind = "vision"
+  format = "gguf"
+  label = "Vision (image input)"
+  default = true
+    [[model.artifact.file]]
+    url = "https://models.truespar.io/models/Qwen3.8-27B-GGUF/mmproj-BF16.gguf"
+    dest = "Qwen3.8-27B-GGUF/mmproj-BF16.gguf"
+    sha256 = "83ee4f4f205fa514161778c41df1ea14144faa0f713510893b63c2395f5c2d53"
+    size = 931146432
+
+  # DFlash2 block-diffusion drafter (incoai + z-lab release). This
+  # model speculates from its IN-FILE MTP head by default - that is what wins
+  # the batched rungs, and it needs
+  # no extra download, so the drafter artifact is not the default. What
+  # DFlash2 buys is single-stream latency: the engine's hybrid routing
+  # drafts through it at live=1, where its 7-token blocks at ~85%/token
+  # acceptance beat the MTP lane substantially, and hands
+  # wider rounds back to the MTP chain. Speculation is lossless - identical
+  # output either way, only speed differs - so this is an ARTIFACT of one
+  # model, not a second model (the muse DFlash1/2 rule).
+  # Upstream: incoai/Qwen3.8-27B-DFlash2-GGUF (z-lab mirrors it), file
+  # Qwen3.8-27B-DFlash2-Q4_K_M.gguf. Verified identical to what we mirror,
+  # not assumed: HF's x-linked-etag (the LFS sha256) is
+  # 18a380efc9b7ed8d88677fc895f5c11ae170653434ee378f7348f715c14d0594 and its
+  # x-linked-size 1143006752 - both match the bytes below exactly. The name
+  # differs because this tree's drafters are named by role (muse precedent).
+  [[model.artifact]]
+  id = "drafter2"
+  kind = "drafter"
+  format = "gguf"
+  label = "Faster single chats (DFlash2)"
+  default = true
+
+    [[model.artifact.file]]
+    url = "https://models.truespar.io/models/Qwen3.8-27B-GGUF/dflash2-Q4_K_M.gguf"
+    dest = "Qwen3.8-27B-GGUF/dflash2-Q4_K_M.gguf"
+    sha256 = "18a380efc9b7ed8d88677fc895f5c11ae170653434ee378f7348f715c14d0594"
+    size = 1143006752
+
+  # Checkpoint-exact NVFP4 FFN planes (unsloth compressed-tensors, W4A16),
+  # served as a native-plane source over the Q8_0 base (Fp8Snapshot kind -
+  # the runner detects the plane dialect from the tensors). The elected
+  # 4-bit lane per catalog policy (NVFP4 over Q4_* when it exists): model
+  # resident ~32 GB instead of ~85 - the 48 GB-card fit lane. No FP8
+  # snapshot here: native FP8 checkpoints are self-sourced, never hosted.
+  #
+  # `label` is the QUALITY-CARD title and reads like every other model's
+  # ("Full quality" / "Compact"), because that is what this is to the person
+  # choosing: the small build. The format lives in `quant`, which the card
+  # prints as its footnote - the same place Q8_0 and UD-Q4_K_XL appear
+  # (it was rendering as a "Native FP8 planes" capability
+  # switch, wearing the self-sourced FP8 lane's copy, for an artifact that is
+  # NVFP4 and is hosted here).
+  #
+  # "(Blackwell)" is in the title because the UD-Q4_K_XL lane above exists.
+  # The reasoning above was written while NVFP4 was the only small build
+  # here; with two, a bare "Compact" on both leaves the one thing people
+  # actually scan - the title - unable to tell them apart where both
+  # are live. The plain name goes to the build that runs everywhere; this one
+  # says what it needs. The min_cc badge still greys the card out elsewhere,
+  # so the title is telling a Blackwell owner which is which, not gating.
+  [[model.artifact]]
+  id = "nvfp4"
+  kind = "fp8-snapshot"
+  format = "safetensors"
+  label = "Compact (Blackwell)"
+  quant = "NVFP4"
+  # sm_120a or better. The W4A16 nvf4 consumers are compiled under
+  # PD_BS_OK (__CUDA_ARCH__ >= 1200 && SM120_ALL); everywhere else the engine
+  # serves the Q8_0 base instead, which is the same answers and the same
+  # memory as picking Full quality. Declared so the Studio can grey the card
+  # out on an Ampere/Ada/Hopper box rather than sell a 22 GB no-op.
+  min_cc = [12, 0]
+    [[model.artifact.file]]
+    url = "https://models.truespar.io/models/Qwen3.8-27B-NVFP4/README.md"
+    dest = "Qwen3.8-27B-NVFP4/README.md"
+    sha256 = "8fb1abd46d01ca3eba96b1711cb0f8ff5eaa0922834e30fac6e424d946871c7f"
+    size = 6603
+    [[model.artifact.file]]
+    url = "https://models.truespar.io/models/Qwen3.8-27B-NVFP4/chat_template.jinja"
+    dest = "Qwen3.8-27B-NVFP4/chat_template.jinja"
+    sha256 = "12827f24b742ea4e80cdc12dbcf9622227056b9f797252a3149263d4f9aaadce"
+    size = 9993
+    [[model.artifact.file]]
+    url = "https://models.truespar.io/models/Qwen3.8-27B-NVFP4/config.json"
+    dest = "Qwen3.8-27B-NVFP4/config.json"
+    sha256 = "fd29e5c031dfb051fe591bec1c6417e313be3d1d777e742a2b67de2da937a6b6"
+    size = 22601
+    [[model.artifact.file]]
+    url = "https://models.truespar.io/models/Qwen3.8-27B-NVFP4/generation_config.json"
+    dest = "Qwen3.8-27B-NVFP4/generation_config.json"
+    sha256 = "d0d0ed2e37cdfafef4a5067d5ea2407b05f4fb50526e47c008a5b235d50240fb"
+    size = 214
+    [[model.artifact.file]]
+    url = "https://models.truespar.io/models/Qwen3.8-27B-NVFP4/model.safetensors"
+    dest = "Qwen3.8-27B-NVFP4/model.safetensors"
+    sha256 = "c473512c70eace07e2256fe9fd76596ac03e3295bee7d54cfb72676416afcc05"
+    size = 22568192096
+    [[model.artifact.file]]
+    url = "https://models.truespar.io/models/Qwen3.8-27B-NVFP4/model.safetensors.index.json"
+    dest = "Qwen3.8-27B-NVFP4/model.safetensors.index.json"
+    sha256 = "429430e1b9e65b2cb98eff8cd10a06e70a09cee89c48487a3914684aeb6df57f"
+    size = 164371
+    [[model.artifact.file]]
+    url = "https://models.truespar.io/models/Qwen3.8-27B-NVFP4/model_mtp.safetensors"
+    dest = "Qwen3.8-27B-NVFP4/model_mtp.safetensors"
+    sha256 = "1d8268aa85ace093a561e3e7b63b9d390dac1cd55a90cd55b5ec509c3c9da9fe"
+    size = 849400392
+    [[model.artifact.file]]
+    url = "https://models.truespar.io/models/Qwen3.8-27B-NVFP4/preprocessor_config.json"
+    dest = "Qwen3.8-27B-NVFP4/preprocessor_config.json"
+    sha256 = "27225450ac9c6529872ee1924fcb0962ff5634834f817040f444118116f4e516"
+    size = 390
+    [[model.artifact.file]]
+    url = "https://models.truespar.io/models/Qwen3.8-27B-NVFP4/tokenizer.json"
+    dest = "Qwen3.8-27B-NVFP4/tokenizer.json"
+    sha256 = "f399b3cd12fa270d51457bb749fb30863521e8359b8a27059c71b6c2f7d6dd6c"
+    size = 19989424
+    [[model.artifact.file]]
+    url = "https://models.truespar.io/models/Qwen3.8-27B-NVFP4/tokenizer_config.json"
+    dest = "Qwen3.8-27B-NVFP4/tokenizer_config.json"
+    sha256 = "66e427c470fe580fe8c7b5725d857af23d8417e37fae62667ec698306a19987b"
+    size = 1124
+    [[model.artifact.file]]
+    url = "https://models.truespar.io/models/Qwen3.8-27B-NVFP4/video_preprocessor_config.json"
+    dest = "Qwen3.8-27B-NVFP4/video_preprocessor_config.json"
+    sha256 = "7768af27c1fafa9cc9011c1dc20067e03f8915e03b63504550e11d5066986d13"
+    size = 385
+    [[model.artifact.file]]
+    url = "https://models.truespar.io/models/Qwen3.8-27B-NVFP4/vocab.json"
+    dest = "Qwen3.8-27B-NVFP4/vocab.json"
+    sha256 = "ce99b4cb2983d118806ce0a8b777a35b093e2000a503ebde25853284c9dfa003"
+    size = 6722759
+
+# Laguna sourcing: official
+# poolside repos only - the Q4_K_M below is poolside's own GGUF, the one
+# policy-clean 4-bit (no community re-quants). Published to the origin
+# with sha256 re-verified at upload; OpenMDW-1.1 requires the
+# agreement copy + origin notices in any distribution, so the repo's
+# LICENSE.md and README.md sit alongside the GGUF in the same R2 folder.
+
+[[model]]
+id = "laguna-xs-2.1"
+vendor = "Poolside"
+display = "Laguna XS 2.1"
+family = "laguna"
+capability = ["chat", "tools", "reasoning", "speculative"]
+license = "openmdw-1.1"
+revision = "2026-08-02"
+
+  [model.specs]
+  params = "33B · 3B active"
+  context = "256K"
+  homepage = "https://huggingface.co/poolside/Laguna-XS-2.1"
+  about = "Poolside's coding-focused open model - strong at code and agent work, and fast because only a small part of the model runs per token."
+  strengths = [
+    "Built for coding and agent work",
+    "Fast - only 3B of 33B parameters run per token",
+    "Long chats and documents stay light on memory",
+  ]
+  tradeoffs = [
+    "Text only - no image input",
+    "19 GB download - wants a 24 GB card",
+  ]
+
+  [[model.artifact]]
+  id = "q4"
+  kind = "weights"
+  format = "gguf"
+  label = "Compact"
+  quant = "Q4_K_M"
+  default = true
+
+  [model.artifact.shape]
+  weight_bytes = 21747788800
+  kind = "generative"
+  vocab = 100352
+  max_ctx = 262144
+  nextn_bytes = 0
+  source = "measured"
+  kv_layers = [
+    { k_dim = 1024, v_dim = 1024, count = 1 },
+    { k_dim = 1024, v_dim = 1024, window = 512, count = 3 },
+    { k_dim = 1024, v_dim = 1024, count = 1 },
+    { k_dim = 1024, v_dim = 1024, window = 512, count = 3 },
+    { k_dim = 1024, v_dim = 1024, count = 1 },
+    { k_dim = 1024, v_dim = 1024, window = 512, count = 3 },
+    { k_dim = 1024, v_dim = 1024, count = 1 },
+    { k_dim = 1024, v_dim = 1024, window = 512, count = 3 },
+    { k_dim = 1024, v_dim = 1024, count = 1 },
+    { k_dim = 1024, v_dim = 1024, window = 512, count = 3 },
+    { k_dim = 1024, v_dim = 1024, count = 1 },
+    { k_dim = 1024, v_dim = 1024, window = 512, count = 3 },
+    { k_dim = 1024, v_dim = 1024, count = 1 },
+    { k_dim = 1024, v_dim = 1024, window = 512, count = 3 },
+    { k_dim = 1024, v_dim = 1024, count = 1 },
+    { k_dim = 1024, v_dim = 1024, window = 512, count = 3 },
+    { k_dim = 1024, v_dim = 1024, count = 1 },
+    { k_dim = 1024, v_dim = 1024, window = 512, count = 3 },
+    { k_dim = 1024, v_dim = 1024, count = 1 },
+    { k_dim = 1024, v_dim = 1024, window = 512, count = 3 },
+  ]
+
+    [[model.artifact.file]]
+    url = "https://models.truespar.io/models/Laguna-XS-2.1-GGUF/Laguna-XS-2.1-Q4_K_M.gguf"
+    dest = "Laguna-XS-2.1-GGUF/Laguna-XS-2.1-Q4_K_M.gguf"
+    sha256 = "1ac7079101fca5a6df8c5a7523a3c30ea7d1c0e4b1258090e7d6d4039287f6cb"
+    size = 20274300032
+
+  # DFlash speculative drafter (poolside official, safetensors BF16 - no GGUF
+  # ships upstream): 5 SWA-512 layers conditioned on target aux hiddens, one
+  # forward drafts a 16-block. Shares embed/lm_head with the target file, so
+  # this 0.9 GB is the whole sideload. Engine support.
+  # Published to the origin (sha256 = HF LFS etag, verified);
+  # OpenMDW-1.1 notices (LICENSE.md + README.md) sit alongside in R2.
+  # Not default: spec/MTP is a user toggle, never default-on.
+  # It costs VRAM and loses under load, and the DFlash lane is parked mid-work
+  # A non-default companion is neither auto-pulled nor auto-wired
+  # into a spawn - you ask for it.
+  [[model.artifact]]
+  id = "dflash"
+  kind = "drafter"
+  format = "safetensors"
+  label = "Speed boost (draft model)"
+  default = false
+
+    [[model.artifact.file]]
+    url = "https://models.truespar.io/models/Laguna-XS-2.1-DFlash/model.safetensors"
+    dest = "Laguna-XS-2.1-DFlash/model.safetensors"
+    sha256 = "0b51e20d76200a80e636414f45fb51a5c0e13b0852d977ba2db788214c68f6b8"
+    size = 924135848
+
+    [[model.artifact.file]]
+    url = "https://models.truespar.io/models/Laguna-XS-2.1-DFlash/config.json"
+    dest = "Laguna-XS-2.1-DFlash/config.json"
+    sha256 = "22bdc5fd9fd41dc6945523fd504f1b70809af0f5ab26c09716e33616033ecf9a"
+    size = 963
+
+# Laguna S sourcing: the weights here are UNSLOTH's, which breaks
+# the official-first rule deliberately and under its documented carve-out -
+# unsloth only when the official file is absent or does not fit. poolside's own
+# GGUF ladder for S-2.1 is F16 219.05 / Q8_0 119.91 / Q4_K_M 89.44 GiB. The
+# 96 GB card this model targets cannot serve the 89.44 GiB one: it would leave
+# about 6 GB for the engine and the whole KV pool. unsloth's UD-Q4_K_XL is
+# 68.36 GiB and leaves ~25 GB, which is the configuration that actually ran.
+#
+# "Actually ran" is the other rule, and an A6000 cannot
+# hold 68 GiB. These exact bytes (repo commit 750f92f9, sha256 cross-checked
+# against the download metadata before publishing) served 32/32
+# concurrent requests on the 96 GB Blackwell card the model is for. The
+# drafter is poolside's own.
+
+[[model]]
+id = "laguna-s-2.1"
+vendor = "Poolside"
+display = "Laguna S 2.1"
+family = "laguna"
+capability = ["chat", "tools", "reasoning", "speculative"]
+license = "openmdw-1.1"
+revision = "2026-08-05"
+
+  [model.specs]
+  params = "118B · 8B active"
+  context = "1M"
+  homepage = "https://huggingface.co/poolside/Laguna-S-2.1"
+  about = "The big Laguna - built for coding and long agent runs, and still quick per token because only a small slice of it runs at a time."
+  strengths = [
+    "Much stronger than the XS on hard coding and agent work",
+    "Fast for its size - 8B of 118B parameters run per token",
+    "1M context, the longest window in this catalog",
+  ]
+  tradeoffs = [
+    "68 GB download, and it wants a 96 GB card - it will not fit a desktop GPU",
+    "Text only - no image input",
+    "Arrives as three files that are downloaded together",
+  ]
+
+  # Three-file gguf-split. SHARD 1 must be LISTED first - the spawn path hands
+  # the runner `files.first()` and the engine walks the rest from that shard's
+  # own split metadata. A registry test enforces the ordering.
+  [[model.artifact]]
+  id = "q4"
+  kind = "weights"
+  format = "gguf"
+  label = "Compact"
+  quant = "UD-Q4_K_XL"
+  default = true
+
+  [model.artifact.shape]
+  weight_bytes = 76927235072
+  kind = "generative"
+  vocab = 100352
+  max_ctx = 262144
+  nextn_bytes = 0
+  source = "measured"
+  kv_layers = [
+    { k_dim = 1024, v_dim = 1024, count = 48 },
+  ]
+
+    [[model.artifact.file]]
+    url = "https://models.truespar.io/models/Laguna-S-2.1-GGUF/UD-Q4_K_XL/Laguna-S-2.1-UD-Q4_K_XL-00001-of-00003.gguf"
+    dest = "Laguna-S-2.1-GGUF/UD-Q4_K_XL/Laguna-S-2.1-UD-Q4_K_XL-00001-of-00003.gguf"
+    sha256 = "0cfaf46917260d253773e5e2fab64329fa5c9c60fdf0db0f59f31205b5f5dd32"
+    size = 3683648
+
+    [[model.artifact.file]]
+    url = "https://models.truespar.io/models/Laguna-S-2.1-GGUF/UD-Q4_K_XL/Laguna-S-2.1-UD-Q4_K_XL-00002-of-00003.gguf"
+    dest = "Laguna-S-2.1-GGUF/UD-Q4_K_XL/Laguna-S-2.1-UD-Q4_K_XL-00002-of-00003.gguf"
+    sha256 = "2296102462b02edca70163121ac62bacf7a82078c0eafc91625c8822850769bf"
+    size = 49971821312
+
+    [[model.artifact.file]]
+    url = "https://models.truespar.io/models/Laguna-S-2.1-GGUF/UD-Q4_K_XL/Laguna-S-2.1-UD-Q4_K_XL-00003-of-00003.gguf"
+    dest = "Laguna-S-2.1-GGUF/UD-Q4_K_XL/Laguna-S-2.1-UD-Q4_K_XL-00003-of-00003.gguf"
+    sha256 = "9150e2338f7690af29685b6a2ca621a8fda7ecf9724678266c4b04b7c6dd0ef3"
+    size = 23419667040
+
+  # poolside's own DFlash drafter, safetensors (the GGUF the repo also ships is
+  # llama.cpp's converter output, whose `dflash.target_layers` is shifted +1 and
+  # which drops `aux_hidden_norms` entirely - our fusion reads the safetensors).
+  # 6 layers, hidden 3072, aux taps at target layers [1,10,19,29,38,47].
+  # Not default, same as XS: spec/MTP is a user toggle, never default-on.
+  [[model.artifact]]
+  id = "dflash"
+  kind = "drafter"
+  format = "safetensors"
+  label = "Speed boost (draft model)"
+  default = false
+
+    [[model.artifact.file]]
+    url = "https://models.truespar.io/models/Laguna-S-2.1-DFlash/model.safetensors"
+    dest = "Laguna-S-2.1-DFlash/model.safetensors"
+    sha256 = "f24f08781c697c19952c02fb2e7e9bdf2071b79a711c2a44b836a74b9b62a1f4"
+    size = 2229962896
+
+    [[model.artifact.file]]
+    url = "https://models.truespar.io/models/Laguna-S-2.1-DFlash/config.json"
+    dest = "Laguna-S-2.1-DFlash/config.json"
+    sha256 = "6195643943c01daa06379a5ee7fce70d9535463bcc02e60733bcd9a9cd2ccda6"
+    size = 1089
+
+[[model]]
+id = "granite-4.1-8b"
+vendor = "IBM"
+display = "Granite 4.1 8B"
+family = "granite"
+capability = ["chat", "tools"]
+license = "apache-2.0"
+revision = "2026-08-04"
+
+  [model.specs]
+  params = "8B"
+  context = "128K"
+  homepage = "https://huggingface.co/ibm-granite/granite-4.1-8b"
+  about = "IBM's open model for business use - tuned for tool calling and following instructions exactly, in twelve languages."
+  strengths = [
+    "Built for tool calling and precise instruction following",
+    "Answers in 12 languages",
+    "Small enough to leave plenty of room for context",
+  ]
+  tradeoffs = [
+    "Text only - no image input",
+    "No step-by-step thinking mode",
+    "128K context - the Qwen models here go further",
+  ]
+
+  # Only the 8-bit tier is published. The official repo does ship a Q4_K_M
+  # (5.35 GB), but the catalog offers only files we have actually served, and
+  # that one has never been loaded - fetch it, serve it, then publish it.
+  [[model.artifact]]
+  id = "q8"
+  kind = "weights"
+  format = "gguf"
+  label = "Full quality"
+  quant = "Q8_0"
+  default = true
+
+  [model.artifact.shape]
+  weight_bytes = 9342042112
+  kind = "generative"
+  vocab = 100352
+  max_ctx = 131072
+  nextn_bytes = 0
+  source = "measured"
+  kv_layers = [
+    { k_dim = 1024, v_dim = 1024, count = 40 },
+  ]
+
+    [[model.artifact.file]]
+    url = "https://models.truespar.io/models/granite-4.1-8b-GGUF/granite-4.1-8b-Q8_0.gguf"
+    dest = "granite-4.1-8b-GGUF/granite-4.1-8b-Q8_0.gguf"
+    sha256 = "4709c90f07b04af4deae8bf0eb06225fb257b5a86072ac09b87d3351242f6ba1"
+    size = 9345610400
+
+[[model]]
+id = "granite-4.1-30b"
+vendor = "IBM"
+display = "Granite 4.1 30B"
+family = "granite"
+capability = ["chat", "tools"]
+license = "apache-2.0"
+revision = "2026-08-04"
+
+  [model.specs]
+  params = "30B"
+  context = "128K"
+  homepage = "https://huggingface.co/ibm-granite/granite-4.1-30b"
+  about = "The bigger Granite - the same tool calling and instruction following as the 8B, with better answers on harder questions."
+  strengths = [
+    "Handles harder questions than the 8B",
+    "Built for tool calling and precise instruction following",
+    "Answers in 12 languages",
+  ]
+  tradeoffs = [
+    "Text only - no image input",
+    "No step-by-step thinking mode",
+    "Long chats use memory faster than the 8B, so plan for less context",
+  ]
+
+  # Q4_K_M is the elected 4-bit file (official ibm-granite; the unsloth UD
+  # ladder lost on sourcing precedence -).
+  # The 30b Q8_0 (30.67 GB) is resident and was served here but is not
+  # published: it doubled the upload for a second tier of a model whose
+  # Q4_K_M already fits the target card. Adding it later is purely additive -
+  # every url here is immutable.
+  [[model.artifact]]
+  id = "q4"
+  kind = "weights"
+  format = "gguf"
+  label = "Compact"
+  quant = "Q4_K_M"
+  default = true
+
+  [model.artifact.shape]
+  weight_bytes = 18697699328
+  kind = "generative"
+  vocab = 100352
+  max_ctx = 131072
+  nextn_bytes = 0
+  source = "measured"
+  kv_layers = [
+    { k_dim = 1024, v_dim = 1024, count = 64 },
+  ]
+
+    [[model.artifact.file]]
+    url = "https://models.truespar.io/models/granite-4.1-30b-GGUF/granite-4.1-30b-Q4_K_M.gguf"
+    dest = "granite-4.1-30b-GGUF/granite-4.1-30b-Q4_K_M.gguf"
+    sha256 = "b33e4376e3581d11236ea53ced6b38399f6e91c0a391488486dc0827972f23f6"
+    size = 17490240736
+
+# ── Granite 4.2 ─────────────────────────────────────────────────────────────
+#
+# Same DECODER as 4.1 - `general.architecture = granite`, identical geometry at
+# each size - so it serves on the existing granite path with no engine change.
+# What did move, and what each change cost:
+#
+#   * the muP scalars go to identity: embedding_scale 12 -> 1, residual_scale
+#     0.175 -> 1, logit_scale 16 -> 1. All four are still written in the header
+#     (`granite.*_scale`), so the loader's `f_req` reads them and the math
+#     degrades to identity honestly rather than by omission.
+#   * embeddings untie, so `output.weight` is a real tensor. The loader already
+#     branched on PRESENCE rather than on the config flag, so this was free.
+#   * the template gains a `<think>` region AND switches tool calls from
+#     4.1's Hermes-style JSON to Qwen's XML form. Both are what
+#     `Dialect::QwenXml` already speaks - but `arch` is `granite` for both
+#     versions, so the dialect now comes from the TEMPLATE (see
+#     `Dialect::for_arch_and_template`). Keyed on arch alone, 4.2 served its
+#     whole reasoning block as user-visible content.
+#   * it publishes sampling (temperature 1.0, top_p 0.95) where 4.1 published
+#     none - carried in the GGUF as `general.sampling.*`, which is why
+#     `sampling::published_in_gguf` exists.
+#
+# Greedy parity vs llama.cpp b10628 on the identical 8b GGUF: prompts tokenize
+# identically and step-0 agrees 18/18. Long thinking streams part on near-ties
+# (delta-margin median 0.100 nats) with both engines answering correctly, which
+# is the documented behaviour for a reasoning model, not a defect.
+#
+# Both tiers are published, and both were served before publishing. The NVFP4
+# checkpoints needed new engine capability to get here - granite had no
+# safetensors-primary loader before `granite/load_hf.rs`, and the
+# trap it had to clear is documented there: llama.cpp's converter PERMUTES the
+# q/k rows into the GGUF for its interleaved rope, so a checkpoint read straight
+# from HF needs the same permutation or it produces fluent nonsense.
+#
+# Validation differs between the tiers and the difference is real: Q8_0 has a
+# same-weights greedy-parity check against llama.cpp on the identical file
+# (step-0 18/18), while NVFP4 has no such reference - llama.cpp cannot read
+# compressed-tensors - so it is validated against the Q8_0 lane at the
+# activation level plus content checks.
+
+[[model]]
+id = "granite-4.2-8b"
+vendor = "IBM"
+display = "Granite 4.2 8B"
+family = "granite"
+capability = ["chat", "tools", "reasoning"]
+license = "apache-2.0"
+revision = "2026-08-25"
+
+  [model.specs]
+  params = "8B"
+  context = "128K"
+  homepage = "https://huggingface.co/ibm-granite/granite-4.2-8b"
+  about = "IBM's open model for business use - now with a step-by-step thinking mode, still tuned for tool calling and following instructions exactly."
+  strengths = [
+    "Thinks step by step before answering, and you can turn it off",
+    "Built for tool calling and precise instruction following",
+    "Answers in 12 languages",
+    "Small enough to leave plenty of room for context",
+  ]
+  tradeoffs = [
+    "Text only - no image input",
+    "Thinking mode spends tokens before the answer starts",
+    "128K context - the Qwen models here go further",
+  ]
+
+  [[model.artifact]]
+  id = "q8"
+  kind = "weights"
+  format = "gguf"
+  label = "Full quality"
+  quant = "Q8_0"
+  default = false
+
+  [model.artifact.shape]
+  weight_bytes = 9342042112
+  kind = "generative"
+  vocab = 100352
+  max_ctx = 131072
+  nextn_bytes = 0
+  source = "measured"
+  kv_layers = [
+    { k_dim = 1024, v_dim = 1024, count = 40 },
+  ]
+
+    [[model.artifact.file]]
+    url = "https://models.truespar.io/models/granite-4.2-8b-GGUF/granite-4.2-8b-Q8_0.gguf"
+    dest = "granite-4.2-8b-GGUF/granite-4.2-8b-Q8_0.gguf"
+    sha256 = "fb66ad5750680c77c76b9dc095961375f14fc88ba15fd5fc084ef6e6701bad77"
+    size = 9345613952
+
+  # The NVFP4 checkpoint IBM ships for Blackwell. Served W4A16 straight from
+  # the file -- the seven per-layer projections are the compressed-tensors fp4
+  # triple, byte-for-byte, while the embeddings, head and norms stay bf16
+  # because that is the published recipe. Roughly 66% of the Q8_0 footprint.
+  #
+  # This is a checkpoint DIRECTORY, not a GGUF: the whole set below has to
+  # land, because arch, tokenizer, template and weights all come from it.
+  [[model.artifact]]
+  id = "nvfp4"
+  kind = "weights"
+  format = "safetensors"
+  label = "Compact (Blackwell)"
+  quant = "NVFP4"
+  default = true
+  min_cc = [12, 0]
+
+  [model.artifact.shape]
+  weight_bytes = 6128156672
+  kind = "generative"
+  vocab = 100352
+  max_ctx = 131072
+  nextn_bytes = 0
+  source = "measured"
+  kv_layers = [
+    { k_dim = 1024, v_dim = 1024, count = 40 },
+  ]
+
+
+    [[model.artifact.file]]
+    url = "https://models.truespar.io/models/granite-4.2-8b-nvfp4/model-00001-of-00002.safetensors"
+    dest = "granite-4.2-8b-nvfp4/model-00001-of-00002.safetensors"
+    sha256 = "9897a707f6cfb9f579a4dc08d11191fe5db484ae9426889a1f51313c8d28b5b8"
+    size = 4992876744
+
+    [[model.artifact.file]]
+    url = "https://models.truespar.io/models/granite-4.2-8b-nvfp4/model-00002-of-00002.safetensors"
+    dest = "granite-4.2-8b-nvfp4/model-00002-of-00002.safetensors"
+    sha256 = "0779b83f1fb41f5e244f74bc693e2a965cad32f3f9316b020b8fc0ce01eaec3e"
+    size = 1134756360
+
+    [[model.artifact.file]]
+    url = "https://models.truespar.io/models/granite-4.2-8b-nvfp4/README.md"
+    dest = "granite-4.2-8b-nvfp4/README.md"
+    sha256 = "e868114926a6303fe3a3d81e324e49c01d24c11b00cf4781a34fba3defb4f34b"
+    size = 371
+
+    [[model.artifact.file]]
+    url = "https://models.truespar.io/models/granite-4.2-8b-nvfp4/chat_template.jinja"
+    dest = "granite-4.2-8b-nvfp4/chat_template.jinja"
+    sha256 = "f0ba43f79b3cabca5e5a7584c77aec92f49feae45cdf7779c87d9fc54cd90258"
+    size = 9013
+
+    [[model.artifact.file]]
+    url = "https://models.truespar.io/models/granite-4.2-8b-nvfp4/config.json"
+    dest = "granite-4.2-8b-nvfp4/config.json"
+    sha256 = "85611f4e34633d4e148e6a5f64bc2d3a23ebbc2b014bc87fbda764eecf261cd9"
+    size = 907
+
+    [[model.artifact.file]]
+    url = "https://models.truespar.io/models/granite-4.2-8b-nvfp4/generation_config.json"
+    dest = "granite-4.2-8b-nvfp4/generation_config.json"
+    sha256 = "1b9baf0a7959d31d7fb58ff6b506c27d09a73d395cadccc7e6dd1d4b7e43fd9d"
+    size = 207
+
+    [[model.artifact.file]]
+    url = "https://models.truespar.io/models/granite-4.2-8b-nvfp4/merges.txt"
+    dest = "granite-4.2-8b-nvfp4/merges.txt"
+    sha256 = "b6fe424e334903f7fb84d3a106d9730455f4744b9fe3c21ee136d97a00e72502"
+    size = 916646
+
+    [[model.artifact.file]]
+    url = "https://models.truespar.io/models/granite-4.2-8b-nvfp4/model.safetensors.index.json"
+    dest = "granite-4.2-8b-nvfp4/model.safetensors.index.json"
+    sha256 = "f4b7f5981d02e58dc953eeab9c3969ff7db3973fe042fe50bec94eb94042c319"
+    size = 108759
+
+    [[model.artifact.file]]
+    url = "https://models.truespar.io/models/granite-4.2-8b-nvfp4/recipe.yaml"
+    dest = "granite-4.2-8b-nvfp4/recipe.yaml"
+    sha256 = "d59dfc4b603846bd667f9eab797df8a4c14a6cfb171ae456343357efeabf7fed"
+    size = 264
+
+    [[model.artifact.file]]
+    url = "https://models.truespar.io/models/granite-4.2-8b-nvfp4/special_tokens_map.json"
+    dest = "granite-4.2-8b-nvfp4/special_tokens_map.json"
+    sha256 = "e9435fefd6d838fd9fcbbc44b97a8e3ff322be7f6dfb7e4fd2468586574bb52b"
+    size = 563
+
+    [[model.artifact.file]]
+    url = "https://models.truespar.io/models/granite-4.2-8b-nvfp4/tokenizer.json"
+    dest = "granite-4.2-8b-nvfp4/tokenizer.json"
+    sha256 = "883975314d58743726347caaf2c32ac89afd5ad57222cffbc4f052f2ab27b2d7"
+    size = 7153414
+
+    [[model.artifact.file]]
+    url = "https://models.truespar.io/models/granite-4.2-8b-nvfp4/tokenizer_config.json"
+    dest = "granite-4.2-8b-nvfp4/tokenizer_config.json"
+    sha256 = "2007f26df166ed10a2d6fa881c1c8f3cdd151e451469f59b274897f14449835f"
+    size = 17677
+
+    [[model.artifact.file]]
+    url = "https://models.truespar.io/models/granite-4.2-8b-nvfp4/vocab.json"
+    dest = "granite-4.2-8b-nvfp4/vocab.json"
+    sha256 = "a1be0c1e0a89b5bacda6af6f8b63df09668cb8d1f656229ee9123140c9507810"
+    size = 1612694
+
+  [[model.artifact]]
+  id = "fp8"
+  kind = "weights"
+  format = "safetensors"
+  label = "Full quality (FP8, Blackwell)"
+  quant = "FP8"
+  default = false
+  # IBM's own FP8 release (ibm-granite/granite-4.2-8b-fp8, llm-compressor e4m3 per-channel
+  # weights + dynamic per-token activations). Served on the fp8-native granite lane
+  # (F8RowPlane). Validated on sm_120 only -- Ada has the
+  # e4m3 mma but the lane is unmeasured there -- so the badge gates at Blackwell.
+  min_cc = [12, 0]
+  [model.artifact.shape]
+  weight_bytes = 9621061632
+  kind = "generative"
+  vocab = 100352
+  max_ctx = 131072
+  nextn_bytes = 0
+  source = "measured"
+  kv_layers = [
+    { k_dim = 1024, v_dim = 1024, count = 40 },
+  ]
+    [[model.artifact.file]]
+    url = "https://models.truespar.io/models/granite-4.2-8b-fp8/model-00001-of-00002.safetensors"
+    dest = "granite-4.2-8b-fp8/model-00001-of-00002.safetensors"
+    sha256 = "3c5828496fe261b52851242479c5a645ae1e0009844ed873b71e6a94b98bd0b6"
+    size = 4955509064
+    [[model.artifact.file]]
+    url = "https://models.truespar.io/models/granite-4.2-8b-fp8/model-00002-of-00002.safetensors"
+    dest = "granite-4.2-8b-fp8/model-00002-of-00002.safetensors"
+    sha256 = "f4c47df073e90b11ccb0571aa58852a8845784bda5ddb14841846d415391d4e3"
+    size = 4661770000
+    [[model.artifact.file]]
+    url = "https://models.truespar.io/models/granite-4.2-8b-fp8/model.safetensors.index.json"
+    dest = "granite-4.2-8b-fp8/model.safetensors.index.json"
+    sha256 = "97f03fe800ae609f89252abe34e94a8bb690b28c05a33a89c5f0c5487e993d5b"
+    size = 54339
+    [[model.artifact.file]]
+    url = "https://models.truespar.io/models/granite-4.2-8b-fp8/config.json"
+    dest = "granite-4.2-8b-fp8/config.json"
+    sha256 = "85611f4e34633d4e148e6a5f64bc2d3a23ebbc2b014bc87fbda764eecf261cd9"
+    size = 907
+    [[model.artifact.file]]
+    url = "https://models.truespar.io/models/granite-4.2-8b-fp8/generation_config.json"
+    dest = "granite-4.2-8b-fp8/generation_config.json"
+    sha256 = "1b9baf0a7959d31d7fb58ff6b506c27d09a73d395cadccc7e6dd1d4b7e43fd9d"
+    size = 207
+    [[model.artifact.file]]
+    url = "https://models.truespar.io/models/granite-4.2-8b-fp8/tokenizer_config.json"
+    dest = "granite-4.2-8b-fp8/tokenizer_config.json"
+    sha256 = "2007f26df166ed10a2d6fa881c1c8f3cdd151e451469f59b274897f14449835f"
+    size = 17677
+    [[model.artifact.file]]
+    url = "https://models.truespar.io/models/granite-4.2-8b-fp8/chat_template.jinja"
+    dest = "granite-4.2-8b-fp8/chat_template.jinja"
+    sha256 = "f0ba43f79b3cabca5e5a7584c77aec92f49feae45cdf7779c87d9fc54cd90258"
+    size = 9013
+    [[model.artifact.file]]
+    url = "https://models.truespar.io/models/granite-4.2-8b-fp8/tokenizer.json"
+    dest = "granite-4.2-8b-fp8/tokenizer.json"
+    sha256 = "883975314d58743726347caaf2c32ac89afd5ad57222cffbc4f052f2ab27b2d7"
+    size = 7153414
+    [[model.artifact.file]]
+    url = "https://models.truespar.io/models/granite-4.2-8b-fp8/special_tokens_map.json"
+    dest = "granite-4.2-8b-fp8/special_tokens_map.json"
+    sha256 = "e9435fefd6d838fd9fcbbc44b97a8e3ff322be7f6dfb7e4fd2468586574bb52b"
+    size = 563
+    [[model.artifact.file]]
+    url = "https://models.truespar.io/models/granite-4.2-8b-fp8/merges.txt"
+    dest = "granite-4.2-8b-fp8/merges.txt"
+    sha256 = "b6fe424e334903f7fb84d3a106d9730455f4744b9fe3c21ee136d97a00e72502"
+    size = 916646
+    [[model.artifact.file]]
+    url = "https://models.truespar.io/models/granite-4.2-8b-fp8/vocab.json"
+    dest = "granite-4.2-8b-fp8/vocab.json"
+    sha256 = "a1be0c1e0a89b5bacda6af6f8b63df09668cb8d1f656229ee9123140c9507810"
+    size = 1612694
+    [[model.artifact.file]]
+    url = "https://models.truespar.io/models/granite-4.2-8b-fp8/README.md"
+    dest = "granite-4.2-8b-fp8/README.md"
+    sha256 = "a78ad6cf3418e4d9b54684d4fb03fb30830b74ef2ed97493f5157903507f06c0"
+    size = 365
+    [[model.artifact.file]]
+    url = "https://models.truespar.io/models/granite-4.2-8b-fp8/recipe.yaml"
+    dest = "granite-4.2-8b-fp8/recipe.yaml"
+    sha256 = "202b71abfb88a3e1bddc2f79f4c3742171af6bd60c214573c4610b3b1817c91f"
+    size = 176
+    [[model.artifact.file]]
+    url = "https://models.truespar.io/models/granite-4.2-8b-fp8/model.sig"
+    dest = "granite-4.2-8b-fp8/model.sig"
+    sha256 = "69dd51db6a501ae4476fa1a75e66c2194f07ebb1c3032a285e696526bd581aac"
+    size = 11166
+
+[[model]]
+id = "granite-4.2-30b"
+vendor = "IBM"
+display = "Granite 4.2 30B"
+family = "granite"
+capability = ["chat", "tools", "reasoning"]
+license = "apache-2.0"
+revision = "2026-08-25"
+
+  [model.specs]
+  params = "30B"
+  context = "128K"
+  homepage = "https://huggingface.co/ibm-granite/granite-4.2-30b"
+  about = "The bigger Granite 4.2 - the same thinking mode and tool calling as the 8B, with better answers on harder questions."
+  strengths = [
+    "Thinks step by step before answering, and you can turn it off",
+    "Handles harder questions than the 8B",
+    "Built for tool calling and precise instruction following",
+    "Answers in 12 languages",
+  ]
+  tradeoffs = [
+    "Text only - no image input",
+    "Thinking mode spends tokens before the answer starts",
+    "At full quality it wants a 32 GB card before any context",
+  ]
+
+  # 8-bit only here, and that is a real choice on this file: unlike 4.1 (whose
+  # elected tier is Q4_K_M) the 30b Q8_0 has been served and
+  # parity-checked, so it is what the catalog offers. Adding the Q4_K_M tier later is
+  # purely additive - every url here is immutable.
+  [[model.artifact]]
+  id = "q8"
+  kind = "weights"
+  format = "gguf"
+  label = "Full quality"
+  quant = "Q8_0"
+  default = false
+
+  [model.artifact.shape]
+  weight_bytes = 31111705312
+  kind = "generative"
+  vocab = 100352
+  max_ctx = 131072
+  nextn_bytes = 0
+  source = "probed"
+  kv_layers = [
+    { k_dim = 1024, v_dim = 1024, count = 64 },
+  ]
+
+    [[model.artifact.file]]
+    url = "https://models.truespar.io/models/granite-4.2-30b-GGUF/granite-4.2-30b-Q8_0.gguf"
+    dest = "granite-4.2-30b-GGUF/granite-4.2-30b-Q8_0.gguf"
+    sha256 = "005b0933353e9ba219b26e2667705bdb8dbc74eb50e4a4e6cb70fca108710f81"
+    size = 31111705312
+
+  # The NVFP4 checkpoint IBM ships for Blackwell. Served W4A16 straight from
+  # the file -- the seven per-layer projections are the compressed-tensors fp4
+  # triple, byte-for-byte, while the embeddings, head and norms stay bf16
+  # because that is the published recipe. Roughly 57% of the Q8_0 footprint.
+  #
+  # This is a checkpoint DIRECTORY, not a GGUF: the whole set below has to
+  # land, because arch, tokenizer, template and weights all come from it.
+  [[model.artifact]]
+  id = "nvfp4"
+  kind = "weights"
+  format = "safetensors"
+  label = "Compact (Blackwell)"
+  quant = "NVFP4"
+  default = true
+  min_cc = [12, 0]
+
+  [model.artifact.shape]
+  weight_bytes = 17651744768
+  kind = "generative"
+  vocab = 100352
+  max_ctx = 131072
+  nextn_bytes = 0
+  source = "measured"
+  kv_layers = [
+    { k_dim = 1024, v_dim = 1024, count = 64 },
+  ]
+
+
+    [[model.artifact.file]]
+    url = "https://models.truespar.io/models/granite-4.2-30b-nvfp4/model-00001-of-00004.safetensors"
+    dest = "granite-4.2-30b-nvfp4/model-00001-of-00004.safetensors"
+    sha256 = "cc474dbf5e76f12eddc54b3cca03ad758f0f57f714bc0e01984f3cb5be70967a"
+    size = 4998358072
+
+    [[model.artifact.file]]
+    url = "https://models.truespar.io/models/granite-4.2-30b-nvfp4/model-00002-of-00004.safetensors"
+    dest = "granite-4.2-30b-nvfp4/model-00002-of-00004.safetensors"
+    sha256 = "aa6370e1f7a39caac8b2d3eb0b96d97a5759b1677cddc3d1518cbcef9361bb53"
+    size = 4993715584
+
+    [[model.artifact.file]]
+    url = "https://models.truespar.io/models/granite-4.2-30b-nvfp4/model-00003-of-00004.safetensors"
+    dest = "granite-4.2-30b-nvfp4/model-00003-of-00004.safetensors"
+    sha256 = "d80dbd5a16a52df52a86f68fe1b41938c7c26274bc1f2033664966dbd9a15ae7"
+    size = 4934995552
+
+    [[model.artifact.file]]
+    url = "https://models.truespar.io/models/granite-4.2-30b-nvfp4/model-00004-of-00004.safetensors"
+    dest = "granite-4.2-30b-nvfp4/model-00004-of-00004.safetensors"
+    sha256 = "488ce18cd24a72716ec80dc2ed0e69f7014b8330f9c354d765b9deebaf795477"
+    size = 2723841120
+
+    [[model.artifact.file]]
+    url = "https://models.truespar.io/models/granite-4.2-30b-nvfp4/README.md"
+    dest = "granite-4.2-30b-nvfp4/README.md"
+    sha256 = "c8748766e6fd683778fa1a5f4412f8f081b9cc2245b534789b7b07d900d5f766"
+    size = 375
+
+    [[model.artifact.file]]
+    url = "https://models.truespar.io/models/granite-4.2-30b-nvfp4/chat_template.jinja"
+    dest = "granite-4.2-30b-nvfp4/chat_template.jinja"
+    sha256 = "f0ba43f79b3cabca5e5a7584c77aec92f49feae45cdf7779c87d9fc54cd90258"
+    size = 9013
+
+    [[model.artifact.file]]
+    url = "https://models.truespar.io/models/granite-4.2-30b-nvfp4/config.json"
+    dest = "granite-4.2-30b-nvfp4/config.json"
+    sha256 = "82c834ac6bf6a2ecbf9801b49c3fb927008df24ea415c35e931b6091cab21277"
+    size = 907
+
+    [[model.artifact.file]]
+    url = "https://models.truespar.io/models/granite-4.2-30b-nvfp4/generation_config.json"
+    dest = "granite-4.2-30b-nvfp4/generation_config.json"
+    sha256 = "1b9baf0a7959d31d7fb58ff6b506c27d09a73d395cadccc7e6dd1d4b7e43fd9d"
+    size = 207
+
+    [[model.artifact.file]]
+    url = "https://models.truespar.io/models/granite-4.2-30b-nvfp4/merges.txt"
+    dest = "granite-4.2-30b-nvfp4/merges.txt"
+    sha256 = "b6fe424e334903f7fb84d3a106d9730455f4744b9fe3c21ee136d97a00e72502"
+    size = 916646
+
+    [[model.artifact.file]]
+    url = "https://models.truespar.io/models/granite-4.2-30b-nvfp4/model.safetensors.index.json"
+    dest = "granite-4.2-30b-nvfp4/model.safetensors.index.json"
+    sha256 = "ef3f19914d28ec598fbd261bec53e1ebdbf25306ba619ba17ec963f58e3d2d56"
+    size = 174017
+
+    [[model.artifact.file]]
+    url = "https://models.truespar.io/models/granite-4.2-30b-nvfp4/recipe.yaml"
+    dest = "granite-4.2-30b-nvfp4/recipe.yaml"
+    sha256 = "d59dfc4b603846bd667f9eab797df8a4c14a6cfb171ae456343357efeabf7fed"
+    size = 264
+
+    [[model.artifact.file]]
+    url = "https://models.truespar.io/models/granite-4.2-30b-nvfp4/special_tokens_map.json"
+    dest = "granite-4.2-30b-nvfp4/special_tokens_map.json"
+    sha256 = "e9435fefd6d838fd9fcbbc44b97a8e3ff322be7f6dfb7e4fd2468586574bb52b"
+    size = 563
+
+    [[model.artifact.file]]
+    url = "https://models.truespar.io/models/granite-4.2-30b-nvfp4/tokenizer.json"
+    dest = "granite-4.2-30b-nvfp4/tokenizer.json"
+    sha256 = "883975314d58743726347caaf2c32ac89afd5ad57222cffbc4f052f2ab27b2d7"
+    size = 7153414
+
+    [[model.artifact.file]]
+    url = "https://models.truespar.io/models/granite-4.2-30b-nvfp4/tokenizer_config.json"
+    dest = "granite-4.2-30b-nvfp4/tokenizer_config.json"
+    sha256 = "2007f26df166ed10a2d6fa881c1c8f3cdd151e451469f59b274897f14449835f"
+    size = 17677
+
+    [[model.artifact.file]]
+    url = "https://models.truespar.io/models/granite-4.2-30b-nvfp4/vocab.json"
+    dest = "granite-4.2-30b-nvfp4/vocab.json"
+    sha256 = "a1be0c1e0a89b5bacda6af6f8b63df09668cb8d1f656229ee9123140c9507810"
+    size = 1612694
+
+# granite-vision's capability is `documents`, not `vision`. IBM's own
+# card is explicit: the model "is specifically designed for structured
+# extraction tasks and may not generalize well to open-ended vision-language
+# tasks", and it takes English instructions only. The same chip the Qwen and
+# Gemma vision models carry would promise general image chat and under-deliver,
+# so it gets its own - the picker says "Documents & charts" and means it.
+#
+# The RUNNER still advertises `vision: true` and `input_modalities: [text,
+# image]`, which is correct and a different claim: that endpoint does accept
+# image input. The capability here is about what the model is FOR.
+
+  [[model.artifact]]
+  id = "fp8"
+  kind = "weights"
+  format = "safetensors"
+  label = "Full quality (FP8, Blackwell)"
+  quant = "FP8"
+  default = false
+  # IBM's own FP8 release (ibm-granite/granite-4.2-30b-fp8, llm-compressor e4m3 per-channel
+  # weights + dynamic per-token activations). Served on the fp8-native granite lane
+  # (F8RowPlane). Validated on sm_120 only -- Ada has the
+  # e4m3 mma but the lane is unmeasured there -- so the badge gates at Blackwell.
+  min_cc = [12, 0]
+  [model.artifact.shape]
+  weight_bytes = 30120886272
+  kind = "generative"
+  vocab = 100352
+  max_ctx = 131072
+  nextn_bytes = 0
+  source = "measured"
+  kv_layers = [
+    { k_dim = 1024, v_dim = 1024, count = 64 },
+  ]
+    [[model.artifact.file]]
+    url = "https://models.truespar.io/models/granite-4.2-30b-fp8/model-00001-of-00007.safetensors"
+    dest = "granite-4.2-30b-fp8/model-00001-of-00007.safetensors"
+    sha256 = "a625871baa355756e89e02d588edc9472aff57d6672411dafbd5e2b34de47f15"
+    size = 4867016248
+    [[model.artifact.file]]
+    url = "https://models.truespar.io/models/granite-4.2-30b-fp8/model-00002-of-00007.safetensors"
+    dest = "granite-4.2-30b-fp8/model-00002-of-00007.safetensors"
+    sha256 = "ab60e9c88f216b9e7b8464ddfc886b3c60558d981ae6a7d63cd8d6c4cffbfa7e"
+    size = 4892516184
+    [[model.artifact.file]]
+    url = "https://models.truespar.io/models/granite-4.2-30b-fp8/model-00003-of-00007.safetensors"
+    dest = "granite-4.2-30b-fp8/model-00003-of-00007.safetensors"
+    sha256 = "f64d9fde3b9771e54257e9e95097788240fa544749fbcfd0184ddd9d69cd6c30"
+    size = 4892516208
+    [[model.artifact.file]]
+    url = "https://models.truespar.io/models/granite-4.2-30b-fp8/model-00004-of-00007.safetensors"
+    dest = "granite-4.2-30b-fp8/model-00004-of-00007.safetensors"
+    sha256 = "4ba0f65b1d6b5e795c65b2a605fa499f4f7272f9955ffb40bc991f9eb19ed040"
+    size = 4892516208
+    [[model.artifact.file]]
+    url = "https://models.truespar.io/models/granite-4.2-30b-fp8/model-00005-of-00007.safetensors"
+    dest = "granite-4.2-30b-fp8/model-00005-of-00007.safetensors"
+    sha256 = "c5deb5ed808363db2d935fb5994bd427630abe81f53f53fd5a8a86c5da670087"
+    size = 4892516208
+    [[model.artifact.file]]
+    url = "https://models.truespar.io/models/granite-4.2-30b-fp8/model-00006-of-00007.safetensors"
+    dest = "granite-4.2-30b-fp8/model-00006-of-00007.safetensors"
+    sha256 = "46b14a051e5c6c71c03929febb0e008b747358d6253e8053237f3feed6e328e7"
+    size = 4850560016
+    [[model.artifact.file]]
+    url = "https://models.truespar.io/models/granite-4.2-30b-fp8/model-00007-of-00007.safetensors"
+    dest = "granite-4.2-30b-fp8/model-00007-of-00007.safetensors"
+    sha256 = "ada5677b0b81c22d06bd64b03d66cc6978c620d08dd9c9b699ac8b3e336db9c5"
+    size = 822083712
+    [[model.artifact.file]]
+    url = "https://models.truespar.io/models/granite-4.2-30b-fp8/model.safetensors.index.json"
+    dest = "granite-4.2-30b-fp8/model.safetensors.index.json"
+    sha256 = "6caced4f441c990e451cad02fb9626a80d4eca643c6d8c42458e0d2f3b921380"
+    size = 86861
+    [[model.artifact.file]]
+    url = "https://models.truespar.io/models/granite-4.2-30b-fp8/config.json"
+    dest = "granite-4.2-30b-fp8/config.json"
+    sha256 = "82c834ac6bf6a2ecbf9801b49c3fb927008df24ea415c35e931b6091cab21277"
+    size = 907
+    [[model.artifact.file]]
+    url = "https://models.truespar.io/models/granite-4.2-30b-fp8/generation_config.json"
+    dest = "granite-4.2-30b-fp8/generation_config.json"
+    sha256 = "1b9baf0a7959d31d7fb58ff6b506c27d09a73d395cadccc7e6dd1d4b7e43fd9d"
+    size = 207
+    [[model.artifact.file]]
+    url = "https://models.truespar.io/models/granite-4.2-30b-fp8/tokenizer_config.json"
+    dest = "granite-4.2-30b-fp8/tokenizer_config.json"
+    sha256 = "2007f26df166ed10a2d6fa881c1c8f3cdd151e451469f59b274897f14449835f"
+    size = 17677
+    [[model.artifact.file]]
+    url = "https://models.truespar.io/models/granite-4.2-30b-fp8/chat_template.jinja"
+    dest = "granite-4.2-30b-fp8/chat_template.jinja"
+    sha256 = "f0ba43f79b3cabca5e5a7584c77aec92f49feae45cdf7779c87d9fc54cd90258"
+    size = 9013
+    [[model.artifact.file]]
+    url = "https://models.truespar.io/models/granite-4.2-30b-fp8/tokenizer.json"
+    dest = "granite-4.2-30b-fp8/tokenizer.json"
+    sha256 = "883975314d58743726347caaf2c32ac89afd5ad57222cffbc4f052f2ab27b2d7"
+    size = 7153414
+    [[model.artifact.file]]
+    url = "https://models.truespar.io/models/granite-4.2-30b-fp8/special_tokens_map.json"
+    dest = "granite-4.2-30b-fp8/special_tokens_map.json"
+    sha256 = "e9435fefd6d838fd9fcbbc44b97a8e3ff322be7f6dfb7e4fd2468586574bb52b"
+    size = 563
+    [[model.artifact.file]]
+    url = "https://models.truespar.io/models/granite-4.2-30b-fp8/merges.txt"
+    dest = "granite-4.2-30b-fp8/merges.txt"
+    sha256 = "b6fe424e334903f7fb84d3a106d9730455f4744b9fe3c21ee136d97a00e72502"
+    size = 916646
+    [[model.artifact.file]]
+    url = "https://models.truespar.io/models/granite-4.2-30b-fp8/vocab.json"
+    dest = "granite-4.2-30b-fp8/vocab.json"
+    sha256 = "a1be0c1e0a89b5bacda6af6f8b63df09668cb8d1f656229ee9123140c9507810"
+    size = 1612694
+    [[model.artifact.file]]
+    url = "https://models.truespar.io/models/granite-4.2-30b-fp8/README.md"
+    dest = "granite-4.2-30b-fp8/README.md"
+    sha256 = "d414a35518568a8edcf6fec406a1b927f1447b36b0de87f6ea2ef959930a37d2"
+    size = 369
+    [[model.artifact.file]]
+    url = "https://models.truespar.io/models/granite-4.2-30b-fp8/recipe.yaml"
+    dest = "granite-4.2-30b-fp8/recipe.yaml"
+    sha256 = "202b71abfb88a3e1bddc2f79f4c3742171af6bd60c214573c4610b3b1817c91f"
+    size = 176
+    [[model.artifact.file]]
+    url = "https://models.truespar.io/models/granite-4.2-30b-fp8/model.sig"
+    dest = "granite-4.2-30b-fp8/model.sig"
+    sha256 = "fa09271bd1ffeb20bdad9bb1dbd46f7b2aded7bce9b1719e8ec259a664eb3562"
+    size = 12210
+
+[[model]]
+id = "granite-vision-4.1-4b"
+vendor = "IBM"
+display = "Granite 4.1 Vision 4B"
+family = "granite"
+capability = ["chat", "tools", "documents"]
+license = "apache-2.0"
+revision = "2026-08-05"
+
+  [model.specs]
+  params = "4B"
+  context = "128K"
+  homepage = "https://huggingface.co/ibm-granite/granite-vision-4.1-4b"
+  about = "IBM's document reader - built to pull the numbers out of a chart or a table in an image, rather than to chat about pictures."
+  strengths = [
+    "Turns a chart into a CSV table, into the code that draws it, or into a written summary",
+    "Turns a table into JSON, HTML or OTSL",
+    "Small - 4.5 GB to download, weights and image reader together",
+  ]
+  tradeoffs = [
+    "Made for charts, tables and documents - IBM says it may do worse on open-ended questions about photos",
+    "English only - other languages may come out worse",
+    "No step-by-step thinking mode",
+  ]
+
+  [[model.artifact]]
+  id = "q8"
+  kind = "weights"
+  format = "gguf"
+  label = "Full quality"
+  quant = "Q8_0"
+  default = true
+
+  [model.artifact.shape]
+  weight_bytes = 3889085760
+  kind = "generative"
+  vocab = 100353
+  max_ctx = 131072
+  nextn_bytes = 0
+  source = "measured"
+  kv_layers = [
+    { k_dim = 512, v_dim = 512, count = 40 },
+  ]
+
+    [[model.artifact.file]]
+    url = "https://models.truespar.io/models/granite-vision-4.1-4b-GGUF/granite-vision-4.1-4b-Q8_0.gguf"
+    dest = "granite-vision-4.1-4b-GGUF/granite-vision-4.1-4b-Q8_0.gguf"
+    sha256 = "33271b8ab1bfb1bd3a2c1a6f717d52dcb5e938170ffb4d7fdb8f337228e6cca4"
+    size = 3619700288
+
+  # Not optional in practice: without the tower this is a plain 3B text model
+  # and the whole point is gone. `required = true` removes the Studio's
+  # vision switch for it. Hence also `default = true` - the row's Download
+  # bundle pulls both, and the estimator charges both.
+  [[model.artifact]]
+  id = "mmproj"
+  kind = "vision"
+  format = "gguf"
+  label = "Image reader"
+  default = true
+  required = true
+
+    [[model.artifact.file]]
+    url = "https://models.truespar.io/models/granite-vision-4.1-4b-GGUF/mmproj-model-f16.gguf"
+    dest = "granite-vision-4.1-4b-GGUF/mmproj-model-f16.gguf"
+    sha256 = "573dd2579f6043649299f0b2225000a5691d92f320aabe909fb4c6e75450cad2"
+    size = 1162347936
+
+# Unlimited-OCR (Baidu, Aug 2026) - the OCR lane. Served by the deepseek-ocr
+# family: DeepEncoder tower (SAM ViT-B + CLIP-L in series) into a 3B MoE
+# decoder with R-SWA windowed KV.
+#
+# Sourcing: baidu ships no GGUF and no FP8 - both files below are our in-house
+# conversion of baidu/Unlimited-OCR's official BF16 checkpoint. MIT license,
+# so redistribution of the conversion is permitted; the license and this
+# attribution travel with the row.
+[[model]]
+id = "unlimited-ocr"
+vendor = "Baidu"
+display = "Unlimited-OCR"
+family = "deepseek-ocr"
+capability = ["chat", "documents"]
+license = "mit"
+revision = "2026-08-13"
+
+  [model.specs]
+  params = "3B"
+  context = "32K"
+  homepage = "https://huggingface.co/baidu/Unlimited-OCR"
+  about = "Baidu's document reader - turns a scanned page, a photo of a document or a whole PDF into clean text, and can point at where on the page each piece came from."
+  strengths = [
+    "Reads whole PDFs - paddock renders the pages and feeds them through for you",
+    "Two reading modes: a tiled close-up pass for single pages, a faster whole-page pass for long documents",
+    "Multilingual, MIT-licensed, and small - under 4 GB for weights and image reader together",
+  ]
+  tradeoffs = [
+    "A document specialist - not built to chat about photos or reason at length",
+    "The image reader keeps about 1 GB of working memory on top of its weights - the fit chart counts it",
+  ]
+
+  [[model.artifact]]
+  id = "q8"
+  kind = "weights"
+  format = "gguf"
+  label = "Full quality"
+  quant = "Q8_0"
+  default = true
+
+  [model.artifact.shape]
+  weight_bytes = 3126134688
+  kind = "generative"
+  vocab = 129280
+  max_ctx = 32768
+  nextn_bytes = 0
+  source = "probed"
+  kv_layers = [
+    { k_dim = 1280, v_dim = 1280, count = 12 },
+  ]
+
+    [[model.artifact.file]]
+    url = "https://models.truespar.io/models/Unlimited-OCR-GGUF/Unlimited-OCR-Q8_0.gguf"
+    dest = "Unlimited-OCR-GGUF/Unlimited-OCR-Q8_0.gguf"
+    sha256 = "8d310b8615867e870b98931e856db2ae5791fb31a7c2d17ea2edf3c07d8fb0a0"
+    size = 3126134688
+
+  # Not optional: without the tower this is a 3B text model with the purpose
+  # gone (the granite-vision precedent). `workspace` is the persistent encode
+  # slab set DeepEncoder pins from attach to shutdown - logged as
+  # workspace_mib=950 at attach, and BIGGER than the weight
+  # file, so the fit estimate must count it.
+  [[model.artifact]]
+  id = "mmproj"
+  kind = "vision"
+  format = "gguf"
+  label = "Image reader"
+  default = true
+  required = true
+  workspace = 996147200
+
+    [[model.artifact.file]]
+    url = "https://models.truespar.io/models/Unlimited-OCR-GGUF/mmproj-Unlimited-OCR-F16.gguf"
+    dest = "Unlimited-OCR-GGUF/mmproj-Unlimited-OCR-F16.gguf"
+    sha256 = "f9984c20c64610002b213d9518305c19d47f00ed0f4574cb7590e1ff98f97bf6"
+    size = 825245664
+
+# PaddleOCR-VL-1.6 (PaddlePaddle/Baidu, Aug 2026) - the Nordic-multilingual
+# OCR lane: NaViT vision tower (27 layers, native-resolution
+# patching) through a 4-row merge projector into the ERNIE-4.5-0.3B decoder.
+#
+# Sourcing: PaddlePaddle ships no GGUF - both GGUFs below are our in-house
+# conversion of PaddlePaddle/PaddleOCR-VL-1.6's official BF16 checkpoint
+# (weight planes stay bf16 verbatim). Apache-2.0, so redistribution of the
+# conversion is permitted; the license and this attribution travel with the
+# row. tokenizer.json + chat_template.jinja are required sidecars - the
+# GGUF does not embed the ERNIE tokenizer, the loader reads them from the
+# model directory.
+[[model]]
+id = "paddleocr-vl-1.6"
+vendor = "PaddlePaddle"
+display = "PaddleOCR-VL 1.6"
+family = "paddleocr-vl"
+capability = ["chat", "documents"]
+license = "apache-2.0"
+revision = "2026-08-13"
+
+  [model.specs]
+  params = "0.9B"
+  context = "128K"
+  homepage = "https://huggingface.co/PaddlePaddle/PaddleOCR-VL-1.6"
+  about = "Baidu's compact page reader - turns a scanned page or a photo of a document into clean text, with strong coverage of Nordic and other European languages."
+  strengths = [
+    "Very small - under 2 GB for weights and image reader together, and fast: a full page in well under a second",
+    "Reads pages at their native resolution, so dense reports and small print survive",
+    "Multilingual including Swedish, Norwegian and Danish, Apache-2.0 licensed",
+  ]
+  tradeoffs = [
+    "A document specialist - it reads pages, it does not chat about photos or reason at length",
+    "The image reader grows about 1.9 GB of working memory at full batch - the fit chart counts it",
+  ]
+
+  [[model.artifact]]
+  id = "bf16"
+  kind = "weights"
+  format = "gguf"
+  label = "Full quality"
+  quant = "BF16"
+  default = true
+
+  [model.artifact.shape]
+  weight_bytes = 935769056
+  kind = "generative"
+  vocab = 103424
+  max_ctx = 131072
+  nextn_bytes = 0
+  source = "probed"
+  kv_layers = [
+    { k_dim = 256, v_dim = 256, count = 18 },
+  ]
+
+    [[model.artifact.file]]
+    url = "https://models.truespar.io/models/PaddleOCR-VL-1.6-GGUF/PaddleOCR-VL-1.6-GGUF.gguf"
+    dest = "PaddleOCR-VL-1.6-GGUF/PaddleOCR-VL-1.6-GGUF.gguf"
+    sha256 = "f3ae46ec885050acf4b3d31944431e1fd90d50664fb09126af4a3c050ba14ee8"
+    size = 935769056
+
+    [[model.artifact.file]]
+    url = "https://models.truespar.io/models/PaddleOCR-VL-1.6-GGUF/tokenizer.json"
+    dest = "PaddleOCR-VL-1.6-GGUF/tokenizer.json"
+    sha256 = "c8a215a59183d0d0781adc33bacd3ce6162716f7fd568fb30234a74d69803a7d"
+    size = 11189060
+
+    [[model.artifact.file]]
+    url = "https://models.truespar.io/models/PaddleOCR-VL-1.6-GGUF/chat_template.jinja"
+    dest = "PaddleOCR-VL-1.6-GGUF/chat_template.jinja"
+    sha256 = "1369e43952c7a84e834be95732d65111e96cbefe30aa32a4826eca344f5ef939"
+    size = 1831
+
+  # Not optional: without the tower this is a 0.3B text model with the purpose
+  # gone (the granite-vision precedent). `workspace` is the tower + serving
+  # slab set - pdvl's TowerWs grows on demand rather than pinning at attach,
+  # so this is the measured PEAK growth over the at-ready footprint at
+  # max-batch 8 with full 5040-patch pages (3679 -> 5539 MiB). The fit
+  # estimate must count the peak, not the attach size.
+  [[model.artifact]]
+  id = "mmproj"
+  kind = "vision"
+  format = "gguf"
+  label = "Image reader"
+  default = true
+  required = true
+  workspace = 1950351360
+
+    [[model.artifact.file]]
+    url = "https://models.truespar.io/models/PaddleOCR-VL-1.6-GGUF/PaddleOCR-VL-1.6-GGUF-mmproj.gguf"
+    dest = "PaddleOCR-VL-1.6-GGUF/PaddleOCR-VL-1.6-GGUF-mmproj.gguf"
+    sha256 = "204d757d7610d9b3faab10d506d69e5b244e32bf765e2bab2d0167e65e0a058a"
+    size = 881770560
+
+# Muse Glimmer 30B (Meta, Aug 2026). Served by the gemma4 family module with
+# its own arch constants - same fp8-e4m3 KV pool, so kv_default matches.
+#
+# Sourcing: Meta's own
+# meta-models/Muse-Glimmer-30B-GGUF ships k-quant only - no 8-bit file at all -
+# so the unsloth carve-out applies for this lane, same shape as the Laguna
+# S-2.1 precedent. The drafter below is byte-identical to the one in Meta's
+# repo, so it is the official artifact.
+[[model]]
+id = "muse-glimmer-30b"
+vendor = "Meta"
+display = "Muse Glimmer 30B"
+family = "muse-glimmer"
+capability = ["chat", "vision", "tools", "reasoning", "speculative"]
+license = "apache-2.0"
+revision = "2026-08-11"
+kv_default = "fp8_e4m3"
+
+  [model.specs]
+  params = "30B"
+  context = "128K"
+  homepage = "https://huggingface.co/meta-models/Muse-Glimmer-30B"
+  about = "Meta's Apache-2.0 reasoning model - it thinks before every answer, reads images, and ships its own draft model for extra speed."
+  strengths = [
+    "Always reasons - a visible thought pass on every answer",
+    "Reads images \u00b7 128K context \u00b7 Apache-2.0",
+    "Sips memory at long context: 3 of every 4 layers use a 2048 window",
+  ]
+  tradeoffs = [
+    "Cannot be told to skip thinking - short answers still pay for a thought",
+    "30 GB at full quality - wants a big card",
+  ]
+
+  [[model.artifact]]
+  id = "q8"
+  kind = "weights"
+  format = "gguf"
+  label = "Full quality"
+  quant = "Q8_0"
+  default = true
+
+  [model.artifact.shape]
+  weight_bytes = 29599871744
+  kind = "generative"
+  vocab = 202048
+  max_ctx = 131072
+  nextn_bytes = 0
+  source = "measured"
+  kv_layers = [
+    { k_dim = 256, v_dim = 256, window = 2048, count = 3 },
+    { k_dim = 256, v_dim = 256, count = 1 },
+    { k_dim = 256, v_dim = 256, window = 2048, count = 3 },
+    { k_dim = 256, v_dim = 256, count = 1 },
+    { k_dim = 256, v_dim = 256, window = 2048, count = 3 },
+    { k_dim = 256, v_dim = 256, count = 1 },
+    { k_dim = 256, v_dim = 256, window = 2048, count = 3 },
+    { k_dim = 256, v_dim = 256, count = 1 },
+    { k_dim = 256, v_dim = 256, window = 2048, count = 3 },
+    { k_dim = 256, v_dim = 256, count = 1 },
+    { k_dim = 256, v_dim = 256, window = 2048, count = 3 },
+    { k_dim = 256, v_dim = 256, count = 1 },
+    { k_dim = 256, v_dim = 256, window = 2048, count = 3 },
+    { k_dim = 256, v_dim = 256, count = 1 },
+    { k_dim = 256, v_dim = 256, window = 2048, count = 3 },
+    { k_dim = 256, v_dim = 256, count = 1 },
+    { k_dim = 256, v_dim = 256, window = 2048, count = 3 },
+    { k_dim = 256, v_dim = 256, count = 1 },
+    { k_dim = 256, v_dim = 256, window = 2048, count = 3 },
+    { k_dim = 256, v_dim = 256, count = 1 },
+    { k_dim = 256, v_dim = 256, window = 2048, count = 3 },
+    { k_dim = 256, v_dim = 256, count = 1 },
+    { k_dim = 256, v_dim = 256, window = 2048, count = 3 },
+    { k_dim = 256, v_dim = 256, count = 1 },
+    { k_dim = 256, v_dim = 256, window = 2048, count = 3 },
+    { k_dim = 256, v_dim = 256, count = 1 },
+  ]
+
+    [[model.artifact.file]]
+    url = "https://models.truespar.io/models/Muse-Glimmer-30B-GGUF/Muse-Glimmer-30B-Q8_0.gguf"
+    dest = "Muse-Glimmer-30B-GGUF/Muse-Glimmer-30B-Q8_0.gguf"
+    sha256 = "f2c087d694ca8242a4a436076df7c041703ab051ac4b72bb1bfe2698299b0e86"
+    size = 29612957984
+
+  # 50-layer ViT-G/14 Perception Encoder  - a different tower from
+  # gemma-4's SigLIP: LayerNorms with bias, NORM-paired 2D rope, window
+  # attention, erf-GELU MLP, channel-outer pixel shuffle.
+  [[model.artifact]]
+  id = "vision"
+  kind = "vision"
+  format = "gguf"
+  label = "Vision (image input)"
+  default = true
+
+    [[model.artifact.file]]
+    url = "https://models.truespar.io/models/Muse-Glimmer-30B-GGUF/mmproj-Muse-Glimmer-30B-BF16.gguf"
+    dest = "Muse-Glimmer-30B-GGUF/mmproj-Muse-Glimmer-30B-BF16.gguf"
+    sha256 = "d08cdcfa0b41d8e20554b52df404ba4f7b440d0bc502a90038508b6407df8ee1"
+    size = 3849173728
+
+  # DFlash block-diffusion drafters (5 layers over the target's own hidden
+  # states). Meta ships them; muse has no in-file MTP, so speculation needs
+  # one. Two versions are catalogued because both are supported, and v2 is the
+  # better default: the whole difference between them lives at concurrency 1.
+  # The batched rungs tie because the engagement cap keeps the drafter idle
+  # there, so which version is attached cannot matter. v2 wins the unbatched
+  # case for +14 MB resident, hence the default.
+  #
+  # Speculation is LOSSLESS, so these two produce identical output and differ
+  # only in speed - which is why they are two artifacts of one model and not
+  # two models.
+  # Upstream: z-lab/Muse-Glimmer-30B-DFlash2-GGUF, file
+  # Muse-Glimmer-30B-DFlash2-Q4_K_M.gguf. Verified identical to what we mirror,
+  # not assumed: HF's x-linked-etag (the LFS sha256) is
+  # 93dbfb6f88e4645dec1347cf93f9d6fc80b90d413038722385b2a8e53565c949 and its
+  # x-linked-size 1645657280 - both match the bytes below exactly. The name
+  # differs only because this tree's drafters are named by role, as DFlash1's
+  # dflash-kquant.gguf already is.
+  [[model.artifact]]
+  id = "drafter2"
+  kind = "drafter"
+  format = "gguf"
+  label = "Faster generation (DFlash2)"
+  default = true
+
+    [[model.artifact.file]]
+    url = "https://models.truespar.io/models/Muse-Glimmer-30B-GGUF/dflash2-Q4_K_M.gguf"
+    dest = "Muse-Glimmer-30B-GGUF/dflash2-Q4_K_M.gguf"
+    sha256 = "93dbfb6f88e4645dec1347cf93f9d6fc80b90d413038722385b2a8e53565c949"
+    size = 1645657280
+
+  [[model.artifact]]
+  id = "drafter"
+  kind = "drafter"
+  format = "gguf"
+  label = "Faster generation (DFlash1)"
+  default = false
+
+    [[model.artifact.file]]
+    url = "https://models.truespar.io/models/Muse-Glimmer-30B-GGUF/dflash-kquant.gguf"
+    dest = "Muse-Glimmer-30B-GGUF/dflash-kquant.gguf"
+    sha256 = "27d9a805fa29b943cfb6ad4843367cd4eaaaf06bd452d8cc3e00a2cd18a677bc"
+    size = 1631205312
+
+# ── NVIDIA's hybrid mamba/attention MoE  ──────────────────────────
+#
+# 52 layers, but only SIX of them are attention - the other 46 are mamba-2
+# mixers and MoE blocks. That is why the context number is not a typo and not
+# expensive: the paged KV pool for a 32-slot server at 4K ctx is 0.40 GiB,
+# because there are only six layers to page. What the model pins instead is
+# recurrent state, and that is what `workspace` below carries.
+#
+# Weights are NVIDIA's own NVFP4 export (modelopt), MIXED_PRECISION: the expert
+# and FFN planes are NVFP4, the mamba `in_proj`/`out_proj` planes are FP8, and
+# the KV quant algo is FP8. The engine serves the checkpoint directory itself
+# (--model <dir>), not a GGUF conversion.
+[[model]]
+id = "nemotron-3.5-lightning-30b"
+mtp_in_file = true
+vendor = "NVIDIA"
+display = "Nemotron 3.5 Lightning 30B-A3B"
+family = "nemotron-h"
+capability = ["chat", "tools", "reasoning", "speculative"]
+license = "openmdw-1.1"
+revision = "2026-08-18"
+
+  [model.specs]
+  params = "30B total, 3B active"
+  context = "1M"
+  homepage = "https://huggingface.co/nvidia/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-NVFP4"
+  about = "NVIDIA's hybrid reasoning model - mostly mamba layers with a few attention layers, so long conversations stay cheap instead of getting slower the further they go."
+  strengths = [
+    "Very long context without the usual memory cost - only 6 of 52 layers page a KV cache",
+    "Thinks before answering, and calls tools",
+    "3B active parameters out of 30B - answers at a small model's speed",
+  ]
+  tradeoffs = [
+    "On cards older than Ada it answers one request at a time - serving several at once needs FP8 hardware",
+    "Holds ~1.8 GB of recurrent state beyond the weights at 32 slots",
+    "Reasoning output is verbose unless you ask it to be brief",
+  ]
+
+  [[model.artifact]]
+  id = "q8"
+  kind = "weights"
+  format = "gguf"
+  label = "Full quality"
+  quant = "Q8_0"
+  default = true
+  # No min_cc: the Q8_0 lane is the int8 dp4a ladder, which every generation we
+  # serve has. Verified live on an RTX A6000 (sm_86) - loads in ~20 s, 33.11
+  # GiB resident measured by bracketing nvidia-smi across the run. sm_86
+  # cannot batch this model (the batch lane needs f8row_gemm,
+  # i.e. FP8, i.e. sm_89+) so it serves serially there - which is a concurrency
+  # limit, not a fit limit, and the tradeoffs line says so.
+  #
+  # Same workspace as the NVFP4 arm: the mamba arenas are f32 and sized by SLOT
+  # COUNT, not by weight quant, so the figure does not move with the format.
+  workspace = 1899342848
+
+  [model.artifact.shape]
+  weight_bytes = 34997444864
+  kind = "generative"
+  vocab = 131072
+  max_ctx = 1048576
+  nextn_bytes = 1419146240
+  source = "measured"
+  kv_layers = [
+    { k_dim = 256, v_dim = 256, count = 6 },
+  ]
+
+    [model.artifact.shape.recurrent]
+    layers = 46
+    state_elems = 1048576
+    conv_elems = 30720
+    conv_dim = 10240
+    elem_bytes = 4
+
+    [[model.artifact.file]]
+    url = "https://models.truespar.io/models/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-GGUF/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-Q8_0.gguf"
+    dest = "NVIDIA-Nemotron-3.5-Lightning-30B-A3B-GGUF/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-Q8_0.gguf"
+    sha256 = "dc5276dd0619c04e277504d2358a793e31ccbe39e894d767d0d14f2a221e2ca4"
+    size = 35004643392
+
+  [[model.artifact]]
+  id = "nvfp4"
+  kind = "weights"
+  format = "safetensors"
+  label = "Compact (Blackwell)"
+  quant = "NVFP4"
+  default = false
+  # sm_120a or better, same reason as the Qwen3.8 NVFP4 artifact: the W4A16
+  # nvf4 consumers compile under PD_BS_OK (__CUDA_ARCH__ >= 1200 && SM120_ALL).
+  # The floor is a KERNEL fact, not a format one - NVFP4 is a storage format and
+  # the scalar GEMV that reads it carries no Blackwell-only instruction (see
+  # packs/cuda/). When the nvf4->f8w8 bridge lands this
+  # drops to [8, 9] and the label loses its parenthetical, because Ada and
+  # Hopper are exactly the cards that have FP8 to unpack into.
+  min_cc = [12, 0]
+  # Device bytes pinned BEYOND the file bytes at the default 32 slots, computed
+  # from the engine's own sizing (gpu_model/nemotron/batch.rs): per-slot mamba
+  # arenas 1,597,767,680 + serving scratch 301,575,168. Reproduces the loader's
+  # own report to the rounding (2.17 vs the logged 2.18 GiB once the 0.40 GiB
+  # KV pool the estimator prices separately is added back). The arenas dominate
+  # and scale with SLOTS, not with context - the opposite of a KV cache.
+  workspace = 1899342848
+
+    [[model.artifact.file]]
+    url = "https://models.truespar.io/models/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-NVFP4/model-00001-of-00052.safetensors"
+    dest = "NVIDIA-Nemotron-3.5-Lightning-30B-A3B-NVFP4/model-00001-of-00052.safetensors"
+    sha256 = "672c8bda10fdec0256e0819e112d2aa3a936cc3e5d311a05fd3ff773ca9a44b9"
+    size = 743427168
+
+    [[model.artifact.file]]
+    url = "https://models.truespar.io/models/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-NVFP4/model-00002-of-00052.safetensors"
+    dest = "NVIDIA-Nemotron-3.5-Lightning-30B-A3B-NVFP4/model-00002-of-00052.safetensors"
+    sha256 = "b365ac815ea78b159c4c6b27be77f2ab24be3ce67f7f4017eb3ada2e81a27f4f"
+    size = 731109880
+
+    [[model.artifact.file]]
+    url = "https://models.truespar.io/models/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-NVFP4/model-00003-of-00052.safetensors"
+    dest = "NVIDIA-Nemotron-3.5-Lightning-30B-A3B-NVFP4/model-00003-of-00052.safetensors"
+    sha256 = "8fbad8247cd4d256a6d376259b83b06972e8d0d00eae1718c7852856343f204b"
+    size = 38783920
+
+    [[model.artifact.file]]
+    url = "https://models.truespar.io/models/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-NVFP4/model-00004-of-00052.safetensors"
+    dest = "NVIDIA-Nemotron-3.5-Lightning-30B-A3B-NVFP4/model-00004-of-00052.safetensors"
+    sha256 = "243a94b1f2b3a3790ff53c151effe116a141539045804df20c005a8c5d0de96f"
+    size = 731109880
+
+    [[model.artifact.file]]
+    url = "https://models.truespar.io/models/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-NVFP4/model-00005-of-00052.safetensors"
+    dest = "NVIDIA-Nemotron-3.5-Lightning-30B-A3B-NVFP4/model-00005-of-00052.safetensors"
+    sha256 = "e675767a474777e76e7a3b61d30fa70812db34415f76385c17aaf25aab82d398"
+    size = 38783920
+
+    [[model.artifact.file]]
+    url = "https://models.truespar.io/models/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-NVFP4/model-00006-of-00052.safetensors"
+    dest = "NVIDIA-Nemotron-3.5-Lightning-30B-A3B-NVFP4/model-00006-of-00052.safetensors"
+    sha256 = "8f8e9623934bc82a4a2af18af83888ce79bbdee4f506cda08375d4ab3435cbd1"
+    size = 46798848
+
+    [[model.artifact.file]]
+    url = "https://models.truespar.io/models/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-NVFP4/model-00007-of-00052.safetensors"
+    dest = "NVIDIA-Nemotron-3.5-Lightning-30B-A3B-NVFP4/model-00007-of-00052.safetensors"
+    sha256 = "306aee6514a7daf559a771ce0c29fafc6de70036c30cf6208c3844283694eff3"
+    size = 731109880
+
+    [[model.artifact.file]]
+    url = "https://models.truespar.io/models/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-NVFP4/model-00008-of-00052.safetensors"
+    dest = "NVIDIA-Nemotron-3.5-Lightning-30B-A3B-NVFP4/model-00008-of-00052.safetensors"
+    sha256 = "31235989ff64cae4d75b73a713d1acbc5205bd050bb1aeb5e573b553d07a0b45"
+    size = 38783920
+
+    [[model.artifact.file]]
+    url = "https://models.truespar.io/models/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-NVFP4/model-00009-of-00052.safetensors"
+    dest = "NVIDIA-Nemotron-3.5-Lightning-30B-A3B-NVFP4/model-00009-of-00052.safetensors"
+    sha256 = "bcd6b2645a6b23588e721432745a1a159870087037a1f937db20f2a85e14dc7f"
+    size = 731109880
+
+    [[model.artifact.file]]
+    url = "https://models.truespar.io/models/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-NVFP4/model-00010-of-00052.safetensors"
+    dest = "NVIDIA-Nemotron-3.5-Lightning-30B-A3B-NVFP4/model-00010-of-00052.safetensors"
+    sha256 = "5fae7d86c34396c2da17f6ebd3b912c29c81370f61266d42bc88c91875a4d783"
+    size = 38783920
+
+    [[model.artifact.file]]
+    url = "https://models.truespar.io/models/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-NVFP4/model-00011-of-00052.safetensors"
+    dest = "NVIDIA-Nemotron-3.5-Lightning-30B-A3B-NVFP4/model-00011-of-00052.safetensors"
+    sha256 = "10237b58cd289cc6dd7609e48a7606bd5a120050dc3f189621d99d23c52566ab"
+    size = 731110656
+
+    [[model.artifact.file]]
+    url = "https://models.truespar.io/models/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-NVFP4/model-00012-of-00052.safetensors"
+    dest = "NVIDIA-Nemotron-3.5-Lightning-30B-A3B-NVFP4/model-00012-of-00052.safetensors"
+    sha256 = "dfa4a2312fc9943eee6ba8558b8f4d748ed20e5032d3a04a821f29844cb4f2e4"
+    size = 38783936
+
+    [[model.artifact.file]]
+    url = "https://models.truespar.io/models/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-NVFP4/model-00013-of-00052.safetensors"
+    dest = "NVIDIA-Nemotron-3.5-Lightning-30B-A3B-NVFP4/model-00013-of-00052.safetensors"
+    sha256 = "41feb27e33765c985a28f8aca69440a9aaa39db0bdf632c065cc49ee0f5a8fa7"
+    size = 46798856
+
+    [[model.artifact.file]]
+    url = "https://models.truespar.io/models/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-NVFP4/model-00014-of-00052.safetensors"
+    dest = "NVIDIA-Nemotron-3.5-Lightning-30B-A3B-NVFP4/model-00014-of-00052.safetensors"
+    sha256 = "16653126b2716c7b8d402024e5fb3ce6eb052422d45d83a5f3e486f066fd30cc"
+    size = 731110656
+
+    [[model.artifact.file]]
+    url = "https://models.truespar.io/models/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-NVFP4/model-00015-of-00052.safetensors"
+    dest = "NVIDIA-Nemotron-3.5-Lightning-30B-A3B-NVFP4/model-00015-of-00052.safetensors"
+    sha256 = "1016d76b1b0dad48f5b38e97c2def67aac446a582aed849f14533d988047fe34"
+    size = 38783936
+
+    [[model.artifact.file]]
+    url = "https://models.truespar.io/models/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-NVFP4/model-00016-of-00052.safetensors"
+    dest = "NVIDIA-Nemotron-3.5-Lightning-30B-A3B-NVFP4/model-00016-of-00052.safetensors"
+    sha256 = "70aaec01374fea7dddc0e006f4ae91e1a4cd09b9f77a36b8ba48e5189288419f"
+    size = 731110656
+
+    [[model.artifact.file]]
+    url = "https://models.truespar.io/models/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-NVFP4/model-00017-of-00052.safetensors"
+    dest = "NVIDIA-Nemotron-3.5-Lightning-30B-A3B-NVFP4/model-00017-of-00052.safetensors"
+    sha256 = "67763384429d40a0142b4b1d02c6a171a493a4d0c57086d38e2436ac05d33a86"
+    size = 38783936
+
+    [[model.artifact.file]]
+    url = "https://models.truespar.io/models/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-NVFP4/model-00018-of-00052.safetensors"
+    dest = "NVIDIA-Nemotron-3.5-Lightning-30B-A3B-NVFP4/model-00018-of-00052.safetensors"
+    sha256 = "252e3fb2e6c37d1b41f49463607d928e39c96fe0eb499768cc2fe42d9bfffe8e"
+    size = 731110656
+
+    [[model.artifact.file]]
+    url = "https://models.truespar.io/models/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-NVFP4/model-00019-of-00052.safetensors"
+    dest = "NVIDIA-Nemotron-3.5-Lightning-30B-A3B-NVFP4/model-00019-of-00052.safetensors"
+    sha256 = "3fd080a21df9cda2793957c3b7a3699b7356753cb6a6e519e3299303c4e004ab"
+    size = 38783936
+
+    [[model.artifact.file]]
+    url = "https://models.truespar.io/models/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-NVFP4/model-00020-of-00052.safetensors"
+    dest = "NVIDIA-Nemotron-3.5-Lightning-30B-A3B-NVFP4/model-00020-of-00052.safetensors"
+    sha256 = "31dada97bfd50ecd0fee51aea0272fb75d6a6dc6303022cb6defb7e55dfbaf8d"
+    size = 46798856
+
+    [[model.artifact.file]]
+    url = "https://models.truespar.io/models/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-NVFP4/model-00021-of-00052.safetensors"
+    dest = "NVIDIA-Nemotron-3.5-Lightning-30B-A3B-NVFP4/model-00021-of-00052.safetensors"
+    sha256 = "601a05eb0b228da1cbc5883f955cbb5a38f1379401501926a7576aebdfd757da"
+    size = 731110656
+
+    [[model.artifact.file]]
+    url = "https://models.truespar.io/models/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-NVFP4/model-00022-of-00052.safetensors"
+    dest = "NVIDIA-Nemotron-3.5-Lightning-30B-A3B-NVFP4/model-00022-of-00052.safetensors"
+    sha256 = "4b3eb401a3152e9a392840e56ceaf29d5fba4b952cc7a38ef5ec72849ffd45ab"
+    size = 38783936
+
+    [[model.artifact.file]]
+    url = "https://models.truespar.io/models/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-NVFP4/model-00023-of-00052.safetensors"
+    dest = "NVIDIA-Nemotron-3.5-Lightning-30B-A3B-NVFP4/model-00023-of-00052.safetensors"
+    sha256 = "1f92f9b4bc06f33f18db2cee651ffa868374b54dc3d3ad8ea88d8f222507d8d7"
+    size = 731110656
+
+    [[model.artifact.file]]
+    url = "https://models.truespar.io/models/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-NVFP4/model-00024-of-00052.safetensors"
+    dest = "NVIDIA-Nemotron-3.5-Lightning-30B-A3B-NVFP4/model-00024-of-00052.safetensors"
+    sha256 = "64d36b45162fd22d57934962e00fa6b6c19a8ef9f36dc1fce1940d876ce28283"
+    size = 38783936
+
+    [[model.artifact.file]]
+    url = "https://models.truespar.io/models/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-NVFP4/model-00025-of-00052.safetensors"
+    dest = "NVIDIA-Nemotron-3.5-Lightning-30B-A3B-NVFP4/model-00025-of-00052.safetensors"
+    sha256 = "1d8f5436a1e7c34e8644e4db0331d58ba75c8c9997f1dfed0b1797ce5d87e9fd"
+    size = 731110656
+
+    [[model.artifact.file]]
+    url = "https://models.truespar.io/models/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-NVFP4/model-00026-of-00052.safetensors"
+    dest = "NVIDIA-Nemotron-3.5-Lightning-30B-A3B-NVFP4/model-00026-of-00052.safetensors"
+    sha256 = "97e410e491888aa263a4a1ec42b8dd5c25b4869a209ff1da6ec2c20592db5a97"
+    size = 38783936
+
+    [[model.artifact.file]]
+    url = "https://models.truespar.io/models/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-NVFP4/model-00027-of-00052.safetensors"
+    dest = "NVIDIA-Nemotron-3.5-Lightning-30B-A3B-NVFP4/model-00027-of-00052.safetensors"
+    sha256 = "e67fb58638bf00b010323ad702be58addf95ac2c89ba4006b7d00cbf8bab2b7f"
+    size = 46798856
+
+    [[model.artifact.file]]
+    url = "https://models.truespar.io/models/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-NVFP4/model-00028-of-00052.safetensors"
+    dest = "NVIDIA-Nemotron-3.5-Lightning-30B-A3B-NVFP4/model-00028-of-00052.safetensors"
+    sha256 = "1800ab07214a1746f26a01e575e0c979d129a9bce1f3ce030e11b38d40bda72b"
+    size = 731110656
+
+    [[model.artifact.file]]
+    url = "https://models.truespar.io/models/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-NVFP4/model-00029-of-00052.safetensors"
+    dest = "NVIDIA-Nemotron-3.5-Lightning-30B-A3B-NVFP4/model-00029-of-00052.safetensors"
+    sha256 = "045dc61dc334cad87fdd227515739ba22ea04f9e6e0f9624b40a6ff1e146553a"
+    size = 38783936
+
+    [[model.artifact.file]]
+    url = "https://models.truespar.io/models/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-NVFP4/model-00030-of-00052.safetensors"
+    dest = "NVIDIA-Nemotron-3.5-Lightning-30B-A3B-NVFP4/model-00030-of-00052.safetensors"
+    sha256 = "794679784bde068d4d812b824595efcd87ea4fa64168af18e1295d60ad6cfa89"
+    size = 731110656
+
+    [[model.artifact.file]]
+    url = "https://models.truespar.io/models/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-NVFP4/model-00031-of-00052.safetensors"
+    dest = "NVIDIA-Nemotron-3.5-Lightning-30B-A3B-NVFP4/model-00031-of-00052.safetensors"
+    sha256 = "727bb1bf4829360596a2845ee2730536408c4f52b322fffd8afc6bd972de5e3f"
+    size = 38783936
+
+    [[model.artifact.file]]
+    url = "https://models.truespar.io/models/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-NVFP4/model-00032-of-00052.safetensors"
+    dest = "NVIDIA-Nemotron-3.5-Lightning-30B-A3B-NVFP4/model-00032-of-00052.safetensors"
+    sha256 = "cc68cfd7f1e805422e6ab224638b115754adc3a84bdedebc71a4ee7b52159e0a"
+    size = 731110656
+
+    [[model.artifact.file]]
+    url = "https://models.truespar.io/models/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-NVFP4/model-00033-of-00052.safetensors"
+    dest = "NVIDIA-Nemotron-3.5-Lightning-30B-A3B-NVFP4/model-00033-of-00052.safetensors"
+    sha256 = "ee8d3fc76401172bdcb6fe4ad3b08ed8a9f0bc6e28a86bc6757a0998b27569a0"
+    size = 38783936
+
+    [[model.artifact.file]]
+    url = "https://models.truespar.io/models/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-NVFP4/model-00034-of-00052.safetensors"
+    dest = "NVIDIA-Nemotron-3.5-Lightning-30B-A3B-NVFP4/model-00034-of-00052.safetensors"
+    sha256 = "90c579b134e5b929903e7c8e897970109bb11574bcf50fceb72c65884388bae1"
+    size = 46798856
+
+    [[model.artifact.file]]
+    url = "https://models.truespar.io/models/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-NVFP4/model-00035-of-00052.safetensors"
+    dest = "NVIDIA-Nemotron-3.5-Lightning-30B-A3B-NVFP4/model-00035-of-00052.safetensors"
+    sha256 = "d6b9441c3fb72f5d13dfb8dfc410c0c176d94217d2a7626d3fd96c4db31ac134"
+    size = 731110656
+
+    [[model.artifact.file]]
+    url = "https://models.truespar.io/models/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-NVFP4/model-00036-of-00052.safetensors"
+    dest = "NVIDIA-Nemotron-3.5-Lightning-30B-A3B-NVFP4/model-00036-of-00052.safetensors"
+    sha256 = "130ee06f0ba0c8e760b7c57ae671458446ad8fd71548198d0005e8e553ba10a9"
+    size = 38783936
+
+    [[model.artifact.file]]
+    url = "https://models.truespar.io/models/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-NVFP4/model-00037-of-00052.safetensors"
+    dest = "NVIDIA-Nemotron-3.5-Lightning-30B-A3B-NVFP4/model-00037-of-00052.safetensors"
+    sha256 = "7464b7b51237bd66e5469fc4cb67f10d7b490af34d16670d57b102a3cfec6754"
+    size = 731110656
+
+    [[model.artifact.file]]
+    url = "https://models.truespar.io/models/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-NVFP4/model-00038-of-00052.safetensors"
+    dest = "NVIDIA-Nemotron-3.5-Lightning-30B-A3B-NVFP4/model-00038-of-00052.safetensors"
+    sha256 = "1a0ab61ef65a02dbf8455da1feb5eb059ff064bf04ce9d9db5216d0c849383f5"
+    size = 38783936
+
+    [[model.artifact.file]]
+    url = "https://models.truespar.io/models/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-NVFP4/model-00039-of-00052.safetensors"
+    dest = "NVIDIA-Nemotron-3.5-Lightning-30B-A3B-NVFP4/model-00039-of-00052.safetensors"
+    sha256 = "9f31f2fa95027f718a91c731b4537172576c05db6f8ac05ff3d17de7b4c27219"
+    size = 731110656
+
+    [[model.artifact.file]]
+    url = "https://models.truespar.io/models/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-NVFP4/model-00040-of-00052.safetensors"
+    dest = "NVIDIA-Nemotron-3.5-Lightning-30B-A3B-NVFP4/model-00040-of-00052.safetensors"
+    sha256 = "407f0e74455eb7050e6125f346c8434d4341ff07730cc670bc482b47f59521dc"
+    size = 38783936
+
+    [[model.artifact.file]]
+    url = "https://models.truespar.io/models/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-NVFP4/model-00041-of-00052.safetensors"
+    dest = "NVIDIA-Nemotron-3.5-Lightning-30B-A3B-NVFP4/model-00041-of-00052.safetensors"
+    sha256 = "4e8442377f265c009f6f82cf07447cc735385db6a673507ec61e1228c6e1b324"
+    size = 731110656
+
+    [[model.artifact.file]]
+    url = "https://models.truespar.io/models/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-NVFP4/model-00042-of-00052.safetensors"
+    dest = "NVIDIA-Nemotron-3.5-Lightning-30B-A3B-NVFP4/model-00042-of-00052.safetensors"
+    sha256 = "85ca012bff38fbbcb1171ea1d134d60db2bdeaf12e53f1b4e8cf6e36eaf319a3"
+    size = 38783936
+
+    [[model.artifact.file]]
+    url = "https://models.truespar.io/models/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-NVFP4/model-00043-of-00052.safetensors"
+    dest = "NVIDIA-Nemotron-3.5-Lightning-30B-A3B-NVFP4/model-00043-of-00052.safetensors"
+    sha256 = "01c56b23b7ea692675bc6f5f77b2a4959a51091435befd41428527f7128ea18f"
+    size = 46798856
+
+    [[model.artifact.file]]
+    url = "https://models.truespar.io/models/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-NVFP4/model-00044-of-00052.safetensors"
+    dest = "NVIDIA-Nemotron-3.5-Lightning-30B-A3B-NVFP4/model-00044-of-00052.safetensors"
+    sha256 = "a3ebcaf00a08bc25f838d255e1ca78f7a518dd5dd529d7d6199e3be27663b8dd"
+    size = 731110656
+
+    [[model.artifact.file]]
+    url = "https://models.truespar.io/models/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-NVFP4/model-00045-of-00052.safetensors"
+    dest = "NVIDIA-Nemotron-3.5-Lightning-30B-A3B-NVFP4/model-00045-of-00052.safetensors"
+    sha256 = "e9d559259cb0ff6043d25e94c11607f8a8057c7646763b0cb69c38b457840028"
+    size = 38783936
+
+    [[model.artifact.file]]
+    url = "https://models.truespar.io/models/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-NVFP4/model-00046-of-00052.safetensors"
+    dest = "NVIDIA-Nemotron-3.5-Lightning-30B-A3B-NVFP4/model-00046-of-00052.safetensors"
+    sha256 = "5e5cfe7a6e504ec49e1672a0c28dc14c1fd270b01740d6152e85932e9f2a2439"
+    size = 731110656
+
+    [[model.artifact.file]]
+    url = "https://models.truespar.io/models/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-NVFP4/model-00047-of-00052.safetensors"
+    dest = "NVIDIA-Nemotron-3.5-Lightning-30B-A3B-NVFP4/model-00047-of-00052.safetensors"
+    sha256 = "96ffe8358c3e8303b16dbe43f5016ff4e2dd84d633d53e20a4f93a1e8356f7e7"
+    size = 38783936
+
+    [[model.artifact.file]]
+    url = "https://models.truespar.io/models/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-NVFP4/model-00048-of-00052.safetensors"
+    dest = "NVIDIA-Nemotron-3.5-Lightning-30B-A3B-NVFP4/model-00048-of-00052.safetensors"
+    sha256 = "1dcdf08d0f47ac4378dc288e7f5426d8d1ab4d214a299613a967d50e7ab5d587"
+    size = 731110656
+
+    [[model.artifact.file]]
+    url = "https://models.truespar.io/models/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-NVFP4/model-00049-of-00052.safetensors"
+    dest = "NVIDIA-Nemotron-3.5-Lightning-30B-A3B-NVFP4/model-00049-of-00052.safetensors"
+    sha256 = "25da4593995db643b74d5ab71bd0618a0d7158ddad12bec8956866afb1b8fea5"
+    size = 38783936
+
+    [[model.artifact.file]]
+    url = "https://models.truespar.io/models/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-NVFP4/model-00050-of-00052.safetensors"
+    dest = "NVIDIA-Nemotron-3.5-Lightning-30B-A3B-NVFP4/model-00050-of-00052.safetensors"
+    sha256 = "ef5b1baa53abc6b6dfa24618ecbb3eac8a783dbfde456d8943d82f912f3c4d44"
+    size = 731110656
+
+    [[model.artifact.file]]
+    url = "https://models.truespar.io/models/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-NVFP4/model-00051-of-00052.safetensors"
+    dest = "NVIDIA-Nemotron-3.5-Lightning-30B-A3B-NVFP4/model-00051-of-00052.safetensors"
+    sha256 = "2da1f6cbbcfb36bf96bda840fc1442fb661262ed77c33be9e6d001301a684a1e"
+    size = 38783936
+
+    [[model.artifact.file]]
+    url = "https://models.truespar.io/models/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-NVFP4/model-00052-of-00052.safetensors"
+    dest = "NVIDIA-Nemotron-3.5-Lightning-30B-A3B-NVFP4/model-00052-of-00052.safetensors"
+    sha256 = "85db447be6acf54d029665874440e19e4a3fad3f75c1db7e703c3442e3c13d2c"
+    size = 3599984132
+
+    [[model.artifact.file]]
+    url = "https://models.truespar.io/models/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-NVFP4/chat_template.jinja"
+    dest = "NVIDIA-Nemotron-3.5-Lightning-30B-A3B-NVFP4/chat_template.jinja"
+    sha256 = "58933db77d3099b4f78c55a38347a72e1ea05b97d6bd8f38775303dc0194e0a9"
+    size = 9867
+
+    [[model.artifact.file]]
+    url = "https://models.truespar.io/models/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-NVFP4/config.json"
+    dest = "NVIDIA-Nemotron-3.5-Lightning-30B-A3B-NVFP4/config.json"
+    sha256 = "f1d98b530846087dc08b574a219713a94f945bf6583dc7230a19ebf1e8c50933"
+    size = 1337760
+
+    [[model.artifact.file]]
+    url = "https://models.truespar.io/models/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-NVFP4/generation_config.json"
+    dest = "NVIDIA-Nemotron-3.5-Lightning-30B-A3B-NVFP4/generation_config.json"
+    sha256 = "c67c90fcadf0e7ef78b663eb159664b36a35ffb9dd2523096e226e5c3d1b0e5f"
+    size = 209
+
+    [[model.artifact.file]]
+    url = "https://models.truespar.io/models/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-NVFP4/hf_quant_config.json"
+    dest = "NVIDIA-Nemotron-3.5-Lightning-30B-A3B-NVFP4/hf_quant_config.json"
+    sha256 = "529a5a524399ff5b68aabf8564db60b2fc62ad0a84b9c5038efc220c375e0938"
+    size = 928085
+
+    [[model.artifact.file]]
+    url = "https://models.truespar.io/models/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-NVFP4/special_tokens_map.json"
+    dest = "NVIDIA-Nemotron-3.5-Lightning-30B-A3B-NVFP4/special_tokens_map.json"
+    sha256 = "e9435fefd6d838fd9fcbbc44b97a8e3ff322be7f6dfb7e4fd2468586574bb52b"
+    size = 563
+
+    [[model.artifact.file]]
+    url = "https://models.truespar.io/models/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-NVFP4/tokenizer.json"
+    dest = "NVIDIA-Nemotron-3.5-Lightning-30B-A3B-NVFP4/tokenizer.json"
+    sha256 = "623c34567aebb18582765289fbe23d901c62704d6518d71866e0e58db892b5b7"
+    size = 17077484
+
+    [[model.artifact.file]]
+    url = "https://models.truespar.io/models/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-NVFP4/tokenizer_config.json"
+    dest = "NVIDIA-Nemotron-3.5-Lightning-30B-A3B-NVFP4/tokenizer_config.json"
+    sha256 = "10f93eabcb9b1602fbb991d6308e787ce1df28ee9cd7a1c6d1e8c3f338b957bc"
+    size = 177209
+
+    [[model.artifact.file]]
+    url = "https://models.truespar.io/models/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-NVFP4/LICENSE"
+    dest = "NVIDIA-Nemotron-3.5-Lightning-30B-A3B-NVFP4/LICENSE"
+    sha256 = "d7c8a9e5d1896d0a9588319cc7b1433e64645ad6d9e55632c30b78d8c038c23b"
+    size = 2693
+
+    [[model.artifact.file]]
+    url = "https://models.truespar.io/models/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-NVFP4/README.md"
+    dest = "NVIDIA-Nemotron-3.5-Lightning-30B-A3B-NVFP4/README.md"
+    sha256 = "6a1621eae3fc3a4c5bf9fc1511af29eccbaaf9a42d2e0a754ecc28e047a743a2"
+    size = 89482
+
+    [[model.artifact.file]]
+    url = "https://models.truespar.io/models/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-NVFP4/accuracy_plot.png"
+    dest = "NVIDIA-Nemotron-3.5-Lightning-30B-A3B-NVFP4/accuracy_plot.png"
+    sha256 = "feecce07c67ac1ba7bf57f9d3b31bb819211b8da60f547287bdfce4376091ec4"
+    size = 140266
+
+    [[model.artifact.file]]
+    url = "https://models.truespar.io/models/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-NVFP4/agentic_coding_benchmarks.png"
+    dest = "NVIDIA-Nemotron-3.5-Lightning-30B-A3B-NVFP4/agentic_coding_benchmarks.png"
+    sha256 = "06cf5486ae94ecd7cc6f91ae3b4bae21c7435253a294cb89f54f7ec42eda8847"
+    size = 219966
+
+    [[model.artifact.file]]
+    url = "https://models.truespar.io/models/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-NVFP4/bias.md"
+    dest = "NVIDIA-Nemotron-3.5-Lightning-30B-A3B-NVFP4/bias.md"
+    sha256 = "c5cedf15a6a2d14d73d3aedb1514462c5f55ed3539e6e0e7e08a75e0f99d694e"
+    size = 3263
+
+    [[model.artifact.file]]
+    url = "https://models.truespar.io/models/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-NVFP4/explainability.md"
+    dest = "NVIDIA-Nemotron-3.5-Lightning-30B-A3B-NVFP4/explainability.md"
+    sha256 = "0633d9f3519170f88ea7e3f0447d58b9674260216b8454d8a80e8f42abef2d5e"
+    size = 2699
+
+    [[model.artifact.file]]
+    url = "https://models.truespar.io/models/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-NVFP4/model.safetensors.index.json"
+    dest = "NVIDIA-Nemotron-3.5-Lightning-30B-A3B-NVFP4/model.safetensors.index.json"
+    sha256 = "3c3bc7efa8d658c2e909a0b9020eb0f72064e6647de348856af4dee9895bead9"
+    size = 1905918
+
+    [[model.artifact.file]]
+    url = "https://models.truespar.io/models/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-NVFP4/privacy.md"
+    dest = "NVIDIA-Nemotron-3.5-Lightning-30B-A3B-NVFP4/privacy.md"
+    sha256 = "8d7bcc6314e4f68809385c62bcfcb543023b9ed6e5eb0de6e263683510713ece"
+    size = 828
+
+    [[model.artifact.file]]
+    url = "https://models.truespar.io/models/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-NVFP4/safety.md"
+    dest = "NVIDIA-Nemotron-3.5-Lightning-30B-A3B-NVFP4/safety.md"
+    sha256 = "60f74211be1d81624807ca626462778610960cf20adc989140118da37d80a86b"
+    size = 2145
+
+  # NVIDIA's own DFlash drafter for this checkpoint, attached with --mtp. The
+  # in-file mtp.* planes are bf16 - a residency class the NVFP4 expert enums do
+  # not carry - so DFlash is the NVFP4 lane's drafter (nemotron/load.rs).
+  # Not default: speculation is a user toggle, it costs VRAM, and its
+  # acceptance on this lane measured 33.6% .
+  [[model.artifact]]
+  id = "dflash"
+  kind = "drafter"
+  format = "safetensors"
+  label = "Speed boost (draft model)"
+  default = false
+
+    [[model.artifact.file]]
+    url = "https://models.truespar.io/models/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-NVFP4-DFlash/model.safetensors"
+    dest = "NVIDIA-Nemotron-3.5-Lightning-30B-A3B-NVFP4-DFlash/model.safetensors"
+    sha256 = "8759166652c4105f140ab9a65f543a3e229b8f6441933185e4edb0838365660a"
+    size = 1177089556
+
+    [[model.artifact.file]]
+    url = "https://models.truespar.io/models/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-NVFP4-DFlash/config.json"
+    dest = "NVIDIA-Nemotron-3.5-Lightning-30B-A3B-NVFP4-DFlash/config.json"
+    sha256 = "562047b6c1a105c48c2698b63fe2daf12eb650f8be37a43ce93cb2899f299b67"
+    size = 1920
+
+    [[model.artifact.file]]
+    url = "https://models.truespar.io/models/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-NVFP4-DFlash/hf_quant_config.json"
+    dest = "NVIDIA-Nemotron-3.5-Lightning-30B-A3B-NVFP4-DFlash/hf_quant_config.json"
+    sha256 = "fdb229960f90164af59be4f4efac3c344460ab98d9e0092f7b4cf6889abbba84"
+    size = 259
+
+    [[model.artifact.file]]
+    url = "https://models.truespar.io/models/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-NVFP4-DFlash/LICENSE"
+    dest = "NVIDIA-Nemotron-3.5-Lightning-30B-A3B-NVFP4-DFlash/LICENSE"
+    sha256 = "8a0c5e232551abcb102d1bd39a34866ef4520361b613bd6405d55b36562e4d88"
+    size = 2618
+
+    [[model.artifact.file]]
+    url = "https://models.truespar.io/models/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-NVFP4-DFlash/README.md"
+    dest = "NVIDIA-Nemotron-3.5-Lightning-30B-A3B-NVFP4-DFlash/README.md"
+    sha256 = "c42ec87a3ae7a2f7ceab356c4e991f68d660be1af8644c7816aa638a013733d5"
+    size = 13786
+
+# ── embeddings ───────────────────────────────────────────────────────────────
+
+[[model]]
+id = "qwen3-embedding-0.6b"
+vendor = "Alibaba"
+display = "Qwen 3 Embedding 0.6B"
+family = "qwen3"
+capability = ["embeddings"]
+license = "apache-2.0"
+revision = "2026-08-01"
+
+  [model.specs]
+  params = "0.6B"
+  context = "32K"
+  dims = "up to 1024 (Matryoshka)"
+  homepage = "https://huggingface.co/Qwen/Qwen3-Embedding-0.6B"
+  about = "Turns text into vectors for search and retrieval - works in 100+ languages."
+  strengths = [
+    "Tiny - 0.6 GB, fits alongside any chat server",
+    "100+ languages · vector size adjustable down from 1024",
+  ]
+  tradeoffs = [
+    "Lowest search quality of the three sizes",
+  ]
+
+  [[model.artifact]]
+  id = "q8"
+  kind = "weights"
+  format = "gguf"
+  label = "Full quality"
+  quant = "Q8_0"
+  default = true
+
+  [model.artifact.shape]
+  weight_bytes = 1254441344
+  kind = "encoder"
+  vocab = 151669
+  max_ctx = 32768
+  nextn_bytes = 0
+  source = "measured"
+  kv_layers = [
+    { k_dim = 1024, v_dim = 1024, count = 28 },
+  ]
+
+    [[model.artifact.file]]
+    url = "https://models.truespar.io/models/Qwen3-Embedding-0.6B-GGUF/Qwen3-Embedding-0.6B-Q8_0.gguf"
+    dest = "Qwen3-Embedding-0.6B-GGUF/Qwen3-Embedding-0.6B-Q8_0.gguf"
+    sha256 = "06507c7b42688469c4e7298b0a1e16deff06caf291cf0a5b278c308249c3e439"
+    size = 639150592
+
+[[model]]
+id = "qwen3-embedding-4b"
+vendor = "Alibaba"
+display = "Qwen 3 Embedding 4B"
+family = "qwen3"
+capability = ["embeddings"]
+license = "apache-2.0"
+revision = "2026-08-01"
+
+  [model.specs]
+  params = "4B"
+  context = "32K"
+  dims = "up to 2560 (Matryoshka)"
+  homepage = "https://huggingface.co/Qwen/Qwen3-Embedding-4B"
+  about = "Turns text into vectors for search and retrieval - works in 100+ languages."
+  strengths = [
+    "The balanced pick - clear search-quality step over 0.6B",
+    "100+ languages · vector size adjustable down from 2560",
+  ]
+  tradeoffs = [
+    "~4 GB of VRAM a chat server can't use",
+  ]
+
+  [[model.artifact]]
+  id = "q8"
+  kind = "weights"
+  format = "gguf"
+  label = "Full quality"
+  quant = "Q8_0"
+  default = true
+
+  [model.artifact.shape]
+  weight_bytes = 5826760992
+  kind = "encoder"
+  vocab = 151665
+  max_ctx = 40960
+  nextn_bytes = 0
+  source = "measured"
+  kv_layers = [
+    { k_dim = 1024, v_dim = 1024, count = 36 },
+  ]
+
+    [[model.artifact.file]]
+    url = "https://models.truespar.io/models/Qwen3-Embedding-4B-GGUF/Qwen3-Embedding-4B-Q8_0.gguf"
+    dest = "Qwen3-Embedding-4B-GGUF/Qwen3-Embedding-4B-Q8_0.gguf"
+    sha256 = "b60ae5ce2dd6a0b77f82cadf21def1f310a3e10cde380ad0081b07a9d416949d"
+    size = 4279660224
+
+[[model]]
+id = "qwen3-embedding-8b"
+vendor = "Alibaba"
+display = "Qwen 3 Embedding 8B"
+family = "qwen3"
+capability = ["embeddings"]
+license = "apache-2.0"
+revision = "2026-08-01"
+
+  [model.specs]
+  params = "8B"
+  context = "32K"
+  dims = "up to 4096 (Matryoshka)"
+  homepage = "https://huggingface.co/Qwen/Qwen3-Embedding-8B"
+  about = "Turns text into vectors for search and retrieval - works in 100+ languages."
+  strengths = [
+    "Best search quality in the line",
+    "100+ languages · vector size adjustable down from 4096",
+  ]
+  tradeoffs = [
+    "~8 GB - for when search quality is the product",
+  ]
+
+  [[model.artifact]]
+  id = "q8"
+  kind = "weights"
+  format = "gguf"
+  label = "Full quality"
+  quant = "Q8_0"
+  default = true
+
+  [model.artifact.shape]
+  weight_bytes = 10526036352
+  kind = "encoder"
+  vocab = 151665
+  max_ctx = 40960
+  nextn_bytes = 0
+  source = "measured"
+  kv_layers = [
+    { k_dim = 1024, v_dim = 1024, count = 36 },
+  ]
+
+    [[model.artifact.file]]
+    url = "https://models.truespar.io/models/Qwen3-Embedding-8B-GGUF/Qwen3-Embedding-8B-Q8_0.gguf"
+    dest = "Qwen3-Embedding-8B-GGUF/Qwen3-Embedding-8B-Q8_0.gguf"
+    sha256 = "d20ddc71e8a5c4344f2343481e242233a997dc5eaff442427a945836c97b4deb"
+    size = 8047105824
+
+# ── rerankers ────────────────────────────────────────────────────────────────
+
+[[model]]
+id = "qwen3-reranker-0.6b"
+vendor = "Alibaba"
+display = "Qwen 3 Reranker 0.6B"
+family = "qwen3"
+capability = ["rerank"]
+license = "apache-2.0"
+revision = "2026-08-01"
+
+  [model.specs]
+  params = "0.6B"
+  context = "32K"
+  homepage = "https://huggingface.co/Qwen/Qwen3-Reranker-0.6B"
+  about = "Scores how well each document answers a query - the precision step after a vector search."
+  strengths = [
+    "Fast scoring - pairs with any embedding model",
+    "0.8 GB - fits alongside anything",
+  ]
+  tradeoffs = [
+    "Weakest ranking of the three sizes",
+  ]
+
+  [[model.artifact]]
+  id = "q8"
+  kind = "weights"
+  format = "gguf"
+  label = "Full quality"
+  quant = "Q8_0"
+  default = true
+
+  [model.artifact.shape]
+  weight_bytes = 1254441344
+  kind = "encoder"
+  vocab = 151669
+  max_ctx = 40960
+  nextn_bytes = 0
+  source = "measured"
+  kv_layers = [
+    { k_dim = 1024, v_dim = 1024, count = 28 },
+  ]
+
+    [[model.artifact.file]]
+    url = "https://models.truespar.io/models/Qwen3-Reranker-0.6B-GGUF/Qwen3-Reranker-0.6B.Q8_0.gguf"
+    dest = "Qwen3-Reranker-0.6B-GGUF/Qwen3-Reranker-0.6B.Q8_0.gguf"
+    sha256 = "48c062151f5a3026f74a2066a37011ff9d7c135ddc8b7c22034b0051257908e9"
+    size = 804166240
+
+[[model]]
+id = "qwen3-reranker-4b"
+vendor = "Alibaba"
+display = "Qwen 3 Reranker 4B"
+family = "qwen3"
+capability = ["rerank"]
+license = "apache-2.0"
+revision = "2026-08-01"
+
+  [model.specs]
+  params = "4B"
+  context = "32K"
+  homepage = "https://huggingface.co/Qwen/Qwen3-Reranker-4B"
+  about = "Scores how well each document answers a query - the precision step after a vector search."
+  strengths = [
+    "The balanced reranking pick - clear quality step over 0.6B",
+  ]
+  tradeoffs = [
+    "~4 GB of VRAM for a scoring model",
+  ]
+
+  [[model.artifact]]
+  id = "q8"
+  kind = "weights"
+  format = "gguf"
+  label = "Full quality"
+  quant = "Q8_0"
+  default = true
+
+  [model.artifact.shape]
+  weight_bytes = 5826812832
+  kind = "encoder"
+  vocab = 151669
+  max_ctx = 40960
+  nextn_bytes = 0
+  source = "measured"
+  kv_layers = [
+    { k_dim = 1024, v_dim = 1024, count = 36 },
+  ]
+
+    [[model.artifact.file]]
+    url = "https://models.truespar.io/models/Qwen3-Reranker-4B-GGUF/Qwen3-Reranker-4B.Q8_0.gguf"
+    dest = "Qwen3-Reranker-4B-GGUF/Qwen3-Reranker-4B.Q8_0.gguf"
+    sha256 = "dbf250820b0bf5474fe9fc0287b0ad8929877c517597a6d975bf989d177f8f38"
+    size = 4279673056
+
+[[model]]
+id = "qwen3-reranker-8b"
+vendor = "Alibaba"
+display = "Qwen 3 Reranker 8B"
+family = "qwen3"
+capability = ["rerank"]
+license = "apache-2.0"
+revision = "2026-08-01"
+
+  [model.specs]
+  params = "8B"
+  context = "32K"
+  homepage = "https://huggingface.co/Qwen/Qwen3-Reranker-8B"
+  about = "Scores how well each document answers a query - the precision step after a vector search."
+  strengths = [
+    "Best ranking quality in the line",
+  ]
+  tradeoffs = [
+    "~8.7 GB - for when ranking quality is the product",
+  ]
+
+  [[model.artifact]]
+  id = "q8"
+  kind = "weights"
+  format = "gguf"
+  label = "Full quality"
+  quant = "Q8_0"
+  default = true
+
+  [model.artifact.shape]
+  weight_bytes = 10526119296
+  kind = "encoder"
+  vocab = 151669
+  max_ctx = 40960
+  nextn_bytes = 0
+  source = "measured"
+  kv_layers = [
+    { k_dim = 1024, v_dim = 1024, count = 36 },
+  ]
+
+    [[model.artifact.file]]
+    url = "https://models.truespar.io/models/Qwen3-Reranker-8B-GGUF/Qwen3-Reranker-8B.Q8_0.gguf"
+    dest = "Qwen3-Reranker-8B-GGUF/Qwen3-Reranker-8B.Q8_0.gguf"
+    sha256 = "ba16c501a74929b6c9f71033420172c028b85e216f8d03bef1c9a758fbf3f71a"
+    size = 8707188736
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Speech-to-text. Four ASR models in two shapes, and the shapes
+# matter to the picker because they cost memory in completely different ways:
+#
+#   Qwen3-ASR is a GENERATIVE model with an AUDIO mmproj - a Qwen3 decoder
+#   that happens to be fed by a speech encoder. Ordinary ctx-scaling KV, plus
+#   a resident tower, exactly like a vision model.
+#
+#   The three whisper fine-tunes are ENCODER-DECODERS with no companion at
+#   all: the audio encoder ships inside the weights file. Their memory is
+#   dominated by a static CROSS-attention cache the decoder holds over the
+#   encoder output - 234 MiB per concurrent transcription at f16, 117 at the
+#   fp8 default - which does not grow with the transcript and does not shrink
+#   for a short clip, because whisper's audio window is a fixed 30 s either
+#   way. probe.rs reads it (`cross_kv`) and the estimator charges it per slot;
+#   before that landed, a whisper file probed as zero kv layers and the picker
+#   would have printed a fit verdict with no cache priced at all.
+#
+# PUBLISHED: every url below was fetched from the origin after
+# upload, and every sha256/size was re-derived from the local file and diffed
+# against this table. (A row can sit as "publish pending" first - real digests,
+# bytes not yet up. That state is honest but temporary, and the
+# check that clears it is fetching the url, not remembering that you ran the
+# uploader.)
+#
+# The three whisper GGUFs are our conversions of the official checkpoints
+# (our whisper converter - llama.cpp's converter cannot do
+# whisper, so the schema is paddock's own). Labeled f16, which is what they
+# are; NB and Røst were downcast from fp32/bf16 respectively at conversion.
+
+[[model]]
+id = "qwen3-asr-1.7b"
+vendor = "Alibaba"
+display = "Qwen3-ASR 1.7B"
+family = "qwen3"
+capability = ["transcription"]
+license = "apache-2.0"
+revision = "2026-08-09"
+
+  [model.specs]
+  params = "1.7B"
+  context = "64K"
+  homepage = "https://huggingface.co/Qwen/Qwen3-ASR-1.7B"
+  about = "Alibaba's compact speech-to-text model - multilingual transcription that runs comfortably on a small card, and the fastest of the four on this hardware."
+  strengths = [
+    "Multilingual out of the box, including Finnish",
+    "Small - 2.8 GB with its speech encoder",
+    "Fastest transcription throughput of the ASR line",
+  ]
+  tradeoffs = [
+    "Speech to text only - not a chat model",
+    "Needs its speech encoder alongside the weights",
+  ]
+
+  [[model.artifact]]
+  id = "q8"
+  kind = "weights"
+  format = "gguf"
+  label = "Full quality"
+  quant = "Q8_0"
+  default = true
+
+  [model.artifact.shape]
+  weight_bytes = 2165035104
+  kind = "generative"
+  vocab = 151936
+  max_ctx = 65536
+  nextn_bytes = 0
+  source = "probed"
+  kv_layers = [
+    { k_dim = 1024, v_dim = 1024, count = 28 },
+  ]
+
+    [[model.artifact.file]]
+    url = "https://models.truespar.io/models/Qwen3-ASR-1.7B-GGUF/Qwen3-ASR-1.7B-Q8_0.gguf"
+    dest = "Qwen3-ASR-1.7B-GGUF/Qwen3-ASR-1.7B-Q8_0.gguf"
+    sha256 = "bfb2edd545c4b414caebe05b1818a5ac0e52e3be3c2f75a8bbff906cc73dc30f"
+    size = 2165035104
+
+  # Required, not optional: without the speech encoder this is a text decoder
+  # with the point removed - the engine refuses to serve the arch without it.
+  [[model.artifact]]
+  id = "audio"
+  kind = "audio"
+  format = "gguf"
+  label = "Speech encoder (mmproj BF16)"
+  default = true
+  required = true
+
+    [[model.artifact.file]]
+    url = "https://models.truespar.io/models/Qwen3-ASR-1.7B-GGUF/mmproj-Qwen3-ASR-1.7B-bf16.gguf"
+    dest = "Qwen3-ASR-1.7B-GGUF/mmproj-Qwen3-ASR-1.7B-bf16.gguf"
+    sha256 = "4744db68448b7261a793a71058ba9de1c3881425cb3c8978914b293bd108429f"
+    size = 641774112
+
+# Qwen's forced aligner: word-level timestamps for an EXISTING
+# transcript - the enrichment pass that gives every transcription lane
+# karaoke, not a transcriber itself. First safetensors-primary model in the
+# catalog: the artifact is a VERBATIM mirror of Qwen's own BF16 checkpoint
+# directory (same shas as huggingface.co/Qwen/Qwen3-ForcedAligner-0.6B-hf) -
+# no GGUF exists for this arch anywhere, and a Paddock-only GGUF dialect
+# would be lock-in wearing GGUF's clothes. The engine quantizes the text
+# stack to Q8_0 at load (the dflash recipe); decoded timestamps measured
+# exact against the BF16 transformers reference across the en/de/zh battery.
+
+[[model]]
+id = "qwen3-forced-aligner-0.6b"
+vendor = "Alibaba"
+display = "Qwen3 Forced Aligner 0.6B"
+family = "qwen3"
+capability = ["alignment"]
+license = "apache-2.0"
+revision = "2026-08-14"
+
+  [model.specs]
+  params = "0.6B"
+  context = "8K"
+  homepage = "https://huggingface.co/Qwen/Qwen3-ForcedAligner-0.6B-hf"
+  about = "Times every word of a transcript against its audio - pair it with any speech-to-text model to make transcripts follow the playback word by word."
+  strengths = [
+    "Word-accurate timestamps for transcripts from ANY transcription model",
+    "Eleven languages incl. English, German, French, Spanish, Chinese",
+    "Small and fast - one pass per clip, under 2 GB of VRAM",
+  ]
+  tradeoffs = [
+    "Not a transcriber - it needs a transcript to align",
+    "One call covers up to 400 seconds; longer audio is aligned per segment",
+    "Japanese/Korean need word tokenizers this server does not carry",
+  ]
+
+  [[model.artifact]]
+  id = "bf16"
+  kind = "weights"
+  format = "safetensors"
+  label = "Official checkpoint (served Q8_0)"
+  quant = "BF16"
+  default = true
+
+    [[model.artifact.file]]
+    url = "https://models.truespar.io/models/Qwen3-ForcedAligner-0.6B-hf/model.safetensors"
+    dest = "Qwen3-ForcedAligner-0.6B-hf/model.safetensors"
+    sha256 = "00568245ceca5af1991d28562a75fe1ddc9bfeb041c27fda66947ea05c47fb86"
+    size = 1835545960
+
+    [[model.artifact.file]]
+    url = "https://models.truespar.io/models/Qwen3-ForcedAligner-0.6B-hf/config.json"
+    dest = "Qwen3-ForcedAligner-0.6B-hf/config.json"
+    sha256 = "82ac390b36a8f80c5a0c4e202367debd149e5d8c30abe4cf5eed439101b1c5ce"
+    size = 248029
+
+    [[model.artifact.file]]
+    url = "https://models.truespar.io/models/Qwen3-ForcedAligner-0.6B-hf/tokenizer.json"
+    dest = "Qwen3-ForcedAligner-0.6B-hf/tokenizer.json"
+    sha256 = "cadfb9cbd9ff8f4e309075ec6a71b063295ff796afb4b5dbc0fd2873fbb301f2"
+    size = 11429842
+
+    [[model.artifact.file]]
+    url = "https://models.truespar.io/models/Qwen3-ForcedAligner-0.6B-hf/tokenizer_config.json"
+    dest = "Qwen3-ForcedAligner-0.6B-hf/tokenizer_config.json"
+    sha256 = "945e980986de2ca7768f3326bfdbb4fbea3406f972b8ae0be233089f2b253c11"
+    size = 998
+
+    [[model.artifact.file]]
+    url = "https://models.truespar.io/models/Qwen3-ForcedAligner-0.6B-hf/processor_config.json"
+    dest = "Qwen3-ForcedAligner-0.6B-hf/processor_config.json"
+    sha256 = "bc0b230081b44e629dd5b9045b78495615c1831b4b9f4cffe97bd37e82a6156a"
+    size = 487
+
+    [[model.artifact.file]]
+    url = "https://models.truespar.io/models/Qwen3-ForcedAligner-0.6B-hf/chat_template.jinja"
+    dest = "Qwen3-ForcedAligner-0.6B-hf/chat_template.jinja"
+    sha256 = "59b5ae119bda7c00089bba5f49af775791ea67c7aeb7d2b828cddda9463121bf"
+    size = 551
+
+    # Upstream's own card, licence statement included - the loud-attribution
+    # file, kept in the mirror deliberately.
+    [[model.artifact.file]]
+    url = "https://models.truespar.io/models/Qwen3-ForcedAligner-0.6B-hf/README.md"
+    dest = "Qwen3-ForcedAligner-0.6B-hf/README.md"
+    sha256 = "30de8315ece609b239c719539336b99188a2a92aef89a1fdcd60b11e40abd063"
+    size = 9419
+
+# IBM's granite-speech pair. Same shape as Qwen3-ASR - a granite
+# dense decoder fed by a conformer + Q-Former speech tower that ships as an
+# mmproj companion - but PROMPT-DRIVEN: the instruction picks the task, so one
+# checkpoint does plain transcription, translation, keyword biasing and (on
+# -plus) speaker labels and word timings. Both files are IBM's own GGUF
+# conversions, not ours.
+#
+# The two are siblings, not an upgrade path, and the card is explicit about the
+# trade: -plus adds speaker-attributed ASR and word-level timestamps but drops
+# punctuation and capitalization, and scores 5.71 average WER on the Open ASR
+# leaderboard against the base's 5.33. Whichever a user wants, they must be
+# able to see the difference before downloading 3 GB - hence two rows with the
+# trade in the strengths/tradeoffs rather than one row with a quant picker.
+
+[[model]]
+id = "granite-speech-4.1-2b"
+vendor = "IBM"
+display = "Granite Speech 4.1 2B"
+family = "granite"
+capability = ["transcription"]
+license = "apache-2.0"
+revision = "2026-08-09"
+
+  [model.specs]
+  params = "2B"
+  context = "4K"
+  homepage = "https://huggingface.co/ibm-granite/granite-speech-4.1-2b"
+  about = "IBM's prompt-driven speech model: the instruction picks the task, so the same checkpoint writes a punctuated transcript, translates it, or biases recognition toward a keyword list."
+  strengths = [
+    "Punctuated, capitalized transcripts - not raw lowercase text",
+    "Speech translation and keyword biasing from the same weights",
+    "Seven languages including Japanese",
+  ]
+  tradeoffs = [
+    "Speech to text only - not a chat model",
+    "Needs its speech encoder alongside the weights",
+    "No speaker labels or word timings - that is the Plus variant",
+  ]
+
+  [[model.artifact]]
+  id = "q8"
+  kind = "weights"
+  format = "gguf"
+  label = "Full quality"
+  quant = "Q8_0"
+  default = true
+
+  [model.artifact.shape]
+  weight_bytes = 1952592128
+  kind = "generative"
+  vocab = 100353
+  max_ctx = 4096
+  nextn_bytes = 0
+  source = "measured"
+  kv_layers = [
+    { k_dim = 512, v_dim = 512, count = 40 },
+  ]
+
+    [[model.artifact.file]]
+    url = "https://models.truespar.io/models/granite-speech-4.1-2b-GGUF/granite-speech-4.1-2b-Q8_0.gguf"
+    dest = "granite-speech-4.1-2b-GGUF/granite-speech-4.1-2b-Q8_0.gguf"
+    sha256 = "87320ee80cc6e638837bd2e9b7920252a87148613930bcdc11fcafad0b00beea"
+    size = 1956154944
+
+  # Required: the decoder alone has no ears - `attach_audio` is what makes this
+  # a speech model, and the engine refuses to serve the pair without it.
+  [[model.artifact]]
+  id = "audio"
+  kind = "audio"
+  format = "gguf"
+  label = "Speech encoder (mmproj F16)"
+  default = true
+  required = true
+
+    [[model.artifact.file]]
+    url = "https://models.truespar.io/models/granite-speech-4.1-2b-GGUF/mmproj-model-f16.gguf"
+    dest = "granite-speech-4.1-2b-GGUF/mmproj-model-f16.gguf"
+    sha256 = "0d3615076cbe1d35c3f60c43a60a4047b3e2eeee1b2c233580be60186faab5c5"
+    size = 1159354752
+
+[[model]]
+id = "granite-speech-4.1-2b-plus"
+vendor = "IBM"
+display = "Granite Speech 4.1 2B Plus"
+family = "granite"
+capability = ["transcription"]
+license = "apache-2.0"
+revision = "2026-08-09"
+
+  [model.specs]
+  params = "2B"
+  context = "4K"
+  homepage = "https://huggingface.co/ibm-granite/granite-speech-4.1-2b-plus"
+  about = "The rich-transcription sibling of Granite Speech 4.1 2B: the same prompt-driven speech model, with speaker labels and word-level timings available by changing the instruction."
+  strengths = [
+    "Speaker-attributed transcripts - [Speaker 1]: / [Speaker 2]: turns",
+    "Word-level timestamps, in centiseconds, from the same weights",
+    "Handles long audio - IBM measures it good for 9-minute segments",
+  ]
+  tradeoffs = [
+    "No punctuation or capitalization - raw text, unlike the base model",
+    "Slightly less accurate than the base model (5.71 vs 5.33 average WER)",
+    "Five languages - no Japanese",
+  ]
+
+  [[model.artifact]]
+  id = "q8"
+  kind = "weights"
+  format = "gguf"
+  label = "Full quality"
+  quant = "Q8_0"
+  default = true
+
+  [model.artifact.shape]
+  weight_bytes = 1952592128
+  kind = "generative"
+  vocab = 100353
+  max_ctx = 4096
+  nextn_bytes = 0
+  source = "measured"
+  kv_layers = [
+    { k_dim = 512, v_dim = 512, count = 40 },
+  ]
+
+    [[model.artifact.file]]
+    url = "https://models.truespar.io/models/granite-speech-4.1-2b-plus-GGUF/granite-speech-4.1-2b-plus-Q8_0.gguf"
+    dest = "granite-speech-4.1-2b-plus-GGUF/granite-speech-4.1-2b-plus-Q8_0.gguf"
+    sha256 = "e545c80b3cf1a6b71b568c7c9ccbb2389aedd95381e79b561fea61818c362eef"
+    size = 1737793088
+
+  [[model.artifact]]
+  id = "audio"
+  kind = "audio"
+  format = "gguf"
+  label = "Speech encoder (mmproj F16)"
+  default = true
+  required = true
+
+    [[model.artifact.file]]
+    url = "https://models.truespar.io/models/granite-speech-4.1-2b-plus-GGUF/mmproj-model-f16.gguf"
+    dest = "granite-speech-4.1-2b-plus-GGUF/mmproj-model-f16.gguf"
+    sha256 = "9892ce6864436b6592780012d9aba86496cf778de2a8c3d8f5ae3a13c05b4e9d"
+    size = 1167743424
+
+[[model]]
+id = "kb-whisper-large"
+vendor = "KBLab"
+display = "KB-Whisper Large (Swedish)"
+family = "whisper"
+capability = ["transcription"]
+license = "apache-2.0"
+revision = "2026-08-09"
+
+  [model.specs]
+  params = "1.5B"
+  context = "30 s per window"
+  homepage = "https://huggingface.co/KBLab/kb-whisper-large"
+  about = "The National Library of Sweden's Whisper Large v3 fine-tune for Swedish - trained on 50,000+ hours of Swedish speech and far more accurate on it than OpenAI's original."
+  strengths = [
+    "Best-in-class Swedish transcription",
+    "Long audio is split into 30 s windows automatically",
+    "Handles many concurrent transcriptions at once",
+  ]
+  tradeoffs = [
+    "Tuned for Swedish - use Qwen3-ASR for other languages",
+    "Each concurrent transcription holds ~117 MB of audio cache",
+  ]
+
+  [[model.artifact]]
+  id = "f16"
+  kind = "weights"
+  format = "gguf"
+  label = "Full quality"
+  quant = "F16"
+  default = true
+
+  [model.artifact.shape]
+  weight_bytes = 3359912960
+  kind = "generative"
+  vocab = 51866
+  max_ctx = 448
+  nextn_bytes = 0
+  source = "measured"
+  kv_layers = [
+    { k_dim = 1280, v_dim = 1280, count = 32 },
+  ]
+
+    [model.artifact.shape.cross_kv]
+    layers = 32
+    frames = 1500
+    k_dim = 1280
+    v_dim = 1280
+
+    [[model.artifact.file]]
+    url = "https://models.truespar.io/models/kb-whisper-large/kb-whisper-large-f16.gguf"
+    dest = "kb-whisper-large/kb-whisper-large-f16.gguf"
+    sha256 = "0b58dd204efdda2ffd9e376b5ac3c79f2ec7bdfa2399098dac8f48c08b9c02f4"
+    size = 3223785280
+
+[[model]]
+id = "nb-whisper-large"
+vendor = "NB AI-Lab"
+display = "NB-Whisper Large (Norwegian)"
+family = "whisper"
+capability = ["transcription"]
+license = "apache-2.0"
+revision = "2026-08-09"
+
+  [model.specs]
+  params = "1.5B"
+  context = "30 s per window"
+  homepage = "https://huggingface.co/NbAiLab/nb-whisper-large"
+  about = "The National Library of Norway's Whisper Large v3 fine-tune for Norwegian, trained on the library's own broadcast and parliamentary speech archives."
+  strengths = [
+    "Best-in-class Norwegian transcription",
+    "Long audio is split into 30 s windows automatically",
+    "Handles many concurrent transcriptions at once",
+  ]
+  tradeoffs = [
+    "Returns NOTHING on some non-Norwegian audio, rather than a worse transcript - measured: it refuses 4 of 11 test clips (English, German, French, Spanish) by answering with a no-speech marker",
+    "Those same clips return text when segment timestamps are asked for - the refusal is conditioned on the no-timestamps decode prompt, not on the language - but the text is usually a TRANSLATION into Norwegian rather than a transcript (100% WER against the source on 4 of 5 recovered clips)",
+    "It translates non-Norwegian speech into Norwegian instead of transcribing it, on the clips it accepts as well - use Qwen3-ASR for anything but Norwegian",
+    "Each concurrent transcription holds ~117 MB of audio cache",
+  ]
+
+  [[model.artifact]]
+  id = "f16"
+  kind = "weights"
+  format = "gguf"
+  label = "Full quality"
+  quant = "F16"
+  default = true
+
+  [model.artifact.shape]
+  weight_bytes = 3359912960
+  kind = "generative"
+  vocab = 51866
+  max_ctx = 448
+  nextn_bytes = 0
+  source = "measured"
+  kv_layers = [
+    { k_dim = 1280, v_dim = 1280, count = 32 },
+  ]
+
+    [model.artifact.shape.cross_kv]
+    layers = 32
+    frames = 1500
+    k_dim = 1280
+    v_dim = 1280
+
+    [[model.artifact.file]]
+    url = "https://models.truespar.io/models/nb-whisper-large/nb-whisper-large-f16.gguf"
+    dest = "nb-whisper-large/nb-whisper-large-f16.gguf"
+    sha256 = "38153ba829886bb3619dc23704c1f45793ef5680792199981e6d7dd08c90c180"
+    size = 3089558208
+
+# Røst's licence is a CUSTOM instrument, not an SPDX id: "MODEL - LICENSE to
+# USE" from Alvenir ApS, built on the AI PUBS open RAIL-M LICENSE, governed by
+# Danish law, with Attachment A's use restrictions plus Alvenir's own §4
+# supplement (no impersonation / synthetic speech). Commercial use is allowed.
+# Hence `coral-openrail-m` rather than a bare `openrail`: the tag has to say
+# "custom, OpenRAIL-M-derived" or a reader will assume the standard terms.
+# The Røst repo ships no LICENSE file of its own - the canonical text lives at
+# Alvenir/coral-1-whisper-large - so it is uploaded to R2 as LICENSE.txt
+# beside the GGUF, the way laguna's OpenMDW notices were, because the product
+# principles require the notice to travel with the bytes.
+#
+# NAME: upstream renamed this repo. `roest-whisper-1.5b-v2` 307-redirects to
+# `roest-v3-whisper-1.5b` (trained on coral-v3), and our conversion is of that
+# repo's current weights - so the row carries the upstream name, not the alias
+# we first pulled it under.
+[[model]]
+id = "roest-v3-whisper-1.5b"
+vendor = "CoRal Project"
+display = "Røst v3 Whisper 1.5B (Danish)"
+family = "whisper"
+capability = ["transcription"]
+license = "coral-openrail-m"
+revision = "2026-08-09"
+
+  [model.specs]
+  params = "1.5B"
+  context = "30 s per window"
+  homepage = "https://huggingface.co/CoRal-project/roest-v3-whisper-1.5b"
+  about = "The CoRal project's Danish Whisper fine-tune - the strongest open Danish transcriber on the CoRal benchmark, ahead of the hosted commercial APIs."
+  strengths = [
+    "Best open Danish transcription - beats hosted APIs on CoRal",
+    "Long audio is split into 30 s windows automatically",
+    "Handles many concurrent transcriptions at once",
+  ]
+  tradeoffs = [
+    "Tuned for Danish - use Qwen3-ASR for other languages",
+    "Licence carries an attribution and use-restriction notice",
+  ]
+
+  [[model.artifact]]
+  id = "f16"
+  kind = "weights"
+  format = "gguf"
+  label = "Full quality"
+  quant = "F16"
+  default = true
+
+  [model.artifact.shape]
+  weight_bytes = 3359912960
+  kind = "generative"
+  vocab = 51866
+  max_ctx = 448
+  nextn_bytes = 0
+  source = "measured"
+  kv_layers = [
+    { k_dim = 1280, v_dim = 1280, count = 32 },
+  ]
+
+    [model.artifact.shape.cross_kv]
+    layers = 32
+    frames = 1500
+    k_dim = 1280
+    v_dim = 1280
+
+    [[model.artifact.file]]
+    url = "https://models.truespar.io/models/roest-v3-whisper-1.5b/roest-v3-whisper-1.5b-f16.gguf"
+    dest = "roest-v3-whisper-1.5b/roest-v3-whisper-1.5b-f16.gguf"
+    sha256 = "c26f93307a2a154e404302d50ca8c9d9e451a04bfe93e53f2704680e309d308a"
+    size = 3091007520
+
+    # The licence text rides with the weights, in the same artifact, so it
+    # cannot be downloaded without it - that is what "notices in every
+    # artifact" has to mean for a use-restricted model.
+    [[model.artifact.file]]
+    url = "https://models.truespar.io/models/roest-v3-whisper-1.5b/LICENSE.txt"
+    dest = "roest-v3-whisper-1.5b/LICENSE.txt"
+    sha256 = "f575b6361ff69b52388967f69219f0cc7f9ae91f96482e5ad038261b2728799e"
+    size = 16554

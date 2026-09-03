@@ -1,0 +1,204 @@
+/* Dark-theme fixes for markstream blocks that hardcode light colors and so
+   ignore the `.markstream-vue.dark` token switch. Our selectors carry an extra
+   class (.markstream-vue.dark ...) so they outrank the library's scoped rules. */
+
+/* Chat-scale typography: markstream ships DOCUMENT-page
+   flow - paragraphs 1.5em apart, h2 at 1.5rem with a 2em top margin, hr at
+   2.5em - enormous inside a chat bubble, and the per-tag margins stack. The
+   library keys every size and margin off tokens on .markstream-vue, so the
+   WHOLE flow scale is retuned here as one rhythm (this file loads after its
+   css; same specificity, later wins). */
+.markstream-vue {
+  /* BODY size. The retune below pulled every heading down and left this at
+     markstream's own `--ms-text-body: 1rem` - so answers rendered at 16px
+     while the rest of the Studio reads at 14-15, and the headings ended up
+     barely larger than the text under them. Set through
+     the library's token rather than a bare font-size, so its line-height and
+     every em-based margin follow. */
+  --ms-text-body: var(--pk-font-size-sm);
+  /* heading sizes */
+  --ms-text-h1: 1.35rem;
+  --ms-text-h2: 1.2rem;
+  --ms-text-h3: 1.1rem;
+  --ms-text-h4: 1rem;
+  /* headings: enough air to mark a section, no more */
+  --ms-flow-heading-1-mt: 1em;
+  --ms-flow-heading-1-mb: 0.4em;
+  --ms-flow-heading-2-mt: 1em;
+  --ms-flow-heading-2-mb: 0.4em;
+  --ms-flow-heading-3-mt: 0.85em;
+  --ms-flow-heading-3-mb: 0.3em;
+  --ms-flow-heading-4-mt: 0.85em;
+  --ms-flow-heading-4-mb: 0.3em;
+  --ms-flow-heading-5-mt: 0.85em;
+  --ms-flow-heading-5-mb: 0.3em;
+  --ms-flow-heading-6-mt: 0.85em;
+  --ms-flow-heading-6-mb: 0.3em;
+  /* block flow: one compact rhythm across every tag */
+  --ms-flow-paragraph-y: 0.5em;
+  --ms-flow-list-y: 0.5em;
+  --ms-flow-list-item-y: 0.15em;
+  --ms-flow-codeblock-y: 0.75em;
+  --ms-flow-diagram-y: 0.75em;
+  --ms-flow-table-y: 0.75em;
+  --ms-flow-blockquote-y: 0.75em;
+  --ms-flow-admonition-y: 0.75em;
+  --ms-flow-hr-y: 1em;
+}
+
+.markstream-vue.dark .markstream-virtual-timeline__default-item {
+  background: var(--pk-bg-inset);
+  color: var(--pk-text-secondary);
+  border-color: var(--pk-border-default);
+}
+.markstream-vue.dark .markstream-virtual-timeline__default-item--error {
+  background: var(--pk-bg-danger-subtle);
+  color: var(--pk-text-danger);
+  border-color: var(--pk-status-error);
+}
+
+/* ── Palette root-mapping ──────────────────────────────────────────
+   markstream is a shadcn-style token system: every surface it draws (code
+   chrome, inline code, tables, blockquotes, admonitions, tooltips) derives
+   from `--ms-*` HSL channel triplets on .markstream-vue/.markstream-vue.dark.
+   Its defaults are NEUTRAL greys (dark border 0 0% 20% = rgb(51,51,51),
+   header 0 0% 16%) which clash with our blue-slate palette. Remapping the
+   ROOT tokens re-themes every derived surface at once - no per-component
+   whack-a-mole. The triplets are exact HSL conversions of the pk hex tokens
+   in variables.css (channels only: the consumer writes hsl(var(--ms-x)), so
+   a full-color pk var can't be passed through). If the pk palette ever
+   changes, this table changes with it - each line names its source. */
+.markstream-vue {
+  --ms-background: 240 11.1% 96.5%;       /* --pk-bg-base #F5F5F7 */
+  --ms-foreground: 210 41.2% 6.7%;        /* --pk-text-primary #0A1118 */
+  --ms-muted: 240 11.1% 96.5%;            /* --pk-bg-inset #F5F5F7 */
+  --ms-muted-foreground: 215.6 15.4% 34.3%; /* --pk-text-secondary #4A5565 */
+  --ms-secondary: 240 11.1% 96.5%;        /* --pk-bg-inset #F5F5F7 */
+  --ms-secondary-foreground: 210 41.2% 6.7%; /* --pk-text-primary */
+  --ms-accent: 210 14.8% 89.4%;           /* hover surface: --pk-border-default #E0E4E8 */
+  --ms-accent-foreground: 210 41.2% 6.7%; /* --pk-text-primary */
+  --ms-primary: 210 41.2% 6.7%;           /* --pk-text-primary */
+  --ms-primary-foreground: 0 0% 100%;     /* --pk-bg-surface #FFFFFF */
+  --ms-destructive: 0 58.6% 45.5%;        /* --pk-status-error #B83030 */
+  --ms-border: 210 14.8% 89.4%;           /* --pk-border-default #E0E4E8 */
+  --ms-ring: 201.3 96.3% 32.2%;           /* --pk-accent #0369A1 */
+  --ms-popover: 0 0% 100%;                /* --pk-bg-surface #FFFFFF */
+  --ms-popover-foreground: 210 41.2% 6.7%; /* --pk-text-primary */
+  --ms-info: 209.5 60% 41.2%;             /* --pk-status-info #2A6AA8 */
+  --ms-success: 142.4 71.8% 29.2%;        /* --pk-status-success #15803D */
+  --ms-warning: 37.0 85.3% 29.4%;         /* --pk-status-warning #8B5A0B */
+}
+.markstream-vue.dark {
+  --ms-background: 210 41.2% 6.7%;        /* --pk-bg-base #0A1118 */
+  --ms-foreground: 40 24% 90.2%;          /* --pk-text-primary #ECE8E0 */
+  --ms-muted: 210 35.7% 11%;              /* --pk-bg-surface #121C26 */
+  --ms-muted-foreground: 212 13.2% 55.3%; /* --pk-text-secondary #7E8C9C */
+  --ms-secondary: 207.7 33.3% 15.3%;      /* --pk-bg-elevated #1A2834 */
+  --ms-secondary-foreground: 40 24% 90.2%; /* --pk-text-primary */
+  --ms-accent: 208 20.5% 28.6%;           /* hover surface: --pk-border-strong #3A4A58 */
+  --ms-accent-foreground: 40 24% 90.2%;   /* --pk-text-primary */
+  --ms-primary: 40 24% 90.2%;             /* --pk-text-primary */
+  --ms-primary-foreground: 210 41.2% 6.7%; /* --pk-bg-base */
+  --ms-destructive: 1.7 69.6% 60%;        /* --pk-status-error #E05652 */
+  --ms-border: 208 26.3% 22.4%;           /* --pk-border-default #2A3A48 */
+  --ms-ring: 198.6 88.7% 48.4%;           /* --pk-accent #0EA5E9 */
+  --ms-popover: 207.7 33.3% 15.3%;        /* --pk-bg-elevated #1A2834 */
+  --ms-popover-foreground: 40 24% 90.2%;  /* --pk-text-primary */
+  --ms-info: 210 61.6% 56.1%;             /* --pk-status-info #4A8FD4 */
+  --ms-success: 142.1 70.6% 45.3%;        /* --pk-status-success #22C55E */
+  --ms-warning: 37.6 66.3% 50%;           /* --pk-status-warning #D4952B */
+}
+
+/* Full-color derived vars CAN take pk tokens directly - pin the code chrome
+   to THE app idiom (an elevated bar over a surface body split by the default
+   border: pv__bar, the Instrument strip), and the rest to their pk homes.
+   Both scopes listed so the dark pins outrank the library's own
+   .markstream-vue.dark redefinitions (same specificity, later file wins). */
+.markstream-vue,
+.markstream-vue.dark {
+  --ms-font-sans: var(--pk-font-sans);
+  --ms-font-mono: var(--pk-font-mono);
+  /* the code pre reads its own font var, not --ms-font-mono */
+  --markstream-code-font-family: var(--pk-font-mono);
+  --ms-radius: var(--pk-radius-lg);
+  --code-bg: var(--pk-bg-surface);
+  --code-fg: var(--pk-text-primary);
+  --code-border: var(--pk-border-default);
+  --code-header-bg: var(--pk-bg-elevated);
+  --code-selection-bg: var(--pk-accent-subtle);
+  --code-line-number: var(--pk-text-muted);
+  --tooltip-bg: var(--pk-bg-elevated);
+  --tooltip-fg: var(--pk-text-secondary);
+}
+
+/* Shiki paints the highlight THEME's background (vitesse: #121212 dark /
+   #ffffff light) as an inline style, and the pre-highlight fallback hardcodes
+   Tailwind gray-900 (#111827). The block's surface belongs to the container -
+   the pinned --code-bg - with only the token colors coming from the theme.
+   !important is required to beat the inline style and the library's scoped
+   [data-v-*] rules; this is the standard shiki-in-a-design-system move. */
+.markstream-vue .code-block-content .shiki,
+.markstream-vue .code-block-content .shiki-fallback,
+.markstream-vue .code-block-content .code-fallback-plain {
+  background: var(--code-bg) !important;
+  color: var(--code-fg) !important;
+}
+
+/* Chat tables are reference material, not prose. Keep them one step smaller
+   than the 15px chat body, remove the spreadsheet-like vertical grid, and
+   use the app surfaces for a calmer header + scan-friendly rows. The table
+   remains fully fluid; markstream's wrapper supplies horizontal scrolling
+   when the content needs more room than the chat column. */
+.markstream-vue {
+  --pk-chat-table-header: var(--pk-bg-inset);
+  --pk-chat-table-stripe: rgba(10, 17, 24, 0.025);
+}
+
+.markstream-vue.dark {
+  --pk-chat-table-header: var(--pk-bg-elevated);
+  --pk-chat-table-stripe: rgba(236, 232, 224, 0.025);
+}
+
+.markstream-vue .table-node-wrapper {
+  scrollbar-color: var(--pk-border-strong) transparent;
+  scrollbar-width: thin;
+}
+
+.markstream-vue .table-node {
+  table-layout: auto;
+  min-width: max(100%, 32rem);
+  font-size: var(--pk-font-size-xs);
+  line-height: 1.45;
+  color: var(--pk-text-primary);
+  background: var(--pk-bg-surface);
+  box-shadow: none;
+}
+
+.markstream-vue .table-node th,
+.markstream-vue .table-node td {
+  padding: 0.5rem 0.75rem;
+  border-right: 0;
+  border-bottom-color: var(--pk-border-subtle);
+  vertical-align: top;
+  font-variant-numeric: tabular-nums;
+}
+
+.markstream-vue .table-node thead th {
+  color: var(--pk-text-primary);
+  background: var(--pk-chat-table-header);
+  border-bottom: 1px solid var(--pk-border-default);
+  font-weight: 600;
+  letter-spacing: 0.01em;
+}
+
+.markstream-vue .table-node tbody tr:nth-child(even) {
+  background: var(--pk-chat-table-stripe);
+}
+
+.markstream-vue .table-node tbody tr {
+  transition: background-color var(--ms-duration-fast) var(--ms-ease-standard);
+}
+
+.markstream-vue .table-node tbody tr:hover {
+  background: var(--pk-bg-hover);
+}

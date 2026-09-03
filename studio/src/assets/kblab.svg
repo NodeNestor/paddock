@@ -1,0 +1,51 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="347" height="348" viewBox="0 0 347 348" fill="none">
+  <defs>
+    <linearGradient id="bg" x1="184" y1="163" x2="347" y2="348" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#DCD3C3"/>
+      <stop offset="1" stop-color="#F1EDE5"/>
+    </linearGradient>
+    <linearGradient id="darkGreen" x1="222.5" y1="170.6" x2="306.1" y2="242.2" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#0A2B5D"/>
+      <stop offset="1" stop-color="#8AB55D"/>
+    </linearGradient>
+    <linearGradient id="lightGreen" x1="25" y1="275" x2="130.6" y2="232.7" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#89AB87"/>
+      <stop offset="1" stop-color="#B1D18B"/>
+    </linearGradient>
+    <linearGradient id="pink" x1="133.2" y1="103.3" x2="347" y2="348" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#DC7DA0"/>
+      <stop offset="1" stop-color="#9FAED4"/>
+    </linearGradient>
+  </defs>
+
+  <circle cx="173.5" cy="173.5" r="173.5" fill="url(#bg)"/>
+
+  <path d="M 289.200 246.849 C 258.637 285.133 209.998 297.120 180.562 273.621 C 151.125 250.122 152.038 200.036 182.600 161.751 C 213.163 123.467 261.802 111.480 291.238 134.979 C 320.675 158.478 319.762 208.564 289.200 246.849 Z" fill="url(#darkGreen)"/>
+
+  <circle cx="283.5" cy="99" r="15" fill="#41665D"/>
+
+  <path d="M64 163
+           C50 163 38 168 32 178
+           C26 190 31 211 46 229
+           C57 242 73 248 91 254
+           C108 260 124 281 144 294
+           C162 305 182 310 198 302
+           C214 294 222 276 219 255
+           C187 256 145 246 108 226
+           C86 214 72 190 64 163Z" fill="url(#lightGreen)"/>
+
+  <ellipse cx="173.5" cy="150.5" rx="109" ry="114" fill="#F1F1EE"/>
+
+  <path d="M75 160
+           C72 145 73 127 76 115
+           C81 94 93 78 111 68
+           C132 56 154 54 174 57
+           C199 60 221 72 237 90
+           C253 108 256 129 251 150
+           C246 173 237 192 221 202
+           C206 212 185 217 166 217
+           C136 216 109 201 89 178
+           C83 172 78 166 75 160Z" fill="url(#pink)"/>
+
+  <circle cx="134" cy="321.5" r="10.5" fill="#F1F1EE"/>
+</svg>

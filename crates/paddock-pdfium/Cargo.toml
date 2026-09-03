@@ -1,0 +1,15 @@
+[package]
+name = "paddock-pdfium"
+description = "Direct bindings to OUR pdfium build: bindgen'd FFI over the six calls paddock makes, plus a safe wrapper. Replaces pdfium-render, whose hand-written per-vintage bindings capped which pdfium we could statically link."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+# No dependencies, deliberately. The point of this crate is that the FFI is
+# ours: `extern "C"` declarations generated from the headers of the pdfium in
+# packs/pdfium/, plus a safe wrapper over the operations paddock performs. See
+# lib.rs for why we stopped using pdfium-render.
+
+[lints]
+workspace = true

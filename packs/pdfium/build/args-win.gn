@@ -1,0 +1,55 @@
+# GN args: pdfium as ONE self-contained static library for win-x64.
+#
+# Read alongside args-linux.gn - the two differ only in target_os, and any
+# change to what we enable/disable belongs in BOTH or the two platforms drift
+# into different feature sets (which shows up as a link error on one OS only).
+
+target_os = "win"
+target_cpu = "x64"
+
+is_debug = false
+is_clang = true
+
+# Standalone build (pdfium outside a Chromium checkout).
+pdf_is_standalone = true
+
+# THE argument that makes this a single-file deliverable: gn's
+# complete_static_lib, so the archiver folds every dependent object - the
+# bundled libc++, the font stack, the image codecs, partition_alloc - into one
+# pdfium.lib. Without it the build leaves dozens of separate archives and the
+# Rust link line would have to name each one in dependency order.
+pdf_is_complete_lib = true
+
+# What we DON'T ship. Each of these has to stay in sync with the pdfium-render
+# crate features (`pdfium_enable_xfa`, `pdfium_use_skia`, `pdfium_enable_v8`):
+# the crate's bindings are a vtable, so a function it declares but our library
+# does not define is a LINK error, not a runtime surprise. Off on both sides.
+#
+#   v8   - the JS engine for AcroForm scripting. ~4 MB and a whole runtime we
+#          have no use for; the runner rasterizes, it does not execute PDFs.
+#   xfa  - Adobe's legacy XML forms. Large, and nothing sends us XFA.
+#   skia - the alternative renderer. AGG is smaller and we only ever ask for a
+#          bitmap.
+pdf_enable_v8 = false
+pdf_enable_xfa = false
+pdf_use_skia = false
+
+is_component_build = false
+
+# Use the PLATFORM C++ standard library, not Chromium's bundled libc++.
+#
+# Chromium's libc++ lives in an inline namespace (`std::__Cr`) and is a separate
+# link-time library that `pdf_is_complete_lib` does NOT fold in, which shows up
+# as a wall of unresolved `std::__Cr::__libcpp_verbose_abort`. We
+# could ship that second archive, but the platform library is already on the
+# link line for free, and it is the configuration pdfium-render's own
+# `libstdc++`/`libc++` features are written for. One archive per platform.
+use_custom_libcxx = false
+
+# No debug info: this library is linked into a shipped binary, and symbols for
+# code we did not write cost tens of MB for nothing.
+symbol_level = 0
+
+# pdfium's own tree is warning-clean against ITS pinned clang; we are building
+# it as a dependency, and a new warning upstream must not break our release.
+treat_warnings_as_errors = false

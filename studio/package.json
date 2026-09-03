@@ -1,0 +1,62 @@
+{
+  "name": "paddock-studio",
+  "version": "0.1.4",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "node scripts/check-shipped-ui.mjs && vue-tsc --noEmit && vite build",
+    "lint:shipped-ui": "node scripts/check-shipped-ui.mjs",
+    "preview": "vite preview",
+    "test": "vitest run",
+    "test:watch": "vitest"
+  },
+  "dependencies": {
+    "@fontsource-variable/inter": "^5.3.0",
+    "@fontsource-variable/jetbrains-mono": "^5.3.0",
+    "@phosphor-icons/vue": "^2.2.1",
+    "@sigma/export-image": "^3.0.0",
+    "@tanstack/vue-table": "^9.1.2",
+    "@tiptap/extensions": "^3.30.2",
+    "@tiptap/pm": "^3.30.2",
+    "@tiptap/starter-kit": "^3.30.2",
+    "@tiptap/vue-3": "^3.30.2",
+    "@truespar/lector-core": "file:vendor/lector/core",
+    "@truespar/lector-vue": "file:vendor/lector/vue",
+    "@truespar/traverse-wasm": "file:vendor/traverse/wasm",
+    "@vueuse/core": "^14.4.0",
+    "d3-force": "^3.0.0",
+    "echarts": "^6.1.0",
+    "fuse.js": "^7.5.0",
+    "graphology": "^0.26.0",
+    "graphology-layout-forceatlas2": "^0.10.1",
+    "graphology-layout-noverlap": "^0.4.2",
+    "katex": "^0.18.4",
+    "maplibre-gl": "^6.5.0",
+    "markstream-vue": "^2.0.2",
+    "mermaid": "^11.17.0",
+    "monaco-editor": "^0.56.0",
+    "pinia": "^4.0.3",
+    "reka-ui": "^2.10.3",
+    "shiki": "^4.4.3",
+    "sigma": "^3.0.3",
+    "simple-icons": "^16.28.0",
+    "smol-toml": "^1.8.0",
+    "vue": "^3.5.41",
+    "vue-echarts": "^8.1.0",
+    "vue-router": "^5.2.0"
+  },
+  "overrides": {
+    "dompurify": "^3.4.13"
+  },
+  "devDependencies": {
+    "@types/d3-force": "^3.0.10",
+    "@vitejs/plugin-vue": "^6.0.8",
+    "graphology-types": "^0.24.8",
+    "typescript": "^6.0.3",
+    "vite": "^8.2.2",
+    "vite-plugin-compression2": "^2.5.3",
+    "vitest": "^4.1.11",
+    "vue-tsc": "^3.3.11"
+  }
+}

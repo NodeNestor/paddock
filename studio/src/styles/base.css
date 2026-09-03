@@ -1,0 +1,48 @@
+/* Paddock Studio - Base Styles
+   Built on the TrueSpar Design System. */
+@import './variables.css';
+
+*, *::before, *::after {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+button, input, select, textarea {
+  font-family: inherit;
+  font-size: inherit;
+}
+
+html, body, #app {
+  height: 100%;
+  width: 100%;
+  overflow: hidden;
+}
+
+body {
+  font-family: var(--pk-font-sans);
+  font-size: var(--pk-font-size-base);
+  line-height: 1.5;
+  color: var(--pk-text-primary);
+  background-color: var(--pk-bg-base);
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  transition: background-color 0.3s ease, color 0.3s ease;
+}
+
+/* Scrollbar */
+/* Minimal scrollbars - native thin, tinted. Matches Traverse (scrollbar-width +
+   scrollbar-color; no chunky custom ::-webkit-scrollbar track). */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: var(--pk-border-default) transparent;
+}
+
+/* Selection */
+::selection { background: var(--pk-accent-subtle); color: var(--pk-text-primary); }
+
+/* Focus visible */
+:focus-visible { outline: 2px solid var(--pk-border-focus); outline-offset: 2px; }
+
+/* Utility */
+.truncate { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }

@@ -1,0 +1,5 @@
+# Always newest stable (policy). Pinning a channel, not a version,
+# so `rustup update` moves everyone forward together.
+[toolchain]
+channel = "stable"
+components = ["rustfmt", "clippy"]

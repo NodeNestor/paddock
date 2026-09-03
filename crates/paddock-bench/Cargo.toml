@@ -1,0 +1,33 @@
+[package]
+name = "paddock-bench"
+description = "Standing benchmark: prefill/decode throughput + TTFT for our engine (in-process), and an HTTP client that benchmarks any OpenAI-compatible server (Paddock, mistral.rs, llama.cpp, vLLM) identically."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[[bin]]
+name = "paddock-bench"
+path = "src/main.rs"
+
+# KV-offload probe: local-NVMe ceilings with the OS cache
+# bypassed (Phase R).
+[[bin]]
+name = "kvnvme-probe"
+path = "src/bin/kvnvme_probe.rs"
+
+[dependencies]
+tracing-subscriber = { workspace = true }
+paddock-engine = { workspace = true }
+paddock-models = { workspace = true }
+paddock-tokenizer = { workspace = true }
+clap = { workspace = true }
+ureq = "3.4.0"
+serde_json = { workspace = true }
+
+# unix O_DIRECT flag for kvnvme-probe (windows uses raw custom_flags)
+[target.'cfg(unix)'.dependencies]
+libc = "0.2.189"
+
+[lints]
+workspace = true

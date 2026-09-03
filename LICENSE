@@ -1,0 +1,18 @@
+Paddock is dual-licensed. You may use it under either of:
+
+  * MIT license          - see LICENSE-MIT    (https://opensource.org/licenses/MIT)
+  * Apache License 2.0   - see LICENSE-APACHE (https://www.apache.org/licenses/LICENSE-2.0)
+
+at your option. Pick whichever suits you; you do not have to comply with both.
+
+MIT is the shorter and simpler of the two, and is compatible with GPLv2.
+Apache-2.0 additionally grants an explicit patent licence, which some adopters
+require.
+
+Unless you state otherwise, any contribution you intentionally submit for
+inclusion in this work shall be dual-licensed as above, without any additional
+terms or conditions.
+
+Paddock also incorporates third-party open-source components, which remain
+under their own licences. THIRD-PARTY-NOTICES lists every one of them and
+its terms; it ships alongside this file in every release.

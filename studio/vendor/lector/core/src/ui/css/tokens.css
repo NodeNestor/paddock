@@ -1,0 +1,196 @@
+/**
+ * Lector Design Tokens
+ *
+ * All visual customization flows through these CSS custom properties.
+ *
+ * Override on .lector-workspace or .lector-viewer:
+ *   .lector-workspace { --lector-accent: #9333ea; }
+ *
+ * EVERY default below is wrapped in :where(), which zeroes its specificity —
+ * so that one-line override actually wins. It did not used to. The dark block
+ * selects `.lector-workspace--dark .lector-viewer` (two classes), which beat
+ * an embedder's single-class rule outright, and a two-class host rule only
+ * TIED it, leaving the winner to bundler source order. Anyone theming lector
+ * had to escalate with doubled classes or !important to fight defaults they
+ * were invited to replace (found 2026-08-14 by paddock, whose document pane
+ * dresses the viewer in the host app's palette).
+ *
+ * :where() does not affect how these blocks rank against EACH OTHER — they are
+ * all zero now, so source order decides, which is the same order that already
+ * applied: light, then dark, then the system media query.
+ */
+
+:where(.lector-workspace, .lector-viewer) {
+  /* ── Backgrounds ── */
+  --lector-bg: #ffffff;                        /* surface: white */
+  --lector-bg-alt: #f1f3f5;                    /* surface-alt: secondary bg */
+  --lector-bg-hover: #f3f4f6;                  /* interactive hover: gray-100 */
+  --lector-bg-active: #e5e7eb;                 /* interactive active: gray-200 */
+  --lector-bg-selected: #eff6ff;               /* interactive selected: blue-50 */
+  --lector-bg-input: #ffffff;                   /* input background */
+  --lector-bg-overlay: rgba(0, 0, 0, 0.5);     /* modal overlay */
+  --lector-canvas-bg: #f3f4f6;                 /* viewport/canvas: gray-100 */
+  --lector-page-bg: #ffffff;
+  --lector-page-shadow: none;
+
+  /* ── Foreground / text ── */
+  --lector-fg: #111827;                         /* primary: gray-900 */
+  --lector-fg-secondary: #374151;               /* secondary: gray-700 */
+  --lector-fg-muted: #6b7280;                   /* muted: gray-500 */
+  --lector-fg-disabled: #6b7280;                /* disabled: gray-500 (was gray-400 #9ca3af — failed 4.5:1 AA on white) */
+  --lector-fg-on-accent: #ffffff;
+
+  /* ── Accent / brand ── */
+  --lector-accent: #3b82f6;                     /* blue-500 */
+  --lector-accent-hover: #2563eb;               /* blue-600 */
+  --lector-accent-active: #1d4ed8;              /* blue-700 */
+  --lector-accent-light: #eff6ff;               /* blue-50 */
+  --lector-accent-fg: #ffffff;
+
+  /* ── Borders ── */
+  --lector-border: #d1d5db;                     /* gray-300 */
+  --lector-border-subtle: #e5e7eb;              /* gray-200 */
+  --lector-border-strong: #9ca3af;              /* gray-400 */
+
+  /* ── State colors ── */
+  --lector-danger: #ef4444;
+  --lector-danger-hover: #dc2626;
+  --lector-danger-light: #fef2f2;
+  --lector-danger-light-hover: #fecaca;
+  --lector-success: #22c55e;
+  --lector-success-light: #f0fdf4;
+  --lector-warning: #f59e0b;
+  --lector-warning-light: #fffbeb;
+
+  /* ── Typography ── */
+  --lector-font-family: system-ui, -apple-system, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+  --lector-font-mono: ui-monospace, 'SF Mono', 'Cascadia Code', 'Consolas', monospace;
+  --lector-font-size-xs: 0.75rem;      /* 12px */
+  --lector-font-size-sm: 0.875rem;     /* 14px */
+  --lector-font-size-base: 0.875rem;   /* 14px */
+  --lector-font-weight-normal: 400;
+  --lector-font-weight-medium: 500;
+  --lector-font-weight-semibold: 600;
+  --lector-line-height: 1.5;
+
+  /* ── Border radius ── */
+  --lector-radius-sm: 3px;
+  --lector-radius: 0.375rem;           /* 6px — rounded-md */
+  --lector-radius-lg: 0.5rem;          /* 8px — rounded-lg */
+  --lector-radius-xl: 0.75rem;         /* 12px */
+  --lector-radius-full: 9999px;
+
+  /* ── Shadows ── */
+  --lector-shadow-sm: 0 1px 2px rgba(0,0,0,0.05);
+  --lector-shadow: 0 1px 3px rgba(0,0,0,0.1), 0 1px 2px rgba(0,0,0,0.06);
+  --lector-shadow-md: 0 4px 6px -1px rgba(0,0,0,0.1), 0 2px 4px -2px rgba(0,0,0,0.1);
+  --lector-shadow-lg: 0 10px 15px -3px rgba(0,0,0,0.1), 0 4px 6px -4px rgba(0,0,0,0.1);
+
+  /* ── Sizing ── */
+  --lector-sidebar-width: 250px;
+  --lector-sidebar-min-width: 180px;
+  --lector-sidebar-max-width: 480px;
+
+  /* ── Focus ── */
+  --lector-focus-ring: 0 0 0 2px var(--lector-accent-light), 0 0 0 3px var(--lector-accent);
+  --lector-focus-outline: 2px solid var(--lector-accent);
+  --lector-focus-outline-offset: 2px;
+
+  /* ── Transitions ── */
+  --lector-transition-fast: 150ms cubic-bezier(0.4, 0, 0.2, 1);
+  --lector-transition: 150ms cubic-bezier(0.4, 0, 0.2, 1);
+  --lector-transition-slow: 300ms cubic-bezier(0.4, 0, 0.2, 1);
+
+  /* ── Z-index ── */
+  --lector-z-sidebar: 10;
+  --lector-z-toolbar: 20;
+  --lector-z-dropdown: 40;
+  --lector-z-tooltip: 100;
+
+  /* ── Scrollbar ── */
+  --lector-scrollbar-width: 8px;
+  --lector-scrollbar-track: #f3f4f6;
+  --lector-scrollbar-thumb: #d1d5db;
+  --lector-scrollbar-thumb-hover: #9ca3af;
+
+  /* ── Tooltip ── */
+  --lector-tooltip-bg: #111827;
+  --lector-tooltip-fg: #ffffff;
+}
+
+/* ── Dark theme ── */
+
+:where(.lector-viewer--dark, .lector-workspace--dark, .lector-workspace--dark .lector-viewer) {
+  --lector-bg: #1f2937;
+  --lector-bg-alt: #374151;
+  --lector-bg-hover: #374151;
+  --lector-bg-active: #4b5563;
+  --lector-bg-selected: #1e3a5f;
+  --lector-bg-input: #374151;
+  --lector-bg-overlay: rgba(0, 0, 0, 0.7);
+  --lector-canvas-bg: #111827;
+  --lector-page-bg: #1f2937;
+
+  --lector-fg: #f9fafb;
+  --lector-fg-secondary: #e5e7eb;
+  --lector-fg-muted: #9ca3af;
+  --lector-fg-disabled: #9ca3af;                /* was #6b7280 — failed 4.5:1 AA on dark bg */
+  --lector-fg-on-accent: #111827;
+
+  --lector-accent: #60a5fa;
+  --lector-accent-hover: #3b82f6;
+  --lector-accent-active: #2563eb;
+  --lector-accent-light: #1e3a5f;
+
+  --lector-danger-light: rgba(239, 68, 68, 0.15);
+  --lector-danger-light-hover: rgba(239, 68, 68, 0.25);
+  --lector-success-light: rgba(34, 197, 94, 0.15);
+  --lector-warning-light: rgba(245, 158, 11, 0.15);
+  --lector-accent-fg: #111827;
+
+  --lector-border: #4b5563;
+  --lector-border-subtle: #374151;
+  --lector-border-strong: #6b7280;
+
+  --lector-shadow-lg: 0 10px 15px -3px rgba(0,0,0,0.3), 0 4px 6px -4px rgba(0,0,0,0.3);
+
+  --lector-scrollbar-track: #1f2937;
+  --lector-scrollbar-thumb: #4b5563;
+  --lector-scrollbar-thumb-hover: #6b7280;
+
+  --lector-tooltip-bg: #f9fafb;
+  --lector-tooltip-fg: #111827;
+}
+
+@media (prefers-color-scheme: dark) {
+  :where(.lector-viewer--system, .lector-workspace--system, .lector-workspace--system .lector-viewer) {
+    --lector-bg: #1f2937;
+    --lector-bg-alt: #374151;
+    --lector-bg-hover: #374151;
+    --lector-bg-active: #4b5563;
+    --lector-bg-selected: #1e3a5f;
+    --lector-bg-input: #374151;
+    --lector-canvas-bg: #111827;
+    --lector-page-bg: #1f2937;
+    --lector-fg: #f9fafb;
+    --lector-fg-secondary: #e5e7eb;
+    --lector-fg-muted: #9ca3af;
+    --lector-fg-disabled: #9ca3af;
+    --lector-accent: #60a5fa;
+    --lector-accent-hover: #3b82f6;
+    --lector-accent-active: #2563eb;
+    --lector-accent-light: #1e3a5f;
+    --lector-border: #4b5563;
+    --lector-border-subtle: #374151;
+    --lector-border-strong: #6b7280;
+    --lector-danger-light: rgba(239, 68, 68, 0.15);
+    --lector-danger-light-hover: rgba(239, 68, 68, 0.25);
+    --lector-success-light: rgba(34, 197, 94, 0.15);
+    --lector-warning-light: rgba(245, 158, 11, 0.15);
+    --lector-scrollbar-track: #1f2937;
+    --lector-scrollbar-thumb: #4b5563;
+    --lector-scrollbar-thumb-hover: #6b7280;
+    --lector-tooltip-bg: #f9fafb;
+    --lector-tooltip-fg: #111827;
+  }
+}

@@ -1,0 +1,49 @@
+{
+  "name": "@truespar/lector-core",
+  "version": "0.1.0",
+  "description": "Framework-agnostic PDF rendering engine",
+  "license": "MIT OR Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/truespar/lector.git",
+    "directory": "packages/core"
+  },
+  "type": "module",
+  "main": "./dist/index.js",
+  "module": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "sideEffects": [
+    "./dist/*.css",
+    "./src/ui/css/*.css"
+  ],
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    },
+    "./worker": {
+      "types": "./dist/worker/pdfium-worker.d.ts",
+      "import": "./dist/worker/pdfium-worker.js"
+    },
+    "./css/tokens.css": "./src/ui/css/tokens.css",
+    "./css/base.css": "./src/ui/css/base.css"
+  },
+  "files": [
+    "dist",
+    "src/ui/css"
+  ],
+  "scripts": {
+    "build": "tsup && tsc --emitDeclarationOnly",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "clean": "rm -rf dist"
+  },
+  "dependencies": {
+    "@truespar/lector-pdfium-wasm": "file:../pdfium-wasm",
+    "@truespar/lector-utils": "file:../utils",
+    "comlink": "^4.4.2"
+  },
+  "devDependencies": {
+    "lucide-static": "^1.7.0"
+  }
+}

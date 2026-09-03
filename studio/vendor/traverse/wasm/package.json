@@ -1,0 +1,44 @@
+{
+  "name": "@truespar/traverse-wasm",
+  "version": "0.8.5",
+  "description": "Traverse graph engine in a browser tab \u2014 Cypher + 32 GDS algorithms via WebAssembly. Runs in a dedicated Web Worker; no server required.",
+  "license": "MIT OR Apache-2.0",
+  "type": "module",
+  "main": "./index.js",
+  "types": "./index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./index.d.ts",
+      "import": "./index.js"
+    },
+    "./worker.js": "./worker.js",
+    "./pkg/*": "./pkg/*"
+  },
+  "files": [
+    "index.js",
+    "index.d.ts",
+    "worker.js",
+    "pkg/"
+  ],
+  "keywords": [
+    "graph-database",
+    "cypher",
+    "graph-data-science",
+    "pagerank",
+    "wasm",
+    "webassembly"
+  ],
+  "homepage": "https://truespar.com/traverse",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/truespar/traverse.git",
+    "directory": "crates/traverse-wasm"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "sideEffects": false
+}

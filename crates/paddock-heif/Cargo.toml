@@ -1,0 +1,41 @@
+[package]
+name = "paddock-heif"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+[dependencies]
+thiserror.workspace = true
+
+# AVIF decode, EMBEDDED - no native library, no pack, no build step, nothing
+# beside the executable (native code is linked in like pdfium
+# or it is not shipped). Both of these are ordinary Rust crates, so this is
+# stronger than pdfium's arrangement rather than a copy of it.
+#
+# rav1d is memorysafety.org's Rust port of dav1d, BSD-2. Taken from GIT rather
+# than the v1.1.0 release on crates.io: that release is 205 commits stale and
+# what has landed since is not housekeeping - `decode_coefs` carries backported
+# changes from dav1d 1.5.0, and there is a run of correctness and perf work on
+# top - for a decoder fed untrusted bytes, tracking upstream beats sitting on a
+# stale release. The rev is what makes that reproducible.
+#
+# `default-features = false` matters: the default `asm` feature would pull in
+# nasm and cc, which is a C toolchain arriving through the back door. Without
+# it the decoder is pure Rust and slower, which is the right trade for one
+# still image. Both bitdepths stay on - 10-bit AVIF is ordinary for HDR photos,
+# and dropping bitdepth_16 would refuse them.
+rav1d = { git = "https://github.com/memorysafety/rav1d", rev = "d3d1cd67059f", default-features = false, features = [
+    "bitdepth_8",
+    "bitdepth_16",
+] }
+# The AVIF container: finds the primary item and hands over its AV1 bitstream.
+# MPL-2.0, which is file-level copyleft and fine to link into a closed program
+# (§3.3 Larger Works) - but it is the one non-BSD licence here, and it does not
+# read `irot`/`imir`, so orientation is recovered by our own scan in
+# backend.rs. Both of those go away when the in-house HEIF container parser
+# lands with HEVC support and this crate drops out.
+avif-parse = "2.1"
+
+[lints]
+workspace = true

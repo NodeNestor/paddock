@@ -1,0 +1,47 @@
+[package]
+name = "paddock-tls"
+description = "The box's own TLS identity: a per-box CA, an auto-renewed leaf covering every name and address the box answers to, and a listener that serves plain HTTP and HTTPS on one port. Exists so a browser opening the Studio from anywhere but the box itself still gets a SECURE CONTEXT - without which the microphone, the clipboard and crypto.randomUUID are not slow or degraded, they are absent."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+axum = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }
+thiserror = { workspace = true }
+hyper = { version = "1.11.0", features = ["http1", "server"] }
+hyper-util = { version = "0.1.20", features = ["tokio", "server", "service"] }
+# TLS termination. Already in the tree via reqwest's rustls-tls, so the server
+# half costs no new build graph - it is the same rustls, driven from the other
+# end of the connection.
+rustls = { version = "0.23.43", default-features = false, features = ["std", "tls12", "aws-lc-rs"] }
+tokio-rustls = { version = "0.26.4", default-features = false, features = ["tls12", "aws-lc-rs"] }
+# X.509 generation: the CA and the leaf it signs. Pure Rust, and it signs with
+# aws-lc-rs - the same backend rustls already verifies with.
+rcgen = { version = "0.14.9", default-features = false, features = ["pem", "aws_lc_rs", "x509-parser"] }
+# The leaf must carry every address the box actually answers on, and std has no
+# way to enumerate interfaces.
+if-addrs = "0.15.0"
+# PEM <-> DER for the stored identity. rustls's own types crate, so the bytes
+# we read off disk are already the shape rustls wants.
+rustls-pki-types = { version = "1.15.1", features = ["std"] }
+# Reading the STORED leaf back: its expiry and the names it covers are what
+# decide whether it still fits the box. rcgen pulls this in for
+# `Issuer::from_ca_cert_pem` anyway - asking the certificate itself beats
+# keeping a sidecar file that can drift from it.
+x509-parser = "0.18.1"
+# rcgen dates its certificates with `time`.
+time = { version = "0.3.55", default-features = false, features = ["std"] }
+# The `Service` trait, to hand an axum Router to a hyper connection by hand.
+# The manual loop is the whole point: axum::serve cannot sniff a first byte.
+tower-service = "0.3.3"
+# CA fingerprint for the banner - what a user checks before trusting a root.
+sha2 = { workspace = true }
+
+[target."cfg(windows)".dependencies]
+windows-sys = { version = "0.61.2", features = ["Win32_Foundation", "Win32_Security", "Win32_Security_Authorization", "Win32_System_Threading"] }
+
+[lints]
+workspace = true

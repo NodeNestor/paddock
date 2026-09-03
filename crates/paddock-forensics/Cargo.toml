@@ -1,0 +1,70 @@
+[package]
+name = "paddock-forensics"
+description = "Image/document forensic signal extraction (ELA, noise, PRNU, splice, ...) as a runner-gated library. GPU-first via a multi-arch cudarc fatbin, with a parity-verified CPU fallback. Feeds findings to the serving model; never touches the LLM kernel ABI."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[features]
+default = []
+# HEIC/HEIF/AVIF decode via libheif (system lib). Opt-in because it pulls a C
+# system dependency (libheif); without it, HEIC input is an honest decode error,
+# never a silent skip. Pinned to the 0.18 API this port targets;
+# libheif 1.17 is the runtime it targets.
+#
+# Held BACK deliberately in a dependency sweep that moved everything else.
+# Upstream is 3.0.0 and the surface is different again, but: this feature is off
+# by default and nothing turns it on; no libheif exists on a Windows dev box, so
+# the port cannot be COMPILED there let alone tested; and
+# paddock-heif is the newer answer for this family
+# - a bundled decoder, the way pdfium is bundled, rather than a system lib.
+# Rewriting an untestable port of a superseded path is not maintenance. The
+# real decision is whether this dependency should exist at all.
+heic = ["dep:libheif-rs"]
+# GPU acceleration. When enabled, build.rs compiles the CUDA sources under
+# cuda/ to a multi-arch fatbin (the same -gencode set paddock's own pack uses)
+# and the fatbin is loaded/launched through cudarc - never the LLM KernelTableV1.
+cuda = ["dep:cudarc"]
+
+[dependencies]
+serde = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+# Pixel decode + the JPEG re-encoder ELA depends on. The format set matches the
+# workspace `image` decision so a file this crate sees is a file the runner sees.
+image = { workspace = true }
+# PDF parsing for the document-forensics lane: object/annotation/image/xref model
+# and metadata, from bytes (no temp file). Same sibling crate the runner uses.
+sift = { workspace = true }
+# 8x8 DCT for double-JPEG detection. Used on both the (only) code path, so the
+# result matches the reference implementation bit-for-bit (same crate + version
+# family).
+rustdct = "0.7.1"
+# 2D FFT for CFA (Popescu&Farid demosaicing peaks) and the ai_detect frequency
+# analyzer. CPU-only paths: a GPU cuFFT would not reproduce rustfft bit-for-bit,
+# and the reference's own CFA/frequency GPU paths are CPU-fallback stubs, so
+# these stay CPU (gpu() delegates). Same crate family the reference uses.
+rustfft = "6.4"
+num-complex = "0.4"
+# HEIC/HEIF/AVIF decode (feature `heic`). 0.18 is the API this port targets.
+libheif-rs = { version = "0.18", optional = true }
+# Contiguous 2D container for the wavelet PRNU residual (matches the reference).
+ndarray = "0.17"
+# GPU only. The safe module loader `CudaContext::load_module` + `Ptx::from_binary`
+# is gated behind cudarc's `nvrtc` feature, so we opt in - but we never call the
+# runtime compiler (`compile_ptx`): the fatbin goes in via `Ptx::from_binary`
+# (`cuModuleLoadData`), which JITs nothing on a supported arch. With the
+# workspace's `fallback-dynamic-loading`, enabling `nvrtc` adds no hard link to
+# libnvrtc - it would only ever dlopen if we compiled at runtime, which we don't.
+cudarc = { workspace = true, optional = true, features = ["nvrtc"] }
+
+[dev-dependencies]
+serde_json = { workspace = true }
+# Test-only: the render_compare parity test needs to actually rasterize pages, so
+# it binds its own pdfium. Production never binds here - the runner owns the one
+# process-wide pdfium and supplies a PageRenderer (dependency injection).
+paddock-pdfium = { workspace = true }
+
+[lints]
+workspace = true

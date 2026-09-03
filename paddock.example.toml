@@ -1,0 +1,121 @@
+# Paddock Server Configuration
+#
+# Copy this file to paddock.toml and uncomment the settings you need.
+# The server auto-detects paddock.toml in the working directory,
+# or pass --config <path> to use a different location.
+#
+# Precedence: CLI args > environment variables > this file > built-in defaults
+
+# Address to bind the HTTP API to.
+# Loopback by default - binding wider is an explicit decision (exposing an
+# inference server to the network is a security choice, not a default).
+# Env: PADDOCK_HOST   CLI: --host
+# host = "127.0.0.1"
+
+# Port to bind the HTTP API to.
+# Env: PADDOCK_PORT   CLI: --port
+# port = 11540
+
+# GGUF model to load and serve at startup.
+# Unset = start with no model loaded; browse installed models at GET /v1/models.
+# Env: PADDOCK_MODEL   CLI: --model, -m
+# model = "~/paddock/models/Qwen3-Embedding-4B-Q8_0.gguf"
+
+# Directories scanned for GGUF files (plain files on disk, no lock-in).
+# Env: PADDOCK_MODEL_DIRS (comma-separated)   CLI: --model-dir (repeatable)
+# model_dirs = ["~/paddock/models"]
+
+# Compute device. Only "cuda" exists; there is no CPU path.
+# Env: PADDOCK_DEVICE   CLI: --device
+# device = "cuda"
+
+# Kernel pack path - required for device = "cuda".
+# Env: PADDOCK_KERNEL_PACK   CLI: --kernel-pack
+# kernel_pack = "packs/cuda/build/pd-cuda-sm120.so"
+
+# Max context length (KV cache) for the served model.
+# Env: PADDOCK_MAX_CTX   CLI: --max-ctx
+# max_ctx = 4096
+
+# Vision tower GGUF (mmproj) for multimodal models - enables image input.
+# Env: PADDOCK_MMPROJ   CLI: --mmproj
+# mmproj = "~/paddock/models/Qwen3-VL-mmproj-f16.gguf"
+
+# --- Server-side sampling defaults (llama.cpp-style) -----------------------
+# Used only when a request omits the field - the request always wins. The
+# commented values are the built-in OpenAI-compat defaults.
+# temp = 1.0
+# top_k = 0
+# top_p = 1.0
+# min_p = 0.0
+# repeat_penalty = 1.0
+# repeat_last_n = 64
+# seed = 42               # unset = per-request time-derived seed
+
+# KV cache element type: "auto" (per-family default: gemma4 fp8-e4m3 when
+# pooled, others f16), "f16" (exact), or "fp8_e4m3" (lossy, halves KV bytes).
+# kv_cache_dtype = "auto"
+
+# Serve the model under this id in /v1/models (vLLM's --served-model-name).
+# served_model_name = "my-model"
+
+# Disable speculative decode / MTP.
+# no_spec = false
+
+# --- Request filters + admission (llama-swap lessons)
+
+# Alternative model ids this endpoint answers to - e.g. impersonate a cloud id
+# for tools that hardcode one. Listed on the served model's /v1/models record.
+# Env: PADDOCK_ALIASES (comma-separated)   CLI: --aliases
+# aliases = ["gpt-4o-mini"]
+
+# Parameter variants: request fields bound to selectable model ids. Each
+# [variants.<name>] table becomes the API-visible id "<model>:<name>" - one
+# resident model, several behaviours, zero reload. Preset fields override the
+# request (the client chose the variant); "model" itself is protected.
+# Env: PADDOCK_VARIANTS (one JSON object)   CLI: --variants
+# [variants.think]
+# chat_template_kwargs = { enable_thinking = true }
+# [variants.nothink]
+# chat_template_kwargs = { enable_thinking = false }
+
+# Server-side param enforcement: strip removes client-sent fields, force
+# overwrites them regardless of what was sent (declared config made
+# enforceable, not just a default). Applied strip -> force -> variant.
+# Env: PADDOCK_STRIP_PARAMS / PADDOCK_FORCE_PARAMS   CLI: --strip-params / --force-params
+# strip_params = ["temperature", "top_p"]
+# [force_params]
+# temperature = 0.7
+
+# Explicit admission cap: max in-flight inference requests before an
+# Overloaded refusal (503/529 + Retry-After). Queue depth - distinct from
+# max_batch, the compute width.
+# Env: PADDOCK_CONCURRENCY_LIMIT   CLI: --concurrency-limit
+# concurrency_limit = 64
+
+# --- KV offloading (kv-offload tiering)
+
+# Keeps the parts of a conversation the GPU has run out of room for, in system
+# RAM and optionally on disk, so returning to one RESUMES instead of re-reading
+# it. The win is agentic work: many long sessions on one box, each returning to
+# a prefix that no longer fits in VRAM.
+#
+# Budgets only. Everything about how the cache behaves - when a restore beats
+# recomputing, what to evict, how deep to queue the disk, what chunk the drive
+# likes - is elected in the engine and measured on the machine it runs on.
+#
+# ram_gb is the entry point: the disk tier stores through RAM, so a disk budget
+# alone arms nothing (the runner says so at startup rather than going quiet).
+# nvme_gb alone is enough for the disk tier: nvme_path defaults to a kv-cache
+# folder under the box's data root, and only needs setting to override it.
+# Point it at LOCAL SSD storage - the cache measures the device when it opens
+# and will tell you if restores are going to lose to recomputing.
+#
+# The cache is keyed by model content, so switching a model's file, context
+# size or KV dtype starts a fresh one; caches whose model has been gone for two
+# weeks are retired automatically.
+# [kv_offload]
+# enabled = true
+# ram_gb = 24.0
+# nvme_gb = 200.0
+# nvme_path = "D:/paddock-cache"

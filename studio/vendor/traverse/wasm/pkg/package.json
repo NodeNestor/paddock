@@ -1,0 +1,17 @@
+{
+  "name": "traverse-wasm",
+  "type": "module",
+  "description": "WebAssembly bindings for the Traverse graph engine — Cypher + 32 GDS algorithms in a browser tab",
+  "version": "0.8.2",
+  "license": "MIT OR Apache-2.0",
+  "files": [
+    "traverse_wasm_bg.wasm",
+    "traverse_wasm.js",
+    "traverse_wasm.d.ts"
+  ],
+  "main": "traverse_wasm.js",
+  "types": "traverse_wasm.d.ts",
+  "sideEffects": [
+    "./snippets/*"
+  ]
+}

@@ -1,0 +1,38 @@
+{
+  "name": "@truespar/lector-pdfium-wasm",
+  "version": "0.1.0",
+  "description": "Pdfium WASM binary with typed TypeScript bindings",
+  "license": "MIT OR Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/truespar/lector.git",
+    "directory": "packages/pdfium-wasm"
+  },
+  "type": "module",
+  "main": "./dist/index.js",
+  "module": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "sideEffects": false,
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    },
+    "./pdfium.js": {
+      "import": "./dist/pdfium.js"
+    },
+    "./pdfium.wasm": "./dist/pdfium.wasm",
+    "./pdfium-st.js": {
+      "import": "./dist/pdfium-st.js"
+    },
+    "./pdfium-st.wasm": "./dist/pdfium-st.wasm"
+  },
+  "files": ["dist"],
+  "scripts": {
+    "build:wasm": "bash build/build.sh",
+    "generate": "docker run --rm -v \"$(pwd)/codegen:/codegen\" -v \"$(pwd)/src/generated:/output\" lector-pdfium-wasm-builder:chromium-7690 python3 /codegen/generate.py /build/pdfium/public /output/bindings.ts",
+    "build": "tsup && tsc --emitDeclarationOnly",
+    "typecheck": "tsc --noEmit",
+    "clean": "rm -rf dist"
+  }
+}

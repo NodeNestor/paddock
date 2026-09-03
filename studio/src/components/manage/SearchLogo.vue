@@ -1,0 +1,92 @@
+<script setup lang="ts">
+// Brand marks for the web-search providers, in their own colours rather than
+// currentColor. VendorLogo draws model makers monochrome deliberately - a page
+// listing twenty of them would be a fruit salad otherwise - but these five sit
+// side by side as a CHOICE, and colour is how a reader picks the one they
+// already have an account with without reading five words.
+//
+//  - Brave and Perplexity ship in simple-icons; drawn in their brand hex,
+//    both of which carry enough contrast to read on light and dark alike.
+//  - Exa's mark is its own asset (simple-icons has no Exa): one path, and its
+//    brand blue is deep enough to sink into a dark background, so dark theme
+//    lifts the same hue the way VendorLogo does for Qwen.
+//  - Firecrawl's flame is likewise its own path. It is the one mark here that
+//    is not square - 200x284 - so it is fitted to HEIGHT with the width
+//    following the ratio; letterboxed into a size x size box it would shrink
+//    to nothing beside the others.
+//  - Tavily's mark is a filled badge whose official SVG is a traced
+//    four-path affair with its own background; it goes in as an <img> asset
+//    for the same reason Google's G does, and its badge reads on both themes
+//    without help.
+import { siBrave, siPerplexity } from 'simple-icons'
+import tavilyLogo from '@/assets/tavily.svg'
+
+withDefaults(defineProps<{ provider: string; size?: number }>(), { size: 16 })
+
+const SI: Record<string, { path: string; hex: string; title: string }> = {
+  brave: siBrave,
+  perplexity: siPerplexity,
+}
+</script>
+
+<template>
+  <svg
+    v-if="provider === 'exa'"
+    :width="size"
+    :height="size"
+    viewBox="0 0 150 150"
+    role="img"
+    aria-label="Exa"
+  >
+    <g transform="translate(32, 20)">
+      <path
+        class="sl__exa"
+        fill-rule="evenodd"
+        clip-rule="evenodd"
+        d="M0 0H86V8.20896L49.2981 55L86 101.791V110H0V0ZM43.5408 47.4289L73.3652 8.20896H13.7164L43.5408 47.4289ZM9.67573 18.0375V50.8955H34.6623L9.67573 18.0375ZM34.6623 59.1045H9.67573V91.9625L34.6623 59.1045ZM13.7164 101.791L43.5408 62.5711L73.3652 101.791H13.7164Z"
+      />
+    </g>
+  </svg>
+  <img
+    v-else-if="provider === 'tavily'"
+    :src="tavilyLogo"
+    :width="size"
+    :height="size"
+    alt="Tavily"
+  />
+  <svg
+    v-else-if="provider === 'firecrawl'"
+    :width="(size * 200) / 284"
+    :height="size"
+    viewBox="0 0 200 284"
+    preserveAspectRatio="xMidYMid meet"
+    role="img"
+    aria-label="Firecrawl"
+  >
+    <path
+      fill="#FA5D19"
+      d="M166.862 90.7716C155.812 94.0514 147.483 101.471 141.383 109.53C140.073 111.26 137.343 109.96 137.863 107.841C149.543 59.8136 134.113 19.896 86.0157 0.247269C83.5758 -0.752669 81.0359 1.43719 81.6759 3.99704C103.555 91.8416 11.5294 84.432 23.1588 184.016C23.3588 185.726 21.4389 186.896 20.039 185.896C15.6792 182.766 10.8095 176.236 7.46963 171.647C6.48968 170.297 4.36978 170.677 3.9198 172.287C1.25994 181.906 0 190.965 0 199.965C0 234.963 17.9891 265.771 45.2177 283.63C46.7777 284.65 48.7776 283.19 48.2476 281.4C46.8477 276.7 46.0577 271.74 45.9977 266.611C45.9977 263.461 46.1977 260.241 46.6877 257.241C47.8276 249.702 50.4475 242.522 54.8473 235.983C69.9365 213.334 100.185 191.455 95.3552 161.747C95.0453 159.867 97.2651 158.627 98.6651 159.917C119.974 179.386 124.194 205.575 120.694 229.063C120.394 231.103 122.954 232.193 124.244 230.593C127.504 226.513 131.483 222.933 135.813 220.244C136.893 219.574 138.333 220.084 138.743 221.284C141.153 228.293 144.733 234.873 148.113 241.452C152.152 249.362 154.302 258.391 153.962 267.951C153.792 272.6 153.022 277.1 151.732 281.38C151.182 283.19 153.162 284.7 154.752 283.66C182.001 265.801 200 234.993 200 199.975C200 187.806 197.87 175.876 193.84 164.697C185.391 141.248 163.952 123.64 169.372 93.0815C169.632 91.6216 168.282 90.3517 166.862 90.7716Z"
+    />
+  </svg>
+  <svg
+    v-else-if="SI[provider]"
+    :width="size"
+    :height="size"
+    viewBox="0 0 24 24"
+    role="img"
+    :aria-label="SI[provider].title"
+  >
+    <path :fill="`#${SI[provider].hex}`" :d="SI[provider].path" />
+  </svg>
+</template>
+
+<style scoped>
+/* Exa's brand blue is deep - correct on a light page, near-invisible on a
+   dark one. Dark theme lifts the same hue rather than abandoning it. */
+.sl__exa {
+  fill: #1f40ed;
+}
+[data-theme='dark'] .sl__exa {
+  fill: #6f88ff;
+}
+</style>

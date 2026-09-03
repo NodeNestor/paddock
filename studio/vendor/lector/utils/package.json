@@ -1,0 +1,29 @@
+{
+  "name": "@truespar/lector-utils",
+  "version": "0.1.0",
+  "description": "Shared utilities for Lector PDF renderer",
+  "license": "MIT OR Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/truespar/lector.git",
+    "directory": "packages/utils"
+  },
+  "type": "module",
+  "main": "./dist/index.js",
+  "module": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "sideEffects": false,
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "files": ["dist"],
+  "scripts": {
+    "build": "tsup && tsc --emitDeclarationOnly",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "clean": "rm -rf dist"
+  }
+}

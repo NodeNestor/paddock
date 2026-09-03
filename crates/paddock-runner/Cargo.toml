@@ -1,0 +1,129 @@
+[package]
+name = "paddock-runner"
+description = "The paddock runner: one model, one port, the full OpenAI/Anthropic/Ollama API. Headless data plane; the manager (`paddock`) supervises it."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[features]
+# See paddock-engine's note. This is the crate a release actually builds with
+# the feature on, since paddock-runner is the only binary that serves.
+static-pack = ["paddock-engine/static-pack"]
+# The shipped-binary flavour. Chains everywhere a dev switch is
+# read, because the `#[cfg]` inside `dev_var_os!` resolves against the CALLING
+# crate - an unchained crate keeps its switches live and only a build error
+# (hardening_chained!) or the leakage scanner would catch it.
+hardened = [
+    "paddock-engine/hardened",
+    "paddock-models/hardened",
+    "paddock-websearch/hardened",
+]
+# GPU-accelerated forensics. Off by default: it makes the forensic CUDA fatbin
+# a build-time nvcc step (interim - the SOTA target is a prebuilt, hardware-
+# matched forensic pack distributed like packs/cuda, matching the engine pack's
+# download model). Without it, the forensics gate still works on the parity-
+# verified CPU path.
+forensics-cuda = ["paddock-forensics/cuda"]
+# HEIC/HEIF/AVIF input support in the forensics gate. Off by default: it pulls
+# the libheif system library. Enable where iPhone-style HEIC uploads are
+# expected; without it HEIC input is an honest decode error, never a silent skip.
+forensics-heic = ["paddock-forensics/heic"]
+
+[[bin]]
+name = "paddock-runner"
+path = "src/main.rs"
+
+[dependencies]
+axum = { workspace = true, features = ["ws", "multipart"] }
+tokio = { workspace = true }
+# free-space read for the [kv_offload] disk budget check (honest will-it-fit)
+fs4 = "1.1"
+serde = { workspace = true }
+serde_json = { workspace = true }
+toml = { workspace = true }
+clap = { workspace = true }
+tracing = { workspace = true }
+thiserror = { workspace = true }
+uuid = { workspace = true }
+futures = { workspace = true }
+async-stream = { workspace = true }
+minijinja = { workspace = true }
+minijinja-contrib = { workspace = true }
+base64 = { workspace = true }
+chrono = { workspace = true }
+# whisper's `compression_ratio` segment field is bytes/zlib(bytes) by
+# definition - see transcriptions.rs
+flate2 = { workspace = true }
+image = { workspace = true }
+# Multi-page TIFF (scanned documents): the image crate decodes only IFD 0, so
+# the page walk + per-page decode use the tiff crate it is built on directly.
+tiff = { workspace = true }
+# Server-side PDF -> image rasterization (vision path). STATICALLY linked
+# against our own pdfium build (packs/pdfium/build/) - no sidecar DLL, nothing
+# written to disk at first use, and paddock ships two binaries and nothing else.
+#
+# Ours, replacing pdfium-render: that crate's per-vintage
+# hand-written bindings capped which pdfium we could statically link, and left
+# us months behind on a memory-unsafe parser we feed arbitrary
+# user PDFs. Serialization is no longer free - it came with pdfium-render's
+# `thread_safe` - so src/pdf.rs holds the mutex itself.
+#
+# The library is wired up by this crate's build.rs, which picks the per-OS path
+# out of packs/pdfium/.
+paddock-pdfium = { workspace = true }
+# PDF text + metadata extraction (text path - any model reads a PDF's text
+# layer, no vision needed) and document metadata injection. Pure Rust, ours.
+sift = { workspace = true }
+# Word (.docx) extraction: scriptor's document model resolves tracked changes
+# to the final view and reads core.xml properties. Pure Rust, ours.
+scriptor-crdt = { workspace = true }
+# The full metadata view behind `/api/metadata` - every embedded field, not the
+# handful curated into a prompt. Shared with the manager so the same question
+# gets the same answer whether a model is loaded or not.
+paddock-filemeta = { workspace = true }
+# Offline coordinates -> place name, for the photo line. Bundled table, no
+# network: a geocoding API would leak the very coordinate the user is asking
+# about, once per photo.
+paddock-geo = { workspace = true }
+paddock-heif = { workspace = true }
+# Spreadsheet attachments -> markdown tables (xlsx/xlsm/xls/xlsb/ods).
+calamine = { workspace = true }
+# Text-native attachments: encoding detection + decoding (never assume UTF-8).
+encoding_rs = { workspace = true }
+chardetng = { workspace = true }
+# Reads back what language a TRANSCRIPT is written in, so a decode told to
+# expect one language and producing another says so - see src/language.rs.
+whatlang = { workspace = true }
+paddock-api = { workspace = true }
+paddock-models = { workspace = true }
+paddock-engine = { workspace = true }
+paddock-forensics = { workspace = true }
+# only to name the data root for the CUDA preloader before any GPU work - the
+# engine cannot work it out and must not learn how
+paddock-tokenizer = { workspace = true }
+paddock-mcp = { workspace = true }
+# Server-executed web_search tool (API conformance: OpenAI web_search /
+# Anthropic web_search_20250305) - shared provider client.
+paddock-websearch = { workspace = true }
+http-body = "1.1.0"
+paddock-admin = { version = "0.1.0", path = "../paddock-admin" }
+mimalloc = "0.1.52"
+
+# Native Windows-service support (`paddock-runner service install`): a model
+# server the OS supervises, no manager and no wrapper (NSSM/WinSW) needed.
+[target.'cfg(windows)'.dependencies]
+windows-service = "0.8.1"
+
+[dev-dependencies]
+# builds in-memory .docx fixtures for the extraction tests
+scriptor-ooxml = { workspace = true }
+tower = { workspace = true, features = ["util"] }
+http-body-util = { workspace = true }
+
+[lints]
+workspace = true
+
+[target.'cfg(windows)'.build-dependencies]
+# VERSIONINFO + the .ico, so the exe says who it is. See build.rs.
+winresource = "0.1.31"

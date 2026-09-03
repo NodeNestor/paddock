@@ -1,0 +1,26 @@
+[package]
+name = "paddock-websearch"
+description = "Web-search provider client (Exa/Tavily/Firecrawl/Brave/Perplexity) shared by the runner (server-executed web_search tool) and the manager (Studio settings + test)."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[features]
+# The shipped-binary flavour: drops PADDOCK_SEARCH_URL, which is a
+# test hook that was live in production - anyone could redirect a paid search
+# provider's traffic to a host of their choosing.
+hardened = []
+
+[dependencies]
+serde_json = { workspace = true }
+# rustls so https:// works without a system OpenSSL.
+reqwest = { version = "0.13", default-features = false, features = ["rustls", "http2", "json", "query"] }
+tracing.workspace = true
+# rate limiting sleeps between paced requests, and the wire tests stand a mock
+# HTTP server in front of the provider clients. reqwest already runs on tokio;
+# this only makes it a direct dep.
+tokio = { workspace = true }
+
+[lints]
+workspace = true

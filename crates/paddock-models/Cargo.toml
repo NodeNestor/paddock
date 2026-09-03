@@ -1,0 +1,27 @@
+﻿[package]
+name = "paddock-models"
+description = "Model store: plain GGUF files in user-visible directories. Import in place, no hashed blobs."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[features]
+# The shipped-binary flavour. Compiles out every development
+# switch and seals the environment at startup - see src/hardening.rs. Not a
+# synonym for --release: benchmarking and profiling runs use --release and
+# must keep every switch and every real name.
+hardened = []
+
+[dependencies]
+thiserror = { workspace = true }
+tracing = { workspace = true }
+serde = { workspace = true }
+memmap2 = { workspace = true }
+serde_json = { workspace = true }
+
+[dev-dependencies]
+tempfile = "3"
+
+[lints]
+workspace = true

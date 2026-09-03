@@ -1,0 +1,514 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "Paddock Runner API",
+    "version": "__VERSION__",
+    "description": "The complete HTTP surface of one Paddock runner (one served model, one port).\n\nThe surface has three families:\n\n- **OpenAI-compatible** - `/v1/chat/completions`, `/v1/completions`, `/v1/responses`, `/v1/embeddings`, `/v1/audio/transcriptions`, `/v1/models`. These conform to OpenAI's API and are documented by OpenAI's own reference; this document lists them with Paddock's deviations and extensions only, and deliberately does not re-specify their schemas. Point an official OpenAI SDK at the runner's base URL and it works.\n- **Anthropic-compatible** - `/v1/messages`, `/v1/messages/count_tokens`. Same rule: Anthropic's reference is the specification.\n- **Paddock-native** - forced alignment, rerank, the extraction preview, the model card, stats, and the realtime socket. These exist nowhere else, so they are fully specified here.\n\nAuthentication: a runner started without an API key accepts unauthenticated requests. With a key configured, `/v1/*` and `/api/*` require `Authorization: Bearer <key>`; `/healthz` and this document stay open, and `/metrics` is open on loopback but keyed over the network.\n\nOne runner serves one model, so `model` request fields are accepted and ignored everywhere; `GET /v1/models` lists exactly one entry with Paddock capability extensions.",
+    "license": { "name": "MIT OR Apache-2.0", "identifier": "MIT OR Apache-2.0" }
+  },
+  "servers": [
+    {
+      "url": "http://{host}:{port}",
+      "description": "A runner endpoint. The manager allocates ports upward from 11540; hand-started runners use whatever their config names.",
+      "variables": {
+        "host": { "default": "127.0.0.1" },
+        "port": { "default": "11540" }
+      }
+    }
+  ],
+  "security": [{}, { "bearerAuth": [] }],
+  "tags": [
+    { "name": "openai", "description": "OpenAI-compatible - specified by OpenAI's reference; deviations and extensions noted per operation" },
+    { "name": "anthropic", "description": "Anthropic-compatible - specified by Anthropic's reference" },
+    { "name": "paddock", "description": "Paddock-native - fully specified here" },
+    { "name": "operations", "description": "Health, metrics, discovery" }
+  ],
+  "paths": {
+    "/healthz": {
+      "get": {
+        "tags": ["operations"],
+        "summary": "Liveness and drain state",
+        "operationId": "health",
+        "security": [{}],
+        "responses": {
+          "200": { "description": "Serving. Body is the literal text `ok`.", "content": { "text/plain": { "schema": { "type": "string" } } } },
+          "503": { "description": "Draining: finishing in-flight requests, refusing new ones. Body is the literal text `draining`.", "content": { "text/plain": { "schema": { "type": "string" } } } }
+        }
+      }
+    },
+    "/metrics": {
+      "get": {
+        "tags": ["operations"],
+        "summary": "Prometheus metrics",
+        "description": "Prometheus text exposition (request counters, token counters, latency histograms, engine gauges). Open on loopback; over the network it requires the bearer key when one is configured.",
+        "operationId": "metrics",
+        "responses": {
+          "200": { "description": "Prometheus exposition format", "content": { "text/plain": { "schema": { "type": "string" } } } }
+        }
+      }
+    },
+    "/openapi.json": {
+      "get": {
+        "tags": ["operations"],
+        "summary": "This document",
+        "operationId": "openapi",
+        "security": [{}],
+        "responses": {
+          "200": { "description": "The runner's OpenAPI 3.1 description", "content": { "application/json": { "schema": { "type": "object" } } } }
+        }
+      }
+    },
+    "/v1/models": {
+      "get": {
+        "tags": ["openai"],
+        "summary": "List the served model (OpenAI shape + Paddock capability extensions)",
+        "description": "OpenAI's list shape with one entry per serving role on this runner. Each entry additionally carries honest capability metadata: input/output modalities, `capabilities` (e.g. `vision`, `audio`, `alignment` with `alignment_max_clip_s`, `timestamp_granularities`, `include`), and the context window - so a client learns what a request can ask for without discovering it from a 400.",
+        "operationId": "listModels",
+        "externalDocs": { "description": "OpenAI reference", "url": "https://platform.openai.com/docs/api-reference/models/list" },
+        "responses": {
+          "200": { "description": "Model list", "content": { "application/json": { "schema": { "type": "object" } } } }
+        }
+      }
+    },
+    "/v1/chat/completions": {
+      "post": {
+        "tags": ["openai"],
+        "summary": "Chat Completions (OpenAI-conformant)",
+        "description": "Conforms to OpenAI Chat Completions: streaming semantics, tool calling incl. parallel tool calls, structured outputs, vision content parts, logprobs, and OpenAI error shapes. `model` is accepted and ignored (one model per runner). See the conformance matrix for the honored-parameter list.",
+        "operationId": "chatCompletions",
+        "externalDocs": { "description": "OpenAI reference", "url": "https://platform.openai.com/docs/api-reference/chat" },
+        "responses": {
+          "200": { "description": "Completion object, or an SSE stream when `stream: true`" },
+          "400": { "$ref": "#/components/responses/BadRequest" }
+        }
+      }
+    },
+    "/v1/completions": {
+      "post": {
+        "tags": ["openai"],
+        "summary": "Completions, legacy (OpenAI-conformant)",
+        "description": "The legacy text-completions surface, kept because benchmark tools and older clients still speak it. Supports `logprobs` in the legacy shape.",
+        "operationId": "completions",
+        "externalDocs": { "description": "OpenAI reference", "url": "https://platform.openai.com/docs/api-reference/completions" },
+        "responses": {
+          "200": { "description": "Completion object, or an SSE stream when `stream: true`" },
+          "400": { "$ref": "#/components/responses/BadRequest" }
+        }
+      }
+    },
+    "/v1/responses": {
+      "post": {
+        "tags": ["openai"],
+        "summary": "Responses API (OpenAI-conformant, first-class)",
+        "description": "The items + event-stream model agent SDKs are converging on - first-class in Paddock alongside Chat Completions: typed event stream, tool calling, reasoning items, MCP server tools, `max_tool_calls`. `previous_response_id` continuation is supported for MCP approval flows only.",
+        "operationId": "responses",
+        "externalDocs": { "description": "OpenAI reference", "url": "https://platform.openai.com/docs/api-reference/responses" },
+        "responses": {
+          "200": { "description": "Response object, or the typed SSE event stream when `stream: true`" },
+          "400": { "$ref": "#/components/responses/BadRequest" }
+        }
+      }
+    },
+    "/v1/responses/compact": {
+      "post": {
+        "tags": ["openai"],
+        "summary": "Conversation compaction (OpenAI-shaped)",
+        "description": "The compaction executor standalone, returning OpenAI's `CompactedResponse` shape (object `response.compaction`): the conversation's user items followed by one compaction item, with the summarization pass's usage.",
+        "operationId": "responsesCompact",
+        "responses": {
+          "200": { "description": "CompactedResponse object" },
+          "400": { "$ref": "#/components/responses/BadRequest" }
+        }
+      }
+    },
+    "/v1/messages": {
+      "post": {
+        "tags": ["anthropic"],
+        "summary": "Messages (Anthropic-conformant)",
+        "description": "Conforms to Anthropic's Messages API: streaming event shapes, tool use, thinking blocks, vision content, and Anthropic error shapes. `model` is accepted and ignored.",
+        "operationId": "messages",
+        "externalDocs": { "description": "Anthropic reference", "url": "https://docs.anthropic.com/en/api/messages" },
+        "responses": {
+          "200": { "description": "Message object, or the Anthropic SSE stream when `stream: true`" },
+          "400": { "$ref": "#/components/responses/BadRequest" }
+        }
+      }
+    },
+    "/v1/messages/count_tokens": {
+      "post": {
+        "tags": ["anthropic"],
+        "summary": "Count tokens (Anthropic-conformant)",
+        "description": "Real tokenizer, real attachment extraction - the number a send would actually cost, never an estimate.",
+        "operationId": "countTokens",
+        "externalDocs": { "description": "Anthropic reference", "url": "https://docs.anthropic.com/en/api/messages-count-tokens" },
+        "responses": {
+          "200": { "description": "`{ input_tokens }`" },
+          "400": { "$ref": "#/components/responses/BadRequest" }
+        }
+      }
+    },
+    "/v1/embeddings": {
+      "post": {
+        "tags": ["openai"],
+        "summary": "Embeddings (OpenAI-conformant)",
+        "description": "Served by encoder models (embeddings/reranker checkpoints). Supports `dimensions` (Matryoshka truncation) and `encoding_format`.",
+        "operationId": "embeddings",
+        "externalDocs": { "description": "OpenAI reference", "url": "https://platform.openai.com/docs/api-reference/embeddings" },
+        "responses": {
+          "200": { "description": "Embedding list" },
+          "400": { "$ref": "#/components/responses/BadRequest" }
+        }
+      }
+    },
+    "/v1/rerank": {
+      "post": {
+        "tags": ["paddock"],
+        "summary": "Rerank documents against a query",
+        "description": "Paddock-native (the shape follows the industry rerank convention). Served by reranker models - encoder checkpoints whose vocabulary carries the yes/no relevance tokens; `GET /v1/models` advertises `rerank` capability. Results come back sorted by descending relevance.",
+        "operationId": "rerank",
+        "requestBody": {
+          "required": true,
+          "content": { "application/json": { "schema": { "$ref": "#/components/schemas/RerankRequest" } } }
+        },
+        "responses": {
+          "200": { "description": "Scored documents, best first", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/RerankResponse" } } } },
+          "400": { "$ref": "#/components/responses/BadRequest" }
+        }
+      }
+    },
+    "/v1/audio/transcriptions": {
+      "post": {
+        "tags": ["openai"],
+        "summary": "Transcription (OpenAI-conformant + extensions)",
+        "description": "Conforms to OpenAI's transcription surface: multipart `file`, `language`, `languages[]`, `prompt`, `response_format` (`json`, `text`, `srt`, `vtt`, `verbose_json`), `timestamp_granularities[]`, streaming `transcript.text.*` SSE. Paddock extensions, all advertised per model in `/v1/models` and `/api/server` so clients never discover them from a 400: `include[]=logprobs` yields per-word confidence (`paddock_confidence`, `paddock_alt`, `paddock_margin`) on lanes with no timestamp vocabulary; decode-guard annotations report spans the model refused or cut rather than silently dropping them.\n\n**Language.** `language` FORCES one and skips detection; `languages[]` is OpenAI's plural and is honoured here as a SOFT PRIOR over the server's own detection - it biases, it never filters, so a language nobody named still wins when the audio says so. The two are mutually exclusive and a code outside the loaded checkpoint's map is a 400 rather than a failed decode; the map itself is published as `language_detection.languages`. Every JSON body carries `paddock_language`: where the reported code came from (`asked` / `detected` / `reported` / `unknown`), its probability and runners-up where a detector produced them, whether a hint overturned the model's own answer, and what language the finished TEXT reads as. When that last one contradicts the language the decode ran under, a `language_mismatch` decode-guard notice says so on every body shape - a speech model told the wrong language translates rather than transcribes, and that failure is otherwise fluent, grammatical and invisible.",
+        "operationId": "transcriptions",
+        "externalDocs": { "description": "OpenAI reference", "url": "https://platform.openai.com/docs/api-reference/audio/createTranscription" },
+        "responses": {
+          "200": { "description": "Transcription in the requested `response_format`, or the SSE stream" },
+          "400": { "$ref": "#/components/responses/BadRequest" }
+        }
+      }
+    },
+    "/v1/audio/alignments": {
+      "post": {
+        "tags": ["paddock"],
+        "summary": "Forced alignment: word times for an existing transcript",
+        "description": "Paddock-native - no OpenAI equivalent exists. Audio + the transcript to align go in; per-word start/end times come out, in exactly `verbose_json`'s word shape so any client that parses OpenAI word timestamps parses this unchanged. Served by forced-aligner models (`alignment` capability in `/v1/models`).\n\nLimits, both refused loudly with the number in the message: one call addresses at most the model's time-bin budget (400 s on the 0.6B aligner - align longer audio per segment and offset the times), and the packed sequence must fit the model context. Japanese/Korean are refused (they need morphological word tokenizers this server does not carry). Languages outside the model's trained set are accepted and flagged `language_supported: false`.\n\nThe aligner times whatever text it is given - a wrong transcript gets confidently wrong times. It is a timing tool, not a correction tool.",
+        "operationId": "audioAlignments",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "multipart/form-data": {
+              "schema": {
+                "type": "object",
+                "required": ["file", "text"],
+                "properties": {
+                  "file": { "type": "string", "format": "binary", "description": "The audio clip (same container support as /v1/audio/transcriptions)" },
+                  "text": { "type": "string", "description": "The transcript to align. `transcript` is accepted as an alias." },
+                  "language": { "type": "string", "description": "Language as ISO 639-1 code or English name (both value spaces accepted). Optional; feeds the `language_supported` flag." },
+                  "model": { "type": "string", "description": "Accepted and ignored - one model per runner." }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": { "description": "Word-level alignment", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/AlignmentResponse" } } } },
+          "400": { "$ref": "#/components/responses/BadRequest" },
+          "503": { "description": "No forced-alignment model is loaded on this runner", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } } }
+        }
+      }
+    },
+    "/v1/realtime": {
+      "get": {
+        "tags": ["paddock"],
+        "summary": "Live transcription WebSocket",
+        "description": "Paddock-native WebSocket for live speech-to-text: the client streams 16 kHz mono PCM frames; the server runs voice-activity detection and answers utterance-by-utterance transcript events (partials while an utterance is open, a settled item when it closes, with per-word times and confidence where the lane supports them). Requires a served speech-capable model. A plain GET without the upgrade handshake is refused.",
+        "operationId": "realtime",
+        "responses": {
+          "101": { "description": "WebSocket upgrade" },
+          "400": { "description": "Not a WebSocket upgrade request" }
+        }
+      }
+    },
+    "/api/server": {
+      "get": {
+        "tags": ["paddock"],
+        "summary": "The model card: what THIS endpoint can answer",
+        "description": "One call, the whole truth about the running configuration: served model ids per role (`model`, `embedder`, `asr`, `aligner`), context window, batch size, reasoning style, sampling defaults, vision/audio/document capabilities with their budgets, `timestamp_granularities`, `include` values, `alignment_max_clip_s`, task tags, PDF handling, server-side tools (web search, MCP server labels), aliases and variants. Keys are additive across versions; absent means the capability is absent.",
+        "operationId": "serverInfo",
+        "responses": {
+          "200": { "description": "The model card", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ServerCard" } } } }
+        }
+      }
+    },
+    "/api/extract": {
+      "post": {
+        "tags": ["paddock"],
+        "summary": "Extraction preview: what the model would read from an attachment",
+        "description": "Runs the same extraction lanes a chat send runs (PDF text, docx, spreadsheets, text-native decode, photo metadata) and returns the injection text verbatim - metadata block included - so a client can show exactly what a prompt will carry. Refusals (encrypted PDF, undecodable bytes) are the same honest 400s a send would produce.",
+        "operationId": "extractPreview",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": ["data"],
+                "properties": {
+                  "data": { "type": "string", "description": "The file as a data URI or bare base64" },
+                  "filename": { "type": "string", "description": "Original filename, used for type detection" },
+                  "file_metadata": { "type": "string", "enum": ["on", "off"], "description": "Whether the metadata block rides along (default on) - same contract as the inference surfaces" }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "The extraction",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": ["text", "kind"],
+                  "properties": {
+                    "text": { "type": "string", "description": "The injection text, verbatim" },
+                    "kind": { "type": "string", "description": "Which extraction lane ran" },
+                    "pages": { "type": ["integer", "null"], "description": "Page count where the lane has one" }
+                  }
+                }
+              }
+            }
+          },
+          "400": { "$ref": "#/components/responses/BadRequest" }
+        }
+      }
+    },
+    "/api/metadata": {
+      "post": {
+        "tags": ["paddock"],
+        "summary": "Embedded file metadata: everything the file says about itself",
+        "description": "Every metadata field a file carries, grouped by source - EXIF, MakerNotes, XMP, IPTC, ICC, PDF Info, QuickTime and derived Composite tags for photos and documents; core.xml, app.xml and custom.xml properties for Office packages. Distinct from /api/extract, which answers what the MODEL would read and is shaped by this server's context window and vision capability: this one depends on nothing but the bytes. A file that carries no metadata is an ordinary empty answer, not an error.",
+        "operationId": "fileMetadata",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": ["data"],
+                "properties": {
+                  "data": { "type": "string", "description": "The file as a data URI or bare base64" }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "The metadata",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": ["format", "reader", "groups"],
+                  "properties": {
+                    "format": { "type": ["string", "null"], "description": "What the BYTES are (\"JPEG\", \"PDF\", \"Office Open XML\" ...), never the declared mime; null when the magic bytes match nothing we read" },
+                    "reader": { "type": "string", "enum": ["sift", "scriptor", "none"], "description": "Which reader answered" },
+                    "groups": {
+                      "type": "array",
+                      "description": "Groups in reader order; empty when the file carries no metadata",
+                      "items": {
+                        "type": "object",
+                        "required": ["name", "tags"],
+                        "properties": {
+                          "name": { "type": "string", "description": "An open set, named by the reader and the file: EXIF, MakerNotes, XMP, IPTC, ICC, PDF, QuickTime, HEIF, Composite, File - or Document, Application, Custom for Office packages. A group is a namespace: the same name in two groups is two sources stating it, not a duplicate." },
+                          "tags": {
+                            "type": "array",
+                            "items": {
+                              "type": "object",
+                              "required": ["name", "value"],
+                              "properties": {
+                                "name": { "type": "string" },
+                                "value": { "type": "string", "description": "Display-ready; control characters collapse to spaces" },
+                                "truncated": { "type": "boolean", "description": "Present and true when the value hit the 4096-character ceiling" }
+                              }
+                            }
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": { "$ref": "#/components/responses/BadRequest" }
+        }
+      }
+    },
+    "/api/stats": {
+      "get": {
+        "tags": ["paddock"],
+        "summary": "Engine self-report: counters and VRAM ledger",
+        "description": "The runner's inside view: engine counters plus allocator-ledger VRAM. Cheap - returns the last background sample and never blocks inference. The shape is additive across versions.",
+        "operationId": "stats",
+        "responses": {
+          "200": { "description": "Stats snapshot", "content": { "application/json": { "schema": { "type": "object", "additionalProperties": true } } } }
+        }
+      }
+    },
+    "/api/stats/stream": {
+      "get": {
+        "tags": ["paddock"],
+        "summary": "Stats as a live SSE stream",
+        "description": "The same snapshots as `/api/stats`, pushed as server-sent events.",
+        "operationId": "statsStream",
+        "responses": {
+          "200": { "description": "SSE stream of stats snapshots", "content": { "text/event-stream": { "schema": { "type": "string" } } } }
+        }
+      }
+    },
+    "/api/mcp-approvals/{id}": {
+      "post": {
+        "tags": ["paddock"],
+        "summary": "Resolve a pending MCP tool-call approval",
+        "description": "A streaming agent loop that hit an approval-required MCP tool is parked on this id. POST the decision to resume it. 404 when the id is unknown - already decided, timed out, or the stream ended.",
+        "operationId": "mcpApprove",
+        "parameters": [
+          { "name": "id", "in": "path", "required": true, "schema": { "type": "string" }, "description": "The approval id from the stream's approval-request event" }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": { "application/json": { "schema": { "type": "object", "required": ["approve"], "properties": { "approve": { "type": "boolean" } } } } }
+        },
+        "responses": {
+          "200": { "description": "Decision accepted; the parked loop resumes" },
+          "404": { "description": "Unknown or expired approval id", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } } }
+        }
+      }
+    }
+  },
+  "components": {
+    "securitySchemes": {
+      "bearerAuth": {
+        "type": "http",
+        "scheme": "bearer",
+        "description": "Required on /v1/* and /api/* only when the runner was configured with an API key; a keyless local runner accepts unauthenticated requests."
+      }
+    },
+    "responses": {
+      "BadRequest": {
+        "description": "Invalid request - OpenAI-shaped error body with the refusal spelled out",
+        "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } }
+      }
+    },
+    "schemas": {
+      "Error": {
+        "type": "object",
+        "description": "The OpenAI-shaped error envelope every surface uses, 404s included",
+        "required": ["error"],
+        "properties": {
+          "error": {
+            "type": "object",
+            "required": ["message", "type"],
+            "properties": {
+              "message": { "type": "string" },
+              "type": { "type": "string", "description": "e.g. invalid_request_error, not_found_error, internal_error" },
+              "param": { "type": ["string", "null"] },
+              "code": { "type": ["string", "null"] }
+            }
+          }
+        }
+      },
+      "AlignmentResponse": {
+        "type": "object",
+        "required": ["task", "duration", "words"],
+        "properties": {
+          "task": { "type": "string", "const": "alignment" },
+          "duration": { "type": "number", "description": "Clip length in seconds, as the server measured it" },
+          "language": { "type": ["string", "null"], "description": "Echo of the request's language field" },
+          "language_supported": { "type": "boolean", "description": "false = outside the model's trained languages; the times still came back and may be useful, but the reader deserves the flag" },
+          "words": {
+            "type": "array",
+            "description": "One entry per word of the submitted text (punctuation-only tokens dropped, CJK one character at a time), in reading order - verbose_json's word shape",
+            "items": { "$ref": "#/components/schemas/AlignedWord" }
+          }
+        }
+      },
+      "AlignedWord": {
+        "type": "object",
+        "required": ["word", "start", "end"],
+        "properties": {
+          "word": { "type": "string" },
+          "start": { "type": "number", "description": "Seconds from the start of the clip" },
+          "end": { "type": "number", "description": "Seconds from the start of the clip" }
+        }
+      },
+      "RerankRequest": {
+        "type": "object",
+        "required": ["query", "documents"],
+        "properties": {
+          "model": { "type": "string", "description": "Accepted and ignored - one model per runner" },
+          "query": { "type": "string" },
+          "documents": { "type": "array", "items": { "type": "string" }, "minItems": 1 },
+          "top_n": { "type": ["integer", "null"], "description": "Return only the best N (default: all)" },
+          "return_documents": { "type": "boolean", "default": false, "description": "Echo each document's text back in its result" },
+          "instruction": { "type": ["string", "null"], "description": "Task instruction for the relevance judge (a sensible default is used when absent)" }
+        }
+      },
+      "RerankResponse": {
+        "type": "object",
+        "required": ["model", "results", "usage"],
+        "properties": {
+          "model": { "type": "string" },
+          "results": {
+            "type": "array",
+            "description": "Sorted by descending relevance",
+            "items": {
+              "type": "object",
+              "required": ["index", "relevance_score"],
+              "properties": {
+                "index": { "type": "integer", "description": "Position in the request's documents array" },
+                "relevance_score": { "type": "number" },
+                "document": { "type": "string", "description": "Present when return_documents was set" }
+              }
+            }
+          },
+          "usage": {
+            "type": "object",
+            "properties": {
+              "prompt_tokens": { "type": "integer" },
+              "total_tokens": { "type": "integer" }
+            }
+          }
+        }
+      },
+      "ServerCard": {
+        "type": "object",
+        "description": "Keys are additive across versions; the ones below are stable. Absent means the capability is absent.",
+        "additionalProperties": true,
+        "properties": {
+          "role": { "type": "string", "const": "runner" },
+          "version": { "type": "string" },
+          "max_ctx": { "type": "integer" },
+          "max_batch": { "type": "integer" },
+          "model": { "type": ["string", "null"], "description": "Served generative model id" },
+          "embedder": { "type": ["string", "null"], "description": "Served encoder (embeddings/rerank) model id" },
+          "asr": { "type": ["string", "null"], "description": "Served speech-to-text model id" },
+          "aligner": { "type": ["string", "null"], "description": "Served forced-alignment model id - POST /v1/audio/alignments works iff set" },
+          "alignment_max_clip_s": { "type": ["number", "null"], "description": "Longest clip one alignment call can address" },
+          "reranker": { "type": ["boolean", "null"] },
+          "vision": { "type": ["boolean", "null"] },
+          "audio": { "type": "boolean", "description": "POST /v1/audio/transcriptions works iff true" },
+          "document_parser": { "type": ["boolean", "null"] },
+          "reasoning": { "type": ["string", "null"], "enum": ["effort", "toggle", "none", null] },
+          "timestamp_granularities": { "type": "array", "items": { "type": "string" } },
+          "include": { "type": "array", "items": { "type": "string" } },
+          "sampling": { "type": "object", "additionalProperties": true, "description": "The server's sampling defaults - what an untouched dial means" }
+        }
+      }
+    }
+  }
+}

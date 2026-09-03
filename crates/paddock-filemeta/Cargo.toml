@@ -1,0 +1,36 @@
+[package]
+name = "paddock-filemeta"
+description = "Embedded file metadata (EXIF/XMP/IPTC/ICC/PDF/QuickTime via sift, OOXML document properties via scriptor) as one grouped, display-ready view."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+serde = { workspace = true }
+# Photos and PDFs. The FORMAT SET is a workspace-level decision (the `sift`
+# entry in the root manifest), deliberately not a knob here: the runner reads
+# the same files for the prompt lane, and a format this crate could see but the
+# runner could not would make the two answers disagree about the same file.
+# Today that set is sift's default - all twelve - because the composer accepts
+# any file under the size cap (`isAttachableFile` returns true for everything),
+# so a dropped format is a file whose metadata silently vanishes. That is
+# trimming binary size; if sift's formats become a target, trim them there,
+# once, against a measured saving.
+sift = { workspace = true }
+# Word/Excel/PowerPoint: the OPC property parts sift cannot see (it opens no
+# zip container) - core.xml, app.xml, custom.xml.
+scriptor-crdt = { workspace = true }
+# Coordinates -> a place name, offline. Costs ~2 MB of embedded table in every
+# binary that reads file metadata, the MANAGER included (counts that
+# against it deliberately): the manager answers metadata with no runner
+# running, and "your photo is in Arezzo" must not become the one answer that
+# needs a GPU - or, worse, a geocoding API told where your photos were taken.
+paddock-geo = { workspace = true }
+
+[dev-dependencies]
+serde_json = { workspace = true }
+scriptor-ooxml = { workspace = true }
+
+[lints]
+workspace = true

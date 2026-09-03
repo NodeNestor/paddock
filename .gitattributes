@@ -1,0 +1,59 @@
+# Line endings are a correctness matter here, not a style one.
+#
+# Paddock is developed on Windows and shipped on Windows and Linux. A shell script
+# that picks up CRLF fails at the shebang with "bad interpreter: /usr/bin/env
+# bash^M", which reads as a missing interpreter rather than a mangled file - and
+# it happens silently, because an editor on Windows hands you CRLF without
+# asking. It has already happened here: a shell script left the tree as a MIXED
+# file, LF on the old lines and CRLF on the new ones, and it still looked fine
+# in every Windows tool.
+#
+# NOTE THE ABSENCE of a global `* text=auto`. It is the usual advice and it is
+# wrong for this repo: the index is already 18.5k files at LF, so the rule would
+# buy nothing, and it would ask git to reconsider every one of them - a
+# whole-repo renormalisation is not something to hand a colleague mid-rebase.
+# Pin what actually breaks instead.
+
+# MUST be LF wherever they land - an interpreter reads the shebang byte for byte.
+*.sh          text eol=lf
+*.bash        text eol=lf
+*.py          text eol=lf
+
+# Read by a Linux container, so the same rule applies. Docker itself tolerates
+# CRLF in a Dockerfile, but anything it hands to a shell - a heredoc, a
+# multi-line RUN - carries the CR straight through into the command.
+Dockerfile    text eol=lf
+Dockerfile.*  text eol=lf
+*.dockerfile  text eol=lf
+
+# Native to Windows, where they are only ever run.
+*.ps1         text eol=crlf
+*.cmd         text eol=crlf
+*.bat         text eol=crlf
+
+# Legal artifacts. The notices generator writes LF and its check mode compares
+# byte for byte, so a clone that rewrote the endings would report the file as
+# stale on Windows when nobody had touched it.
+LICENSE              text eol=lf
+THIRD-PARTY-NOTICES  text eol=lf
+
+# Chat-template fixtures are byte-exact captures of GGUF metadata, and the
+# template tests assert the RENDERED OUTPUT byte for byte - a CRLF rewrite
+# quietly changes what is being tested (gemma4_chat_template.jinja was already
+# CRLF in Windows working copies when this was pinned).
+crates/paddock-runner/tests/fixtures/*.jinja  text eol=lf
+
+# Binary, never touched.
+*.gguf        binary
+*.dll         binary
+*.so          binary
+*.dylib       binary
+*.exe         binary
+*.png         binary
+*.ico         binary
+*.jpg         binary
+*.webm        binary
+*.wav         binary
+*.pdf         binary
+*.tiff        binary
+*.wasm        binary

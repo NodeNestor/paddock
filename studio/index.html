@@ -1,0 +1,28 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+    <title>Paddock Studio</title>
+    <link rel="icon" href="/favicon.ico" sizes="16x16 32x32 48x48 256x256" />
+    <link rel="apple-touch-icon" href="/apple-touch-icon.png" />
+    <meta name="color-scheme" content="dark light" />
+    <meta name="theme-color" media="(prefers-color-scheme: dark)"  content="#0A1118" />
+    <meta name="theme-color" media="(prefers-color-scheme: light)" content="#F5F5F7" />
+    <script>
+      // Anti-FOUC: apply the stored (or system) theme before the bundle loads,
+      // so there's no flash of the wrong theme on first paint.
+      (function () {
+        var stored = localStorage.getItem('pk_theme');
+        var t = (stored === 'light' || stored === 'dark')
+          ? stored
+          : (window.matchMedia && window.matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark');
+        document.documentElement.setAttribute('data-theme', t);
+      })();
+    </script>
+  </head>
+  <body>
+    <div id="app"></div>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>

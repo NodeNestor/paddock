@@ -1,0 +1,216 @@
+/* ============================================================
+   Paddock Studio - Design Tokens
+   Slate-forward palette with sky-blue accents.
+   Built on the TrueSpar Design System surfaces (shared with Traverse).
+   ============================================================ */
+
+:root {
+  /* ── TrueSpar Primitives ──────────────────────────────────── */
+  --ts-color-abyss:            #0A1118;
+  --ts-color-deep-water:       #121C26;
+  --ts-color-current:          #1A2834;
+  --ts-color-border-dark:      #2A3A48;
+  --ts-color-warm-canvas:      #ECE8E0;
+  --ts-color-slate-water:      #7E8C9C;
+  --ts-color-deep-slate:       #4A5565;
+  --ts-color-mist:             #5A6A78;
+  --ts-color-warm-linen:       #F5F5F7;
+  --ts-color-white:            #FFFFFF;
+
+  /* ── Fonts ──────────────────────────────────────────────── */
+  --pk-font-sans: 'Inter Variable', 'Inter', ui-sans-serif, system-ui, -apple-system,
+                  BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+  --pk-font-mono: 'JetBrains Mono Variable', 'JetBrains Mono', ui-monospace, SFMono-Regular,
+                  Menlo, Monaco, Consolas, 'Liberation Mono', 'Courier New', monospace;
+
+  /* ── Font Sizes ─────────────────────────────────────────── */
+  --pk-font-size-xs:   0.8125rem;  /* 13px */
+  --pk-font-size-sm:   0.875rem;   /* 14px */
+  --pk-font-size-base: 0.9375rem;  /* 15px */
+  --pk-font-size-lg:   1.0625rem;  /* 17px */
+
+  /* ── Radii ──────────────────────────────────────────────── */
+  --pk-radius-sm:   4px;
+  --pk-radius-md:   6px;
+  --pk-radius-lg:   8px;
+  --pk-radius-xl:   12px;
+  --pk-radius-full: 999px;
+
+  /* ── Layout ─────────────────────────────────────────────── */
+  /* The activity bar's width IS the header's height, expressed as one fact so
+     they cannot drift: the brand mark sits where they meet, and at 55 x 44 it
+     was a rectangle pretending to be a logo tile. 48 is the
+     size that fits both jobs - a 40px icon target keeps a 4px gutter, and the
+     header gains 4px it was slightly starved of. */
+  --pk-header-height: 48px;
+  --pk-activitybar-width: var(--pk-header-height);
+  --pk-sidebar-width: 260px;
+  /* One content width for every panel (Models/MCP/Prompts/Settings), sized for
+     desktop screens - matches Traverse's 960px panel standard. The chat column
+     keeps its own reading width, below. */
+  --pk-panel-width: 960px;
+  /* The chat column: thread, composer and any notice inside the composer, all
+     of which must agree or the composer stands proud of the messages above it
+     A TOKEN for exactly that reason - it
+     was three hard-coded 768s and a fourth derived one, and the tool row had
+     started to overflow at that width once every icon carried a label. 818 is
+     768 + 50: enough room for the labels, still a reading measure rather than
+     a page. A notice inside the composer subtracts the composer's own 24px
+     side padding from it. */
+  --pk-chat-width: 818px;
+}
+
+/* ══════════════════════════════════════════════════════════════
+   DARK THEME (default)
+   ══════════════════════════════════════════════════════════════ */
+:root,
+[data-theme="dark"] {
+  color-scheme: dark;
+  /* Backgrounds */
+  --pk-bg-base:     #0A1118;
+  --pk-bg-surface:  #121C26;
+  --pk-bg-elevated: #1A2834;
+  --pk-bg-inset:    #070C10;
+  --pk-bg-hover:    rgba(255, 255, 255, 0.06);
+  --pk-bg-overlay:  rgba(10, 17, 24, 0.75);
+
+  /* Text */
+  --pk-text-primary:   #ECE8E0;
+  --pk-text-secondary: #7E8C9C;
+  --pk-text-muted:     #5A6A78;
+  --pk-text-inverse:   #0A1118;
+
+  /* Borders */
+  --pk-border-default: #2A3A48;
+  --pk-border-subtle:  rgba(78, 104, 120, 0.25);
+  --pk-border-strong:  #3A4A58;
+  --pk-border-focus:   #0EA5E9;
+
+  /* Categorical chart ramp. FIVE HUES, not one accent at five alphas: the
+     will-it-fit bar stacks weights / encoder / overhead / conversation memory
+     touching each other, and tinting a single blue made four of the five
+     segments read as the same band with a slight shade difference. These are
+     picked for hue separation FIRST (sky, violet, steel, emerald, grey), then
+     lifted for this ground - the light block below carries deeper values of
+     the same five, because a fill that reads on near-black is washed out on
+     white. Categorical, so never use them for magnitude or for status; status
+     has its own three and they mean something. */
+  --pk-chart-weights:   #38BDF8;
+  --pk-chart-encoder:   #A78BFA;
+  --pk-chart-workspace: #F472B6;
+  --pk-chart-overhead:  #7C93A8;
+  --pk-chart-cache:     #34D399;
+  --pk-chart-foreign:   #64748B;
+
+  /* Accent (sky - used sparingly) */
+  --pk-accent:        #0EA5E9;
+  --pk-accent-hover:  #38BDF8;
+  --pk-accent-active: #0284C7;
+  --pk-accent-subtle: rgba(14, 165, 233, 0.16);
+  --pk-accent-text:   #38BDF8;
+
+  /* Status */
+  --pk-status-success:        #22C55E;
+  --pk-status-warning:        #D4952B;
+  --pk-status-error:          #E05652;
+  --pk-status-error-hover:    #C43E3A;
+  --pk-status-info:           #4A8FD4;
+  --pk-status-success-subtle: rgba(34, 197, 94, 0.12);
+  --pk-status-warning-subtle: rgba(212, 149, 43, 0.12);
+  --pk-status-error-subtle:   rgba(224, 86, 82, 0.12);
+
+  /* Danger (alias for status-error, used in chat/forms) */
+  --pk-text-danger:      var(--pk-status-error);
+  --pk-bg-danger-subtle: var(--pk-status-error-subtle);
+
+  /* Shadows */
+  --pk-shadow-sm: 0 1px 2px  rgba(0, 0, 0, 0.30);
+  --pk-shadow-md: 0 4px 8px  rgba(0, 0, 0, 0.35);
+  --pk-shadow-lg: 0 8px 24px rgba(0, 0, 0, 0.40);
+  --pk-shadow-xl: 0 16px 48px rgba(0, 0, 0, 0.50);
+  /* Cast on ALL FOUR edges - zero offset, so it reads as an object lifted off
+     the surface rather than one lit from above. The others are directional and
+     leave a floating element's top edge bare. Used by the chat composer, which
+     floats on the thread with conversation passing behind every side of it. */
+  --pk-shadow-float: 0 0 26px -2px rgba(0, 0, 0, 0.60);
+  /* focus: the same cast, grown. Derived from the resting one on purpose - two
+     numbers to keep in step instead of eight. */
+  --pk-shadow-float-focus: 0 0 44px -2px rgba(0, 0, 0, 0.78);
+  /* the composer's glass scrim: the page's OWN ground, so frosting darkens
+     toward the background rather than toward grey */
+  --pk-glass-tint: rgba(10, 17, 24, 0.66);
+  --pk-glass-tint-focus: rgba(10, 17, 24, 0.79);
+}
+
+/* ══════════════════════════════════════════════════════════════
+   LIGHT THEME
+   ══════════════════════════════════════════════════════════════ */
+[data-theme="light"] {
+  color-scheme: light;
+  /* Backgrounds */
+  --pk-bg-base:     #F5F5F7;
+  --pk-bg-surface:  #FFFFFF;
+  --pk-bg-elevated: #FFFFFF;
+  --pk-bg-inset:    #F5F5F7;
+  --pk-bg-hover:    rgba(0, 0, 0, 0.04);
+  --pk-bg-overlay:  rgba(0, 0, 0, 0.35);
+
+  /* Text */
+  --pk-text-primary:   #0A1118;
+  --pk-text-secondary: #4A5565;
+  --pk-text-muted:     #7E8C9C;
+  --pk-text-inverse:   #ECE8E0;
+
+  /* Borders */
+  --pk-border-default: #E0E4E8;
+  --pk-border-subtle:  rgba(0, 0, 0, 0.06);
+  --pk-border-strong:  #B8BEC6;
+  --pk-border-focus:   #0369A1;
+
+  /* The same five hues, deepened for a light ground - see the dark block for
+     why there are five of them at all. */
+  --pk-chart-weights:   #0284C7;
+  --pk-chart-encoder:   #7C3AED;
+  --pk-chart-workspace: #BE185D;
+  --pk-chart-overhead:  #64748B;
+  --pk-chart-cache:     #059669;
+  --pk-chart-foreign:   #94A3B8;
+
+  /* Accent (deep-sky - used sparingly) */
+  --pk-accent:        #0369A1;
+  --pk-accent-hover:  #075985;
+  --pk-accent-active: #0C4A6E;
+  --pk-accent-subtle: rgba(3, 105, 161, 0.08);
+  --pk-accent-text:   #0369A1;
+
+  /* Status */
+  --pk-status-success:        #15803D;
+  /* Amber, not olive. The old #8A6520 cleared AA on white (5.3:1) yet read as
+     dirty grey-brown wherever it was TEXT - which is most of its 28 uses, and
+     worst at the 11px sizes the composer hint and the form warnings use. The
+     defect was SATURATION, not contrast: 62% at hue 39 is mud. This keeps the
+     hue (37, so it stays as far from the error red as before - the usage chart
+     stacks warning and error bands touching) and takes saturation to 85%,
+     which also lifts it to 5.9:1 on white / 5.4:1 on the base grey. */
+  --pk-status-warning:        #8B5A0B;
+  --pk-status-error:          #B83030;
+  --pk-status-error-hover:    #9A2828;
+  --pk-status-info:           #2A6AA8;
+  --pk-status-success-subtle: rgba(21, 128, 61, 0.08);
+  --pk-status-warning-subtle: rgba(139, 90, 11, 0.08);
+  --pk-status-error-subtle:   rgba(184, 48, 48, 0.08);
+
+  /* Danger (alias for status-error, used in chat/forms) */
+  --pk-text-danger:      var(--pk-status-error);
+  --pk-bg-danger-subtle: var(--pk-status-error-subtle);
+
+  /* Shadows */
+  --pk-shadow-sm: 0 1px 2px  rgba(0, 0, 0, 0.08);
+  --pk-shadow-md: 0 4px 8px  rgba(0, 0, 0, 0.10);
+  --pk-shadow-lg: 0 8px 24px rgba(0, 0, 0, 0.12);
+  --pk-shadow-xl: 0 16px 48px rgba(0, 0, 0, 0.16);
+  --pk-shadow-float: 0 0 26px -2px rgba(0, 0, 0, 0.18);
+  --pk-shadow-float-focus: 0 0 44px -2px rgba(0, 0, 0, 0.23);
+  --pk-glass-tint: rgba(245, 245, 247, 0.66);
+  --pk-glass-tint-focus: rgba(245, 245, 247, 0.79);
+}

@@ -1,0 +1,10 @@
+node_modules
+dist
+dist-wasm
+# the vendored lector packages ARE the dependency - their dist ships in-repo
+!vendor/lector/**/dist
+!vendor/lector/**/dist/**
+!vendor/scriptor/**/dist
+!vendor/scriptor/**/dist/**
+*.local
+.DS_Store

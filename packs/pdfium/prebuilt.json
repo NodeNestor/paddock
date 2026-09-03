@@ -1,0 +1,32 @@
+{
+  "_comment": [
+    "Where to get OUR pdfium build without building it: download the url and",
+    "check it against the sha256, then place it at packs/pdfium/<platform>/.",
+    "",
+    "These are not a third party's binaries \u00e2\u20ac\u201d they are our own compilation of",
+    "PDFium at the pin in VERSION, built by packs/pdfium/build/. The recipe is the",
+    "provenance; this file is only the shortcut that saves every developer a",
+    "15-minute Chromium build. Bumping the pin means: rebuild both platforms,",
+    "re-publish, and replace this file with the manifest that run emits.",
+    "",
+    "The sha256s are checked on download. They exist to catch a truncated or",
+    "corrupted transfer, not to establish trust \u00e2\u20ac\u201d the bucket is ours."
+  ],
+  "version": "chromium/8009",
+  "files": [
+    {
+      "platform": "win-x64",
+      "name": "pdfium.lib",
+      "url": "https://models.truespar.io/runtime/pdfium-chromium-8009/win-x64/pdfium.lib",
+      "sha256": "47f618601cf9cf1718b07ea2086eedc6aa4c67a23c983eefd3337d25dfbbfe7f",
+      "size": 31170870
+    },
+    {
+      "platform": "linux-x64",
+      "name": "libpdfium.a",
+      "url": "https://models.truespar.io/runtime/pdfium-chromium-8009/linux-x64/libpdfium.a",
+      "sha256": "dc5b086f8f37fbec3825b325b85bebc744d7761b1596d1746966eb3cd0ae0f35",
+      "size": 22657324
+    }
+  ]
+}

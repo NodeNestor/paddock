@@ -1,0 +1,52 @@
+[package]
+name = "paddock-engine"
+description ="The native inference engine: engine-core loop, paged-KV allocator, scheduler, model families. No third-party engines - ever."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[features]
+# Weld the CUDA kernels into the binary instead of dlopen'ing a pack.
+# Off by default: dev keeps --kernel-pack and the fast rebuild loop,
+# GPU-less CI keeps building. Release turns it on.
+static-pack = ["paddock-kernels/static-pack"]
+# The shipped-binary flavour: every development switch compiled
+# out, so the elected route is the only route. See paddock-models/hardening.rs
+# for the four env populations and why the engine->pack transport names stay.
+hardened = ["paddock-models/hardened"]
+
+[dependencies]
+tracing = { workspace = true }
+thiserror = { workspace = true }
+cudarc = { workspace = true }
+half = { workspace = true }
+tokio = { workspace = true }
+# No `rand` - the only thing the engine wanted from it was `SeedableRng`, which
+# is rand_core's trait that rand merely re-exports. rand_chacha is the actual
+# generator and it speaks rand_core directly.
+rand_chacha = { workspace = true }
+rand_core = { workspace = true }
+blake3 = { workspace = true }
+paddock-kernels = { workspace = true }
+paddock-models = { workspace = true }
+libc = "0.2.189"
+symphonia = { version = "0.6.1", features = ["mp3", "aac", "isomp4", "alac"] }
+symphonia-adapter-libopus = "0.3.0"
+
+[dev-dependencies]
+paddock-tokenizer = { workspace = true }
+# tests/common resolves models through the same data-root resolver the manager
+# and runner use, so a gate and the server it gates never disagree
+# about where models live - see tests/common/mod.rs
+paddock-admin = { version = "0.1.0", path = "../paddock-admin" }
+toml = { workspace = true }
+# the paddleocr_vl oracle gate reads the dump script's manifest.json
+serde_json = { workspace = true }
+tracing-subscriber = { workspace = true }
+# granite_vision_load writes its synthetic probe image as a PNG so the same
+# pixels can be handed to llama.cpp's mmproj for the parity leg
+image = { workspace = true }
+
+[lints]
+workspace = true

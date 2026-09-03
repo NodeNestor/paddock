@@ -1,0 +1,22 @@
+[package]
+name = "paddock-kernels"
+description = "Kernel-pack ABI and loader. All kernels in-house; packs are versioned, hash-verified shared libraries behind a stable C ABI."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[features]
+# Link the CUDA pack into the binary instead of dlopen'ing it.
+# Off by default deliberately: dev keeps the fast iterate loop (rebuild the pack,
+# restart the runner, no relink) and GPU-less CI keeps building. Release turns
+# it on so an install is two binaries and nothing else. See build.rs.
+static-pack = []
+
+[dependencies]
+thiserror = { workspace = true }
+libloading = { workspace = true }
+half = { workspace = true }
+
+[lints]
+workspace = true

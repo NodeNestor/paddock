@@ -1,0 +1,162 @@
+#!/usr/bin/env bash
+# Linux twin of build.ps1: builds the CUDA kernel pack as a multi-arch fatbin.
+#   packs/cuda/build.sh              # all default arches the toolkit supports
+#   packs/cuda/build.sh 120          # a subset (faster local iterate)
+#   PD_PACK_OUT=/somewhere build.sh  # write artifacts elsewhere (see below)
+# Output: build/pd-cuda-sm120.so (plus a pd-cuda-sm86.dll symlink for the
+# hardcoded test paths). When sm_120 is in the arch list the sm_120a feature
+# target and -DPD_BS_HOST=1 are added so the block-scale MoE launchers are
+# real - without them the kernel table exports NULL for those entries and the
+# engine keeps the s8 mmq path (see the PD_BS_HOST notes in pack.cu).
+set -euo pipefail
+here="$(cd "$(dirname "$0")" && pwd)"
+
+# PD_PACK_OUT redirects every artifact this script writes. It exists because
+# a Docker builder bind-mounts the WINDOWS repo, so
+# `build/` in the container is `packs\cuda\build\` on the host - and the two
+# lanes do not merely coexist there. The .so lane's compatibility symlink is
+# named `pd-cuda-sm86.dll`, which is exactly the file build.ps1 writes, so a
+# Linux build would replace the Windows pack with a dangling link to an ELF.
+# `cutgemm.o` collides the same way. Same reasoning as CARGO_TARGET_DIR in the
+# builder image: Linux artifacts never land in a Windows tree.
+outdir="${PD_PACK_OUT:-$here/build}"
+mkdir -p "$outdir"
+
+# --static emits build/libpd-cuda.a for `cargo build --features static-pack`
+# to link into paddock-runner, instead of the.so. Orthogonal to
+# the arch list deliberately: a RELEASE passes the validated set
+# (`--static 86,100,120`) so the binary and the engine's gpu_support allowlist
+# agree by construction, and that choice stays visible in the release script
+# rather than hiding behind a linkage switch.
+static=0
+while :; do
+    case "${1:-}" in
+        --static)   static=1;   shift ;;
+        *) break ;;
+    esac
+done
+
+arch_arg="${1:-}"
+arches=(${arch_arg//,/ })
+# 103 (Blackwell Ultra), 110 and 121 (DGX Spark GB10) are built as PLAIN
+# targets, no 'a' feature variant. The fatbin carries no PTX, so a die absent
+# from this list cannot load the pack at all -- which is how 12.1 was
+# unsupported. They are safe to add only because the accelerated families now
+# gate on an exact cc match (see exports.cuh): a 10.3 or 12.1 device gets the
+# portable paths instead of tcgen05/block-scale bodies that its target
+# compiled away. Adding an 'a' variant for them needs the device feature
+# macros widened first -- PD_TC5_OK is `__CUDA_ARCH__ == 1000`, PD_BS_OK is
+# `>= 1200 && SM120_ALL` -- or they silently no-op.
+[ ${#arches[@]} -eq 0 ] && arches=(80 86 89 90 100 103 110 120 121)
+
+supported="$(nvcc --list-gpu-arch | sed 's/compute_//')"
+gencode=()
+defines=()
+bs_host=0
+for a in "${arches[@]}"; do
+    if grep -qx "$a" <<<"$supported"; then
+        gencode+=("-gencode=arch=compute_$a,code=sm_$a")
+        # --list-gpu-arch omits feature targets; any toolkit that knows
+        # compute_120 (CUDA >= 12.8) accepts the 120a feature target too
+        if [ "$a" = "120" ]; then
+            # the 'a' feature target carries the block-scale (mxf8f6f4) MMA
+            gencode+=("-gencode=arch=compute_120a,code=sm_120a")
+            bs_host=1
+        fi
+        # sm_100 (B200): the f8w8 family rides plain e4m3 mma + sw ue8m0 fold
+        # (no 'a' target needed); PD_BS_HOST makes the launchers real and
+        # paddock_pack_kernels_v1 NULLs the sm_120a-only families per device.
+        # The 100a feature target carries tcgen05 (tensor-memory MMA) for the
+        # rowwise-e4m3 GEMM; PD_TC5_HOST turns its launcher route on.
+        if [ "$a" = "100" ]; then
+            bs_host=1
+            gencode+=("-gencode=arch=compute_100a,code=sm_100a")
+            defines+=("-DPD_TC5_HOST=1")
+        fi
+    else
+        echo "WARN: toolkit does not support sm_$a, skipping" >&2
+    fi
+done
+[ "$bs_host" = 1 ] && defines+=("-DPD_BS_HOST=1")
+# PD_DEFS: extra -D flags for a measurement build (e.g. PD_DEFS=-DPD_FA_KRS_OCC=3
+# to sweep the krs occupancy rung). Never set for a release - a shipped default
+# belongs in the header next to the measurement that elected it.
+[ -n "${PD_DEFS:-}" ] && defines+=(${PD_DEFS})
+# see abi.cuh: an archive is resolved by address at link time, so exporting the
+# names from the consuming binary buys nothing
+[ "$static" = 1 ] && defines+=("-DPD_STATIC=1")
+
+[ ${#gencode[@]} -gt 0 ] || { echo "no supported arches" >&2; exit 1; }
+
+out="$outdir/pd-cuda-sm120.so"
+# --threads: nvcc compiles every -gencode target SERIALLY by default, so the
+# 8 targets above ran one cicc at a time - measured on the Windows twin at
+# 99.8% of one core on a 32-core box for ~14 minutes. 0 = one thread per
+# target, capped by cores. Same generated code, just not one-at-a-time.
+threads="${PD_BUILD_THREADS:-0}"
+
+# cutgemm: vendored CUTLASS sm100 fp8 GEMM as its own TU so the
+# CUTLASS headers never touch the 8-arch pack.cu compile. Built only when an
+# sm_100 target is requested AND the flashinfer-bundled CUTLASS is present;
+# otherwise the export compiles to a cudaErrorNotSupported stub inside
+# pack.cu's link (the stub TU is still compiled, without PD_CUTGEMM).
+cutobj=""
+cut_inc="${PD_CUTLASS_INC:-}"   # point at a CUTLASS checkout to enable cutgemm
+cut_flags=()
+if printf '%s\n' "${arches[@]}" | grep -qx 100 && [ -d "$cut_inc/include" ]; then
+    cut_flags+=("-DPD_CUTGEMM=1" "-I$cut_inc/include" "-I$cut_inc/tools/util/include"
+                "-gencode=arch=compute_100a,code=sm_100a" "--expt-relaxed-constexpr")
+else
+    # The STUB needs our arch list too: with no -gencode nvcc emits its default
+    # target (sm_75 on CUDA 13), so every pack has been carrying a dead Turing
+    # cubin from this one TU. See the note in build.ps1.
+    cut_flags+=("${gencode[@]}")
+fi
+cutobj="$outdir/cutgemm.o"
+# separate object per linkage, mirroring build.ps1 (there it is a CRT-flavour
+# question; here it is just symmetry, so the two lanes never share a stale .o)
+[ "$static" = 1 ] && cutobj="$outdir/cutgemm-static.o"
+echo "building cutgemm TU: ${cut_flags[*]:-(stub)}"
+nvcc -O3 -std=c++17 ${cut_flags[@]:+"${cut_flags[@]}"} \
+    -Xcompiler -fPIC -c -o "$cutobj" "$here/src/gemm/cutgemm.cu"
+
+# nv4cut (the checkpoint-native NVFP4 decode GEMM) is a SECOND CUTLASS TU, on
+# the same terms as cutgemm: sm_100a only, CUTLASS headers kept out of the
+# 8-arch pack.cu compile, NotSupported stubs when the tree is absent. Its own
+# object per linkage/flavour, same reason.
+nv4obj="${cutobj%.o}"
+nv4obj="${nv4obj/cutgemm/nv4cut}.o"
+echo "building nv4cut TU: ${cut_flags[*]:-(stub)}"
+nvcc -O3 -std=c++17 ${cut_flags[@]:+"${cut_flags[@]}"} \
+    -Xcompiler -fPIC -c -o "$nv4obj" "$here/src/gemm/nv4cut.cu"
+
+link=(--shared)
+if [ "$static" = 1 ]; then
+    # -lib archives the objects. Same fatbin, same two exports - only how the
+    # engine reaches them differs. No -fPIC concern either way: it is already
+    # passed above and is harmless in an archive destined for an executable.
+    link=(-lib)
+    out="$outdir/libpd-cuda.a"
+fi
+echo "building fatbin: ${gencode[*]} ${defines[*]:-} ${link[*]} --threads $threads"
+nvcc -O3 --threads "$threads" "${gencode[@]}" ${defines[@]:+"${defines[@]}"} \
+    -Xcompiler -fPIC "${link[@]}" -o "$out" "$here/pack.cu" "$cutobj" "$nv4obj"
+# the .dll alias exists only for the hardcoded test paths on the .so lane
+[ "$static" = 1 ] || ln -sf pd-cuda-sm120.so "$outdir/pd-cuda-sm86.dll"
+echo "built (multi-arch): $out"
+
+# Record what this archive runs on, and which nvcc emitted it, BESIDE it - the
+# Windows twin wrote these two files first and this one did not, which is the
+# same build.ps1/build.sh drift its own comments complain about twice.
+# The packaging step reads them for VERSION.txt.
+#
+# It matters more here than it looks: the fatbin carries no PTX, so the arch
+# list is the hardware list, and once the kernels are welded into a binary
+# nobody without the CUDA tools can recover it. Written at BUILD time on
+# purpose - asking `nvcc --version` while packaging describes the checkout's
+# toolkit, which may have moved since these bytes were produced.
+if [ "$static" = 1 ]; then
+    printf '%s\n' "${gencode[@]}" | sed 's/.*code=//' | paste -sd' ' - > "$outdir/pd-cuda.arches"
+    nvcc --version | sed -n 's/.*release [0-9.]*, V\([0-9.]*\).*/\1/p' > "$outdir/pd-cuda.nvcc"
+    echo "arches: $(cat "$outdir/pd-cuda.arches")  (nvcc $(cat "$outdir/pd-cuda.nvcc"))"
+fi

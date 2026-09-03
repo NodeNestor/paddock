@@ -1,0 +1,11 @@
+Traverse is dual-licensed. You may use it under either of:
+
+  * MIT license          - see LICENSE-MIT    (https://opensource.org/licenses/MIT)
+  * Apache License 2.0   - see LICENSE-APACHE (https://www.apache.org/licenses/LICENSE-2.0)
+
+at your option. Pick whichever suits you; you do not have to comply with both.
+
+This directory holds a BUILT drop of Traverse, vendored into Paddock's Studio:
+compiled bundles, type declarations and, for the wasm packages, the wasm
+binary. It is not the upstream source tree. Traverse is developed by
+The Intelligence Company AB (publ) in its own repository.

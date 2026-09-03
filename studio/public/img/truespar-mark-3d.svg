@@ -1,0 +1,39 @@
+<svg width="1228" height="1228" viewBox="11 162 1228 1228" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <linearGradient id="gFront" x1="0" y1="330" x2="0" y2="1310" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#41BDF4"/>
+      <stop offset="0.55" stop-color="#109FE3"/>
+      <stop offset="1" stop-color="#0B84C6"/>
+    </linearGradient>
+    <linearGradient id="gTop" x1="150" y1="330" x2="260" y2="242" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#E9F8FF"/>
+      <stop offset="1" stop-color="#C4EAFB"/>
+    </linearGradient>
+    <linearGradient id="gRight" x1="0" y1="242" x2="0" y2="1310" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#0977B0"/>
+      <stop offset="1" stop-color="#05587F"/>
+    </linearGradient>
+    <filter id="grain" x="-5%" y="-5%" width="110%" height="110%">
+      <feTurbulence type="fractalNoise" baseFrequency="0.8" numOctaves="2" seed="7" result="n"/>
+      <feColorMatrix in="n" type="matrix" values="0 0 0 0 0  0 0 0 0 0  0 0 0 0 0  0 0 0 0.55 0" result="na"/>
+      <feComposite in="na" operator="in" in2="SourceAlpha"/>
+    </filter>
+  </defs>
+  <g id="art">
+    <path fill-rule="evenodd" clip-rule="evenodd" fill="#064E73" d="M260 242 L1100 242 L1100 872 L680 872 L680 1222 L470 1222 L470 452 L260 452 Z M680 452 L930 452 L930 702 L680 702 Z"/>
+    <path fill="#064E73" d="M990 960 L570 960 L680 872 L1100 872 Z"/>
+    <path fill="#064E73" d="M570 1310 L360 1310 L470 1222 L680 1222 Z"/>
+    <path fill="#2FB0EE" d="M360 1310 L360 540 L470 452 L470 1222 Z"/>
+    <path fill="#064E73" d="M360 540 L150 540 L260 452 L470 452 Z"/>
+    <path fill="#2FB0EE" d="M150 540 L150 330 L260 242 L260 452 Z"/>
+    <path fill="#C4EAFB" d="M570 540 L820 540 L930 452 L680 452 Z"/>
+    <path fill="#05587F" d="M820 540 L820 790 L930 702 L930 452 Z"/>
+    <path fill="#05476A" d="M570 540 L570 790 L680 702 L680 452 Z"/>
+    <path fill="#9FD9F3" d="M570 790 L820 790 L930 702 L680 702 Z"/>
+    <path fill="url(#gRight)" d="M570 960 L570 1310 L680 1222 L680 872 Z"/>
+    <path fill="url(#gRight)" d="M990 330 L990 960 L1100 872 L1100 242 Z"/>
+    <path fill="url(#gTop)" d="M150 330 L990 330 L1100 242 L260 242 Z"/>
+    <path fill-rule="evenodd" clip-rule="evenodd" fill="url(#gFront)" d="M150 330 L990 330 L990 960 L570 960 L570 1310 L360 1310 L360 540 L150 540 Z M570 540 L820 540 L820 790 L570 790 Z"/>
+  </g>
+  <use href="#art" filter="url(#grain)" opacity="0.13"/>
+</svg>

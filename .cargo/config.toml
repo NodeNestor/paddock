@@ -1,0 +1,27 @@
+# Static CRT, for two reasons that arrived together.
+#
+# Correctness: pdfium is built with `is_component_build = false`, which in
+# Chromium's config means /MT. Linking /MT objects into a /MD binary gives the
+# process two C runtimes - two heaps, two errno, two locale states - and the
+# linker says so (LNK4098: defaultlib 'libcmt.lib' conflicts).
+#
+# Product: it is also what makes the shipped binaries self-contained. Without
+# it, paddock.exe and paddock-runner.exe both import VCRUNTIME140.dll,
+# which is the Visual C++ redistributable - Not a Windows component. Everything
+# else in their import tables is the OS. With this, "needs nothing but Windows
+# and the display driver" is exactly true instead of nearly true.
+#
+# This stays here because it is a CODEGEN flag: a build script can emit link
+# libraries, but not the C runtime a crate is compiled against.
+#
+# Everything else pdfium needs - the library path, the static link, gdi32 /
+# user32 / winmm on Windows, libstdc++ on Linux - lives in
+# crates/paddock-pdfium/build.rs, where the crate that declares
+# the FFI also says where the symbols come from. It could not live there while
+# pdfium-render owned the bindings: that crate declared crate-types `["lib",
+# "staticlib", "cdylib"]`, so cargo also built a `pdfium_render.dll` whose link
+# line no consumer's build script could reach, and the path had to travel as the
+# `PDFIUM_STATIC_LIB_PATH` env var its own build script read. paddock-pdfium is
+# a plain `lib`, so that workaround is gone.
+[target.x86_64-pc-windows-msvc]
+rustflags = ["-C", "target-feature=+crt-static"]

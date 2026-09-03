@@ -1,0 +1,223 @@
+[workspace]
+resolver = "3"
+members = [
+    "crates/paddock-api",
+    "crates/paddock-bench",
+    "crates/paddock-runner",
+    "crates/paddock-manager",
+    "crates/paddock-models",
+    "crates/paddock-tokenizer",
+    "crates/paddock-estimator",
+    "crates/paddock-engine",
+    "crates/paddock-kernels",
+    "crates/paddock-mcp",
+    "crates/paddock-filemeta",
+    "crates/paddock-geo",
+    "crates/paddock-heif",
+    "crates/paddock-websearch",
+    "crates/paddock-admin",
+    "crates/paddock-tls",
+    "crates/paddock-forensics",
+    "crates/paddock-pdfium",
+]
+
+# Dual MIT OR Apache-2.0, the Rust ecosystem's standard pair, and it covers the
+# whole workspace - engine, kernels, runner and the CUDA pack included.
+#
+# An earlier decision split the tree into an "open" control plane and a
+# permanently-closed serving edge, enforced by
+# `paddock-manager/tests/source_seam.rs`; both the split and the test are gone.
+# Nothing here is reserved.
+#
+# `publish = false` stays, and is about crates.io rather than about openness: a
+# workspace this size is not something to publish 19 crates of by accident, and
+# a git dependency would block it anyway. Publishing is its own later decision.
+[workspace.package]
+version = "0.1.4"
+edition = "2024"
+license = "MIT OR Apache-2.0"
+publish = false
+homepage = "https://truespar.com/paddock"
+repository = "https://github.com/truespar/paddock"
+
+# One place for shared dependency versions. Versions are verified against
+# crates.io per the newest-deps policy.
+[workspace.dependencies]
+axum = "0.8.9"
+tokio = { version = "1.53.1", features = ["full"] }
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.151"
+tracing = "0.1.44"
+tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
+toml = "1.1.4"
+thiserror = "2.0.20"
+clap = { version = "4.6.6", features = ["derive"] }
+# HF's reference tokenization library - fancy-regex backend (pure Rust, supports
+# the original tokenizer.json regexes incl. (?i:) groups and lookahead)
+tokenizers = { version = "0.23.1", default-features = false, features = ["fancy-regex"] }
+# CUDA driver bindings; dynamic loading so binaries run (and degrade gracefully)
+# on machines without CUDA - users need only the display driver
+# No cublas/cublaslt - default-features would sneak them
+# back in, so the needed set is spelled out.
+#
+# `cuda-13000` is LOAD-BEARING - Do not bump it to a newer cuda-130x.
+# It pins the driver-API bindings to the CUDA 13.0.0 surface, and that pin is
+# what holds every user's minimum display driver at the r580 branch. NVIDIA's
+# minor-version-compatibility rule says a 13.x-built app runs on the >= 580
+# floor unless it calls an entry point newer than the floor; with this pin such
+# a call is a COMPILE error rather than a `cudaErrorCallRequiresNewerDriver` on
+# somebody's machine. It is deliberately not tied to the toolkit nvcc version:
+# we build the pack with 13.3 for its codegen, and the API surface stays at
+# 13.0. Raising this raises the driver users must install, so it is a
+# release-note decision, never a routine dependency bump.
+cudarc = { version = "0.19.9", default-features = false, features = [
+    "std", "driver",
+    "cuda-13000", "f16", "fallback-dynamic-loading",
+] }
+half = "2.7.1"
+# KV-offload identity digests + payload integrity (kv_tier). BLAKE3 over sha2
+# because the checksum sits on the restore hot path: it must keep up with NVMe
+# read rate.
+blake3 = "1.8.7"
+rand = "0.10.2"
+rand_chacha = "0.10.0"
+rand_core = "0.10.1"
+uuid = { version = "1.25.0", features = ["v4"] }
+futures = "0.3.34"
+async-stream = "0.3.6"
+futures-util = "0.3"
+minijinja = { version = "2.24.0", features = ["loop_controls", "builtins", "json"] }
+minijinja-contrib = { version = "2.24.0", features = ["pycompat"] }
+base64 = "0.23"
+# zlib, for whisper's `compression_ratio` - OpenAI defines that segment field
+# as raw bytes over zlib-compressed bytes, so it is the algorithm, not a
+# choice. Already in the build graph (image/png); a direct dep here just names
+# what uses it.
+flate2 = "1.1.9"
+# The record codec (paddock-admin/src/codec.rs): self-describing
+# binary serde + dictionary-compressed frames for activity rows and the §8
+# event journal. CBOR over positional formats deliberately: the record schema
+# is the runner's and may grow fields freely, and a positional format would
+# misparse a new field instead of erroring.
+ciborium = "0.2.2"
+zstd = "0.13.3"
+# Embed the built Studio (crates/paddock-manager/static) into the manager in
+# release; read from disk in debug so a frontend rebuild needs no recompile.
+rust-embed = { version = "8.12.0", features = ["mime-guess"] }
+# Truespar's own document/image metadata + PDF text library (clean-room
+# ExifTool/Poppler replacement, pure Rust). Not on crates.io - `sift` was taken
+# there, and `siftx` belongs to a grep alternative - so it arrives by git,
+# pinned to a rev rather than a branch so the build is reproducible. The key
+# stays `sift` so all 11 consuming files keep `use sift::...`; the package is
+# truespar-siftx and its [lib] name is siftx.
+sift = { package = "truespar-siftx", git = "https://github.com/truespar/siftx", rev = "fcf8e3d37213b3449c7293930f6a886495767673" }
+# Truespar's OOXML/.docx engine, same arrangement: scriptor-crdt is the
+# document model + final-view text extraction, ooxml is its OPC layer and a
+# direct dev-dependency for building test fixtures. One repo, so one rev.
+scriptor-crdt = { git = "https://github.com/truespar/scriptor", rev = "46559bbb1eac15b18335cd19249120393fddd853" }
+scriptor-ooxml = { git = "https://github.com/truespar/scriptor", rev = "46559bbb1eac15b18335cd19249120393fddd853" }
+# Spreadsheet attachments (xlsx/xlsm/xls/xlsb/ods -> markdown tables in the
+# prompt). Pure-Rust reader; formula cells yield their cached values, which is
+# exactly what a model should see. `dates` turns Excel serial dates into
+# chrono datetimes instead of bare floats.
+calamine = { version = "0.36", features = ["dates"] }
+# Text-native attachments: decode whatever encoding the file actually arrived
+# in (chardetng is Firefox's detector) instead of gambling on UTF-8 and
+# feeding the model mojibake.
+encoding_rs = "0.8"
+chardetng = "1.0"
+# Character-n-gram language identification over TEXT. Used for one
+# thing: reading back what language a transcript came out in, so a decode that
+# was told "Swedish" and produced German can say so instead of handing over a
+# fluent translation. Cavnar-Trenkle trigram profiles for 70 languages,
+# compiled in at ~80 KB, plus script detection and a MARGIN-based confidence
+# (top vs runner-up) which is exactly the gate a report like this needs.
+#
+# lingua-rs is the more accurate library on short text and was the other
+# candidate; it was not taken because its models are ~300 MB across 75
+# languages and the per-language cargo features that would trim that cannot be
+# chosen at compile time here - which language a transcript comes back in is a
+# runtime fact. Revisit if the mismatch check ever proves too blunt on short
+# utterances; the seam is `language::identify_text` and nothing else.
+whatlang = "0.18"
+# Embedded, single-file store (bundled = SQLite compiled in, stays single-binary).
+rusqlite = { version = "0.40", features = ["bundled"] }
+sha2 = "0.11"
+image = { version = "0.25", default-features = false, features = ["png", "jpeg", "webp", "gif", "tiff", "bmp"] }
+# Direct dep on the same tiff the `image` crate uses: multi-page TIFFs need the
+# IFD walk (`more_images`/`next_image`) that image's single-frame API hides.
+tiff = "0.11"
+chrono = { version = "0.4", default-features = false, features = ["clock"] }
+# IANA zone rendering for the builtin current_time tool (the tz database, pure Rust)
+chrono-tz = "0.10"
+libloading = "0.9.0"
+memmap2 = "0.9.11"
+tower = "0.5"
+http-body-util = "0.1"
+# Official Rust MCP SDK (Model Context Protocol). Client role, stdio + Streamable
+# HTTP transports; the `reqwest` feature pulls reqwest+rustls so https:// works.
+# `auth` pulls oauth2 for the authorization-code + PKCE browser-consent flow.
+rmcp = { version = "3.1", features = [
+    "client",
+    "transport-child-process",
+    "transport-streamable-http-client-reqwest",
+    "reqwest",
+    "auth",
+    # Server side: the manager hosts its own first-party MCP server for
+    # artifacts. Conformance is a correctness feature, so the
+    # protocol comes from the SDK rather than a hand-rolled JSON-RPC handler.
+    "server",
+    "macros",
+    "transport-streamable-http-server",
+] }
+
+paddock-api = { path = "crates/paddock-api" }
+paddock-mcp = { path = "crates/paddock-mcp" }
+paddock-filemeta = { path = "crates/paddock-filemeta" }
+paddock-geo = { path = "crates/paddock-geo" }
+paddock-heif = { path = "crates/paddock-heif" }
+paddock-runner = { path = "crates/paddock-runner" }
+paddock-websearch = { path = "crates/paddock-websearch" }
+paddock-models = { path = "crates/paddock-models" }
+paddock-tokenizer = { path = "crates/paddock-tokenizer" }
+paddock-estimator = { path = "crates/paddock-estimator" }
+paddock-engine = { path = "crates/paddock-engine" }
+paddock-forensics = { path = "crates/paddock-forensics" }
+paddock-pdfium = { path = "crates/paddock-pdfium" }
+paddock-kernels = { path = "crates/paddock-kernels" }
+
+[workspace.lints.clippy]
+# unwrap in library code hides failure modes we promised to surface (no-silent-failures principle)
+unwrap_used = "warn"
+
+[profile.release]
+lto = "thin"
+# Symbols are build output, not product. Stripping them takes a few MB off every
+# download and removes the free map anyone gets from `strings paddock.exe` -
+# not obfuscation (see the packaging notes: we deliberately do not obfuscate,
+# and the CUDA kernels ship as disassemblable SASS regardless), just declining
+# to publish the function names.
+#
+# `panic` stays at the default `unwind` DELIBERATELY. Under `abort` a single
+# panicking request would take the engine thread and every other in-flight
+# request with it, which is the opposite of the crash-isolation the runner
+# split exists for.
+strip = "symbols"
+# Absolute build paths are not product either, and they are chattier than
+# symbols. Measured on a ~60 MB paddock.exe: hundreds of distinct absolute .rs
+# paths and thousands of `.cargo\registry` / home-directory hits - those are
+# panic locations and #[track_caller] strings, which are `&'static str` DATA and
+# therefore survive `strip` untouched. That ships a developer's account name and
+# the layout of their machine to every user, and hands a reader an annotated map
+# of the dependency tree.
+#
+# (Our own crates were already clean - cargo compiles workspace members through
+# relative paths. This is entirely the registry half.)
+#
+# The fix is not here. The obvious spelling - `trim-paths = "all"` - is still
+# unstable in Cargo 1.96.1 and hard-fails the build ("that feature is not
+# stabilized in this version of Cargo"). The stable mechanism is
+# `--remap-path-prefix`, and it lives in the release script where it belongs:
+# as a RUSTFLAG it would invalidate every dev build on every box if it were set
+# globally in .cargo/config.toml, and dev builds want real paths in panics.
+# Revisit this line when trim-paths stabilises.

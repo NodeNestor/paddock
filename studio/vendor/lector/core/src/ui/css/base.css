@@ -1,0 +1,5154 @@
+/**
+ * Lector Structural CSS
+ *
+ * BEM class names (.lector-*) — no external dependencies.
+ */
+
+/* ── Reset ── */
+
+.lector-workspace *,
+.lector-workspace *::before,
+.lector-workspace *::after {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+  border: 0 solid;
+}
+
+/* ── Skip link (a11y bypass) ── */
+
+.lector-skip-link {
+  position: absolute;
+  top: -9999px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 9999;
+  padding: 8px 16px;
+  background: var(--lector-bg);
+  color: var(--lector-accent);
+  border: 2px solid var(--lector-accent);
+  border-radius: var(--lector-radius);
+  font-size: var(--lector-font-size-sm);
+  font-weight: 600;
+  text-decoration: none;
+  white-space: nowrap;
+}
+
+.lector-skip-link:focus {
+  top: 8px;
+}
+
+/* ── Screen-reader-only utility ── */
+
+.lector-sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+/* ── Reduced motion ── */
+
+@media (prefers-reduced-motion: reduce) {
+  .lector-workspace *,
+  .lector-workspace *::before,
+  .lector-workspace *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}
+
+/* ── Scrollbar (global within workspace) ── */
+
+.lector-workspace *::-webkit-scrollbar {
+  width: var(--lector-scrollbar-width);
+  height: var(--lector-scrollbar-width);
+}
+.lector-workspace *::-webkit-scrollbar-track {
+  background: var(--lector-scrollbar-track);
+}
+.lector-workspace *::-webkit-scrollbar-thumb {
+  background: var(--lector-scrollbar-thumb);
+  border-radius: 4px;
+}
+.lector-workspace *::-webkit-scrollbar-thumb:hover {
+  background: var(--lector-scrollbar-thumb-hover);
+}
+
+/* ═══════════════════════════════════════════
+   Workspace — outermost container
+   ═══════════════════════════════════════════ */
+
+.lector-workspace {
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+  /* Positioning context for the compact-mode drawer + backdrop: an EMBEDDED
+     viewer must contain its overlays — position: fixed would pin them to the
+     host window, painting the sidebar over the embedding app's chrome. */
+  position: relative;
+  font-family: var(--lector-font-family);
+  font-size: var(--lector-font-size-base);
+  line-height: var(--lector-line-height);
+  color: var(--lector-fg);
+  background: var(--lector-bg);
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+/* ═══════════════════════════════════════════
+   Document Tabs
+   ═══════════════════════════════════════════ */
+
+.lector-doctabs {
+  display: flex;
+  align-items: flex-end;
+  flex-shrink: 0;
+  padding: 8px 16px 0;
+  background: var(--lector-bg-alt);
+  user-select: none;
+  overflow-x: auto;
+  overflow-y: hidden;
+}
+
+.lector-doctabs:empty {
+  display: none;
+}
+
+.lector-doctab {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 120px;
+  max-width: 240px;
+  padding: 8px 16px;
+  border: none;
+  border-top-left-radius: var(--lector-radius-lg);
+  border-top-right-radius: var(--lector-radius-lg);
+  background: transparent;
+  color: var(--lector-fg-muted);
+  font-family: inherit;
+  font-size: var(--lector-font-size-sm);
+  font-weight: var(--lector-font-weight-medium);
+  cursor: pointer;
+  white-space: nowrap;
+  transition: background var(--lector-transition-fast),
+              color var(--lector-transition-fast);
+}
+
+.lector-doctab:hover {
+  background: rgba(255, 255, 255, 0.5);
+  color: var(--lector-fg-secondary);
+}
+
+.lector-doctab--active {
+  background: var(--lector-bg);
+  color: var(--lector-fg);
+  position: relative;
+  z-index: 1;
+}
+
+.lector-doctab--active:hover {
+  background: var(--lector-bg);
+}
+
+.lector-doctab__label {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.lector-doctab__close {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  flex-shrink: 0;
+  border: none;
+  border-radius: var(--lector-radius-full);
+  background: none;
+  color: var(--lector-fg-muted);
+  cursor: pointer;
+  padding: 3px;
+  opacity: 0;
+  transition: opacity var(--lector-transition-fast),
+              background var(--lector-transition-fast);
+}
+
+.lector-doctab:hover .lector-doctab__close,
+.lector-doctab--active .lector-doctab__close {
+  opacity: 1;
+}
+
+.lector-doctab__close:hover {
+  background: var(--lector-bg-hover);
+}
+
+.lector-doctab__close svg {
+  width: 14px;
+  height: 14px;
+  stroke: currentColor;
+  fill: none;
+}
+
+.lector-doctab--add {
+  min-width: auto;
+  max-width: none;
+  padding: 6px;
+  margin-left: 4px;
+  margin-bottom: 6px;
+  border-radius: var(--lector-radius);
+  flex-shrink: 0;
+  color: var(--lector-fg-secondary);
+}
+
+.lector-doctab--add:hover {
+  background: var(--lector-bg-hover);
+  color: var(--lector-fg);
+}
+
+.lector-doctab--add svg {
+  width: 14px;
+  height: 14px;
+  stroke: currentColor;
+  fill: none;
+}
+
+/* ── Split tabs ──────────────────────────────────
+   A split tab shows two doc names separated by a pipe,
+   with one trailing close button that closes the whole
+   split. Each side is independently clickable to focus
+   that pane and has a hover-revealed per-side close. */
+
+.lector-doctab--split {
+  /* Split tabs need more horizontal room for two filenames. */
+  max-width: 380px;
+  gap: 4px;
+  padding-left: 12px;
+  padding-right: 12px;
+}
+
+.lector-doctab__side {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+  max-width: 160px;
+  padding: 2px 6px;
+  border-radius: var(--lector-radius);
+  color: var(--lector-fg-muted);
+  cursor: pointer;
+  transition: background var(--lector-transition-fast),
+              color var(--lector-transition-fast);
+}
+
+.lector-doctab__side:hover {
+  background: var(--lector-bg-hover);
+  color: var(--lector-fg-secondary);
+}
+
+.lector-doctab--active .lector-doctab__side--active {
+  color: var(--lector-fg);
+  background: var(--lector-bg-hover);
+}
+
+.lector-doctab__side-label {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.lector-doctab__side-close {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+  flex-shrink: 0;
+  border: none;
+  border-radius: var(--lector-radius-full);
+  background: none;
+  color: var(--lector-fg-muted);
+  cursor: pointer;
+  padding: 2px;
+  opacity: 0;
+  transition: opacity var(--lector-transition-fast),
+              background var(--lector-transition-fast);
+}
+
+.lector-doctab__side:hover .lector-doctab__side-close {
+  opacity: 1;
+}
+
+.lector-doctab__side-close:hover {
+  background: var(--lector-bg-hover);
+}
+
+.lector-doctab__side-close svg {
+  width: 12px;
+  height: 12px;
+  stroke: currentColor;
+  fill: none;
+}
+
+.lector-doctab__sep {
+  flex-shrink: 0;
+  color: var(--lector-border);
+  font-weight: var(--lector-font-weight-normal, 400);
+  user-select: none;
+}
+
+/* ═══════════════════════════════════════════
+   Viewer — grid container for a single doc
+   ═══════════════════════════════════════════ */
+
+.lector-viewer {
+  display: grid;
+  flex: 1;
+  min-height: 0;
+  grid-template-rows: auto auto 1fr;
+  grid-template-columns: auto 1fr auto;
+  grid-template-areas:
+    "toolbar      toolbar  toolbar"
+    "annot-toolbar annot-toolbar annot-toolbar"
+    "sidebar      canvas   comments";
+  background: var(--lector-bg);
+  overflow: hidden;
+}
+
+/* ═══════════════════════════════════════════
+   Toolbar
+   ═══════════════════════════════════════════ */
+
+.lector-toolbar {
+  grid-area: toolbar;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 16px;
+  background: var(--lector-bg);
+  border-bottom: 1px solid var(--lector-border);
+  user-select: none;
+  overflow: visible;
+  position: relative;
+  z-index: var(--lector-z-dropdown);
+}
+
+.lector-toolbar__group {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.lector-toolbar__spacer {
+  flex: 1;
+}
+
+.lector-toolbar__divider {
+  width: 1px;
+  height: 24px;
+  background: var(--lector-border);
+  flex-shrink: 0;
+}
+
+/* ═══════════════════════════════════════════
+   Buttons (toolbar icon buttons)
+   ═══════════════════════════════════════════ */
+
+.lector-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  height: 32px;
+  width: auto;
+  min-width: 32px;
+  padding: 5px;
+  gap: 6px;
+  border: none;
+  border-radius: var(--lector-radius);
+  background: transparent;
+  color: var(--lector-fg-muted);
+  font-family: inherit;
+  font-size: var(--lector-font-size-sm);
+  font-weight: var(--lector-font-weight-medium);
+  line-height: 1;
+  cursor: pointer;
+  white-space: nowrap;
+  flex-shrink: 0;
+  transition: background var(--lector-transition-fast),
+              color var(--lector-transition-fast),
+              box-shadow var(--lector-transition-fast);
+}
+
+.lector-btn:hover {
+  background: var(--lector-bg-hover);
+  color: var(--lector-fg);
+  box-shadow: inset 0 0 0 1px var(--lector-border);
+}
+
+.lector-btn:active {
+  background: var(--lector-bg-active);
+}
+
+.lector-btn:focus-visible {
+  outline: var(--lector-focus-outline);
+  outline-offset: var(--lector-focus-outline-offset);
+}
+
+.lector-btn:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+  pointer-events: none;
+}
+
+.lector-btn--active {
+  background: var(--lector-bg-selected);
+  color: var(--lector-accent);
+  box-shadow: inset 0 0 0 1px var(--lector-accent);
+}
+
+.lector-btn--active:hover {
+  background: var(--lector-bg-selected);
+  color: var(--lector-accent);
+  box-shadow: inset 0 0 0 1px var(--lector-accent);
+}
+
+.lector-btn__icon {
+  width: 20px;
+  height: 20px;
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.lector-btn__icon svg {
+  width: 100%;
+  height: 100%;
+  stroke: currentColor;
+  fill: none;
+}
+
+.lector-btn__label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* ═══════════════════════════════════════════
+   Dropdown menu
+   ═══════════════════════════════════════════ */
+
+.lector-dropdown {
+  position: relative;
+}
+
+.lector-dropdown__menu {
+  position: absolute;
+  top: calc(100% + 4px);
+  left: 0;
+  min-width: 200px;
+  padding: 4px 0;
+  background: var(--lector-bg);
+  border: 1px solid var(--lector-border);
+  border-radius: var(--lector-radius-lg);
+  box-shadow: var(--lector-shadow-lg);
+  z-index: var(--lector-z-dropdown);
+  opacity: 0;
+  transform: scale(0.95) translateY(-4px);
+  pointer-events: none;
+  transform-origin: top left;
+  transition: opacity var(--lector-transition-fast),
+              transform var(--lector-transition-fast);
+}
+
+.lector-dropdown__menu--open {
+  opacity: 1;
+  transform: scale(1) translateY(0);
+  pointer-events: auto;
+}
+
+.lector-dropdown__menu--right {
+  left: auto;
+  right: 0;
+  transform-origin: top right;
+}
+
+.lector-dropdown__item {
+  display: flex;
+  align-items: center;
+  width: 100%;
+  height: 36px;
+  padding: 0 12px;
+  gap: 10px;
+  border: none;
+  background: none;
+  color: var(--lector-fg);
+  font-family: inherit;
+  font-size: var(--lector-font-size-sm);
+  cursor: pointer;
+  white-space: nowrap;
+  text-align: left;
+  transition: background var(--lector-transition-fast);
+}
+
+.lector-dropdown__item:hover {
+  background: var(--lector-bg-hover);
+}
+
+.lector-dropdown__item:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.lector-dropdown__item-icon {
+  width: 20px;
+  height: 20px;
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--lector-fg-muted);
+}
+
+.lector-dropdown__item-icon svg {
+  width: 100%;
+  height: 100%;
+  stroke: currentColor;
+  fill: none;
+}
+
+.lector-dropdown__item-label {
+  flex: 1;
+  text-align: left;
+}
+
+.lector-dropdown__item-shortcut {
+  color: var(--lector-fg-disabled);
+  font-size: var(--lector-font-size-xs);
+  margin-left: 16px;
+}
+
+.lector-dropdown__separator {
+  height: 1px;
+  margin: 4px 8px;
+  background: var(--lector-border-subtle);
+}
+
+/* ═══════════════════════════════════════════
+   Annotation toolbar (secondary)
+   ═══════════════════════════════════════════ */
+
+.lector-annot-toolbar {
+  grid-area: annot-toolbar;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding: 6px 16px;
+  background: var(--lector-bg-alt);
+  border-bottom: 1px solid var(--lector-border);
+  user-select: none;
+  overflow: visible;
+  position: relative;
+  z-index: var(--lector-z-toolbar);
+  transition: max-height var(--lector-transition-fast),
+              opacity var(--lector-transition-fast),
+              padding var(--lector-transition-fast);
+  max-height: 60px;
+  opacity: 1;
+}
+
+.lector-annot-toolbar--hidden {
+  max-height: 0;
+  opacity: 0;
+  padding-top: 0;
+  padding-bottom: 0;
+  border-bottom: none;
+  overflow: hidden;
+  pointer-events: none;
+}
+
+/* ── Toolbar signature status badge ── */
+
+.lector-sig-status {
+  /* Inherits .lector-btn — only colour overrides per state. */
+  color: var(--lector-fg-muted);
+}
+.lector-sig-status--validating {
+  color: var(--lector-fg-muted);
+}
+.lector-sig-status--valid {
+  color: var(--lector-success);
+}
+.lector-sig-status--unknown {
+  color: var(--lector-warning);
+}
+.lector-sig-status--invalid {
+  color: var(--lector-danger);
+}
+
+/* Hover popover anchored to the badge — shows per-signature integrity
+   and signature/cert status with structured rows. */
+.lector-sig-status-popover {
+  position: fixed;
+  z-index: var(--lector-z-tooltip);
+  min-width: 260px;
+  max-width: 360px;
+  padding: 10px 12px;
+  background: var(--lector-bg);
+  color: var(--lector-fg);
+  border: 1px solid var(--lector-border);
+  border-radius: var(--lector-radius);
+  box-shadow: var(--lector-shadow-lg);
+  font-size: 12px;
+  pointer-events: none;
+}
+
+.lector-sig-status-popover__header {
+  font-weight: var(--lector-font-weight-semibold);
+  font-size: 12px;
+  color: var(--lector-fg);
+  margin-bottom: 6px;
+  padding-bottom: 6px;
+  border-bottom: 1px solid var(--lector-border-subtle);
+}
+
+.lector-sig-status-popover__sig {
+  margin-top: 6px;
+}
+.lector-sig-status-popover__sig:first-of-type {
+  margin-top: 0;
+}
+.lector-sig-status-popover__sig + .lector-sig-status-popover__sig {
+  border-top: 1px solid var(--lector-border-subtle);
+  padding-top: 6px;
+}
+
+.lector-sig-status-popover__sig-title {
+  font-size: 11px;
+  color: var(--lector-fg-muted);
+  margin-bottom: 4px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.lector-sig-status-popover__row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  line-height: 1.4;
+  margin: 2px 0;
+}
+
+.lector-sig-status-popover__icon {
+  display: inline-flex;
+  flex-shrink: 0;
+  width: 14px;
+  height: 14px;
+}
+.lector-sig-status-popover__icon svg {
+  width: 14px;
+  height: 14px;
+}
+
+.lector-sig-status-popover__text {
+  flex: 1;
+  min-width: 0;
+}
+
+.lector-sig-status-popover__row--ok { color: var(--lector-success); }
+.lector-sig-status-popover__row--warn { color: var(--lector-warning); }
+.lector-sig-status-popover__row--bad { color: var(--lector-danger); }
+.lector-sig-status-popover__row--muted { color: var(--lector-fg-muted); }
+
+.lector-sig-status-popover__meta {
+  font-size: 11px;
+  color: var(--lector-fg-muted);
+  margin-left: 20px;
+  margin-top: 2px;
+}
+
+.lector-sig-status-popover__footer {
+  margin-top: 8px;
+  padding-top: 6px;
+  border-top: 1px solid var(--lector-border-subtle);
+  font-size: 10px;
+  color: var(--lector-fg-muted);
+  font-style: italic;
+}
+
+/* ═══════════════════════════════════════════
+   Sidebar
+   ═══════════════════════════════════════════ */
+
+.lector-sidebar {
+  grid-area: sidebar;
+  display: flex;
+  flex-direction: row;
+  width: var(--lector-sidebar-width);
+  min-width: var(--lector-sidebar-min-width);
+  max-width: var(--lector-sidebar-max-width);
+  min-height: 0;
+  background: var(--lector-bg);
+  border-right: 1px solid var(--lector-border);
+  box-shadow: var(--lector-shadow-lg);
+  z-index: var(--lector-z-sidebar);
+  transition: width var(--lector-transition-slow);
+}
+
+.lector-sidebar--collapsed {
+  width: 0 !important;
+  min-width: 0 !important;
+  border: none;
+  overflow: hidden;
+  visibility: hidden;
+}
+
+/* ── Comments sidebar (right) ──
+   Persistent panel anchored to the right grid column. Holds the
+   conversation view: filter / sort header, list of threads grouped
+   by page, an active-thread view with reply compose. Auto-opens
+   when an annotation is selected and stays open until the user
+   closes it. Independent of the left sidebar — both can be open
+   at once for full review workflows. */
+
+.lector-comments-sidebar {
+  grid-area: comments;
+  display: flex;
+  flex-direction: column;
+  width: 340px;
+  min-width: 280px;
+  max-width: 480px;
+  min-height: 0;
+  background: var(--lector-bg);
+  border-left: 1px solid var(--lector-border);
+  box-shadow: var(--lector-shadow-lg);
+  z-index: var(--lector-z-sidebar);
+  transition: width var(--lector-transition-slow);
+  overflow: hidden;
+}
+
+.lector-comments-sidebar--collapsed {
+  width: 0 !important;
+  min-width: 0 !important;
+  border: none;
+  overflow: hidden;
+  visibility: hidden;
+}
+
+.lector-comments-sidebar__header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 12px 16px;
+  border-bottom: 1px solid var(--lector-border);
+  flex-shrink: 0;
+}
+
+.lector-comments-sidebar__title {
+  font-size: var(--lector-font-size-sm);
+  font-weight: var(--lector-font-weight-semibold);
+  color: var(--lector-fg);
+  flex: 1;
+  min-width: 0;
+}
+
+.lector-comments-sidebar__close {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  border: none;
+  border-radius: var(--lector-radius);
+  background: none;
+  color: var(--lector-fg-muted);
+  cursor: pointer;
+  padding: 4px;
+  flex-shrink: 0;
+}
+
+.lector-comments-sidebar__close:hover {
+  background: var(--lector-bg-hover);
+  color: var(--lector-fg);
+}
+
+.lector-comments-sidebar__close svg {
+  width: 16px;
+  height: 16px;
+  stroke: currentColor;
+  fill: none;
+}
+
+/* Filter / sort row below the header */
+.lector-comments-sidebar__filters {
+  display: flex;
+  gap: 6px;
+  padding: 8px 16px;
+  border-bottom: 1px solid var(--lector-border);
+  flex-shrink: 0;
+}
+
+.lector-comments-sidebar__select {
+  flex: 1;
+  min-width: 0;
+  height: 28px;
+  padding: 0 8px;
+  border: 1px solid var(--lector-border);
+  border-radius: var(--lector-radius);
+  background: var(--lector-bg);
+  color: var(--lector-fg);
+  font-family: inherit;
+  font-size: var(--lector-font-size-xs);
+  cursor: pointer;
+}
+
+.lector-comments-sidebar__select:hover {
+  border-color: var(--lector-fg-muted);
+}
+
+.lector-comments-sidebar__select:focus-visible {
+  outline: var(--lector-focus-outline);
+  outline-offset: var(--lector-focus-outline-offset);
+  border-color: var(--lector-accent);
+}
+
+.lector-comments-sidebar__body {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 8px 0;
+}
+
+.lector-comments-sidebar__empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  height: 100%;
+  padding: 32px 24px;
+  text-align: center;
+  color: var(--lector-fg-muted);
+  font-size: var(--lector-font-size-sm);
+  line-height: 1.5;
+}
+
+.lector-comments-sidebar__empty-icon {
+  width: 40px;
+  height: 40px;
+  margin-bottom: 12px;
+  color: var(--lector-fg-muted);
+  opacity: 0.5;
+}
+
+.lector-comments-sidebar__empty-icon svg {
+  width: 100%;
+  height: 100%;
+  stroke: currentColor;
+  fill: none;
+}
+
+/* Per-page group header inside the list */
+.lector-comments-sidebar__page-header {
+  padding: 6px 16px;
+  font-size: var(--lector-font-size-xs);
+  font-weight: var(--lector-font-weight-semibold);
+  color: var(--lector-fg-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+/* ── Comment thread cards (sidebar-native) ──
+   Flat vertical conversation list. No popovers, no menus, no card
+   chrome — just rows with hover state. Each thread shows a header
+   (type · author · time + status label), a body or full conversation,
+   and a single footer row with Resolve / Delete on the left and the
+   compose Cancel / Reply on the right. */
+
+.lector-cmt-thread {
+  padding: 12px 16px;
+  cursor: pointer;
+  transition: background var(--lector-transition-fast);
+}
+
+.lector-cmt-thread:hover {
+  background: var(--lector-bg-hover);
+}
+
+.lector-cmt-thread--active {
+  background: transparent;
+  cursor: default;
+}
+
+.lector-cmt-thread + .lector-cmt-thread {
+  border-top: 1px solid var(--lector-border);
+}
+
+/* Header row: type · author · time + right-aligned status */
+
+.lector-cmt-thread__header {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  font-size: var(--lector-font-size-xs);
+}
+
+.lector-cmt-thread__header-top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.lector-cmt-thread__header-actions {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.lector-cmt-thread__gear {
+  width: 22px;
+  height: 22px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: none;
+  border-radius: var(--lector-radius);
+  background: none;
+  color: var(--lector-fg-muted);
+  cursor: pointer;
+  padding: 0;
+}
+
+.lector-cmt-thread__gear:hover {
+  background: var(--lector-bg-hover);
+  color: var(--lector-fg);
+}
+
+.lector-cmt-thread__gear svg {
+  width: 14px;
+  height: 14px;
+}
+
+.lector-cmt-thread__props-dropdown {
+  padding: 8px 12px;
+  background: var(--lector-bg-alt);
+  border-radius: var(--lector-radius);
+  margin: 4px 0 8px;
+}
+
+.lector-cmt-thread__header-meta {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  color: var(--lector-fg-muted);
+  color: var(--lector-fg-muted);
+}
+
+.lector-cmt-thread__type {
+  font-weight: var(--lector-font-weight-semibold);
+  color: var(--lector-fg);
+  font-size: var(--lector-font-size-sm);
+}
+
+.lector-cmt-thread__sep {
+  color: var(--lector-fg-muted);
+}
+
+.lector-cmt-thread__author {
+  color: var(--lector-fg-secondary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  min-width: 0;
+}
+
+.lector-cmt-thread__time {
+  color: var(--lector-fg-muted);
+  white-space: nowrap;
+}
+
+/* Status label — read-only, right-aligned */
+
+.lector-cmt-thread__status {
+  margin-left: auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 2px 0;
+  font-size: var(--lector-font-size-xs);
+  color: var(--lector-fg-muted);
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+
+.lector-cmt-thread__status-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: currentColor;
+  flex-shrink: 0;
+}
+
+.lector-cmt-thread__status--open       .lector-cmt-thread__status-dot { background: #f59e0b; }
+.lector-cmt-thread__status--accepted   .lector-cmt-thread__status-dot { background: #22c55e; }
+.lector-cmt-thread__status--rejected   .lector-cmt-thread__status-dot { background: #ef4444; }
+.lector-cmt-thread__status--completed  .lector-cmt-thread__status-dot { background: #22c55e; }
+.lector-cmt-thread__status--cancelled  .lector-cmt-thread__status-dot { background: #6b7280; }
+.lector-cmt-thread__status--resolved   .lector-cmt-thread__status-dot { background: #22c55e; }
+
+/* Collapsed body */
+
+.lector-cmt-thread__preview {
+  margin-top: 6px;
+  font-size: var(--lector-font-size-sm);
+  color: var(--lector-fg);
+  line-height: 1.5;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+.lector-cmt-thread__preview--empty {
+  color: var(--lector-fg-muted);
+  font-style: italic;
+}
+
+.lector-cmt-thread__footer {
+  margin-top: 6px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: var(--lector-font-size-xs);
+  color: var(--lector-fg-muted);
+}
+
+.lector-cmt-thread__reply-count {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.lector-cmt-thread__reply-count svg {
+  width: 12px;
+  height: 12px;
+  stroke: currentColor;
+  fill: none;
+}
+
+.lector-cmt-thread__expanded {
+  margin-top: 12px;
+}
+
+/* Sticky-note properties strip — inline at top of expanded thread */
+
+.lector-cmt-thread__props {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 8px 0;
+  margin-bottom: 8px;
+  border-bottom: 1px solid var(--lector-border-subtle);
+}
+
+.lector-cmt-thread__props-label {
+  font-size: 10px;
+  font-weight: var(--lector-font-weight-semibold);
+  color: var(--lector-fg-muted);
+  letter-spacing: 0.06em;
+  white-space: nowrap;
+  margin-bottom: 4px;
+}
+
+.lector-cmt-thread__props-group {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.lector-cmt-thread__props-label + .lector-cmt-thread__props-row {
+  margin-bottom: 0;
+}
+
+.lector-cmt-thread__props-row {
+  display: flex;
+  flex-wrap: nowrap;
+  gap: 1px;
+}
+
+.lector-cmt-thread__props-icon {
+  width: 24px;
+  height: 24px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: none;
+  border-radius: var(--lector-radius);
+  background: none;
+  color: var(--lector-fg-muted);
+  cursor: pointer;
+  padding: 0;
+  transition: background var(--lector-transition-fast),
+              color var(--lector-transition-fast);
+}
+
+.lector-cmt-thread__props-icon:hover {
+  background: var(--lector-bg-hover);
+  color: var(--lector-fg);
+}
+
+.lector-cmt-thread__props-icon--active {
+  background: var(--lector-bg-selected);
+  color: var(--lector-accent);
+}
+
+.lector-cmt-thread__props-icon svg {
+  width: 14px;
+  height: 14px;
+  stroke: currentColor;
+  fill: none;
+}
+
+.lector-cmt-thread__props-color {
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  border: none;
+  cursor: pointer;
+  padding: 0;
+  margin: 3px;
+  box-shadow: 0 0 0 1px var(--lector-border);
+}
+
+.lector-cmt-thread__props-color:hover {
+  box-shadow: 0 0 0 1px var(--lector-fg-muted);
+}
+
+.lector-cmt-thread__props-color--active {
+  box-shadow: 0 0 0 2px var(--lector-accent);
+}
+
+/* Comment entries — flat list, no avatars */
+
+.lector-cmt-entries {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.lector-cmt-entry {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.lector-cmt-entry__head {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  font-size: var(--lector-font-size-xs);
+  color: var(--lector-fg-muted);
+}
+
+.lector-cmt-entry__author {
+  font-weight: var(--lector-font-weight-semibold);
+  color: var(--lector-fg);
+  font-size: var(--lector-font-size-sm);
+}
+
+.lector-cmt-entry__sep {
+  color: var(--lector-fg-muted);
+}
+
+.lector-cmt-entry__time {
+  color: var(--lector-fg-muted);
+  white-space: nowrap;
+}
+
+.lector-cmt-entry__actions {
+  display: none;
+  margin-left: auto;
+  gap: 6px;
+}
+
+.lector-cmt-entry:hover .lector-cmt-entry__actions {
+  display: inline-flex;
+}
+
+.lector-cmt-entry__body {
+  font-size: var(--lector-font-size-sm);
+  color: var(--lector-fg);
+  line-height: 1.5;
+  white-space: pre-wrap;
+  word-wrap: break-word;
+}
+
+/* Compose section */
+
+.lector-cmt-compose {
+  margin-top: 14px;
+}
+
+.lector-cmt-compose__textarea-wrap {
+  position: relative;
+}
+
+.lector-cmt-compose__textarea {
+  display: block;
+  width: 100%;
+  min-height: 64px;
+  padding: 8px 10px;
+  border: 1px solid var(--lector-border);
+  border-radius: var(--lector-radius);
+  background: var(--lector-bg);
+  color: var(--lector-fg);
+  font-family: inherit;
+  font-size: var(--lector-font-size-sm);
+  line-height: 1.5;
+  resize: vertical;
+  box-sizing: border-box;
+}
+
+.lector-cmt-compose__textarea:focus-visible {
+  outline: var(--lector-focus-outline);
+  outline-offset: -1px;
+  border-color: var(--lector-accent);
+}
+
+.lector-cmt-compose__textarea::placeholder {
+  color: var(--lector-fg-muted);
+}
+
+.lector-cmt-compose__actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 8px;
+}
+
+.lector-cmt-compose__actions-spacer {
+  flex: 1;
+}
+
+/* Plain text-link buttons (Resolve / Delete / Edit / Delete on entries) */
+
+.lector-cmt-link {
+  background: none;
+  border: none;
+  color: var(--lector-fg-secondary);
+  font-family: inherit;
+  font-size: var(--lector-font-size-xs);
+  font-weight: var(--lector-font-weight-medium);
+  cursor: pointer;
+  padding: 4px 0;
+}
+
+.lector-cmt-link:hover {
+  color: var(--lector-fg);
+  text-decoration: underline;
+}
+
+.lector-cmt-link--danger {
+  color: var(--lector-fg-secondary);
+}
+
+.lector-cmt-link--danger:hover {
+  color: var(--lector-danger-hover, #dc2626);
+}
+
+/* Solid buttons (Cancel / Reply) */
+
+.lector-cmt-btn {
+  height: 28px;
+  padding: 0 14px;
+  border: 1px solid var(--lector-border);
+  border-radius: var(--lector-radius);
+  background: var(--lector-bg);
+  color: var(--lector-fg);
+  font-family: inherit;
+  font-size: var(--lector-font-size-xs);
+  font-weight: var(--lector-font-weight-medium);
+  cursor: pointer;
+}
+
+.lector-cmt-btn:hover {
+  background: var(--lector-bg-hover);
+}
+
+.lector-cmt-btn--primary {
+  border-color: var(--lector-accent);
+  background: var(--lector-accent);
+  color: var(--lector-fg-on-accent);
+}
+
+.lector-cmt-btn--primary:hover {
+  background: var(--lector-accent);
+  filter: brightness(1.1);
+}
+
+/* @-mention dropdown — anchored under the textarea */
+
+.lector-cmt-mention-dropdown {
+  position: absolute;
+  top: 100%;
+  left: 0;
+  margin-top: 4px;
+  background: var(--lector-bg);
+  border: 1px solid var(--lector-border);
+  border-radius: var(--lector-radius);
+  box-shadow: var(--lector-shadow-lg);
+  max-height: 200px;
+  overflow-y: auto;
+  z-index: var(--lector-z-tooltip);
+  min-width: 200px;
+}
+
+.lector-cmt-mention-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 6px 10px;
+  border: none;
+  background: none;
+  color: var(--lector-fg);
+  font-family: inherit;
+  font-size: var(--lector-font-size-sm);
+  cursor: pointer;
+  text-align: left;
+}
+
+.lector-cmt-mention-item:hover {
+  background: var(--lector-bg-hover);
+}
+
+.lector-cmt-mention-item__name {
+  flex: 1;
+}
+
+/* Small avatar — only used by the mention dropdown to identify users.
+   The thread comment entries themselves no longer use avatars. */
+.lector-cmt-avatar--sm {
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  background: var(--lector-accent);
+  color: var(--lector-fg-on-accent);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 10px;
+  font-weight: var(--lector-font-weight-semibold);
+  flex-shrink: 0;
+}
+
+
+.lector-sidebar__content {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+}
+
+/* Sidebar segmented tabs (pill-style) */
+
+.lector-sidebar__tabs {
+  display: flex;
+  flex-shrink: 0;
+  margin: 16px 16px 0;
+  overflow: hidden;
+}
+
+.lector-sidebar__tab {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex: 1;
+  height: 28px;
+  gap: 5px;
+  border: 1px solid var(--lector-border);
+  background: none;
+  color: var(--lector-fg-secondary);
+  font-family: inherit;
+  font-size: var(--lector-font-size-xs);
+  font-weight: var(--lector-font-weight-medium);
+  cursor: pointer;
+  white-space: nowrap;
+  transition: background var(--lector-transition-fast),
+              color var(--lector-transition-fast);
+}
+
+.lector-sidebar__tab:first-child {
+  border-top-left-radius: var(--lector-radius);
+  border-bottom-left-radius: var(--lector-radius);
+  border-right: none;
+}
+
+.lector-sidebar__tab:last-child {
+  border-top-right-radius: var(--lector-radius);
+  border-bottom-right-radius: var(--lector-radius);
+}
+
+.lector-sidebar__tab:not(:first-child):not(:last-child) {
+  border-right: none;
+}
+
+.lector-sidebar__tab:hover {
+  background: var(--lector-bg-hover);
+}
+
+.lector-sidebar__tab--active {
+  background: var(--lector-accent);
+  color: var(--lector-fg-on-accent);
+  border-color: var(--lector-accent);
+}
+
+.lector-sidebar__tab--active:hover {
+  background: var(--lector-accent);
+}
+
+/* Adjacent to active: hide shared border */
+.lector-sidebar__tab--active + .lector-sidebar__tab {
+  border-left-color: var(--lector-accent);
+}
+
+.lector-sidebar__tab-icon {
+  width: 20px;
+  height: 20px;
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.lector-sidebar__tab-icon svg {
+  width: 100%;
+  height: 100%;
+  stroke: currentColor;
+  fill: none;
+}
+
+
+.lector-sidebar__body {
+  flex: 1;
+  overflow-y: auto;
+  overflow-x: hidden;
+  min-height: 0;
+}
+
+/* Resize handle — invisible edge, accent highlight on hover */
+
+.lector-sidebar__resize-handle {
+  flex-shrink: 0;
+  width: 1px;
+  padding: 0 2px;
+  margin: 0 -2px 0 0;
+  cursor: col-resize;
+  background: var(--lector-border);
+  background-clip: content-box;
+  transition: background var(--lector-transition-fast);
+  touch-action: none;
+  z-index: 1;
+}
+
+.lector-sidebar__resize-handle:hover,
+.lector-sidebar__resize-handle--dragging {
+  background: var(--lector-accent);
+  background-clip: content-box;
+}
+
+/* ═══════════════════════════════════════════
+   Canvas (page viewport)
+   ═══════════════════════════════════════════ */
+
+.lector-canvas-wrap {
+  grid-area: canvas;
+  position: relative;
+  min-height: 0;
+  min-width: 0;
+  overflow: hidden;
+}
+
+/* Non-scrolling host for the primary canvas. In single mode it fills
+ * the canvas-wrap absolutely; in split mode it becomes a flex child
+ * (sibling of the divider + extra panes). The host exists so the
+ * active-pane frame — an ::after pseudo-element sized to the viewport —
+ * can be attached to an element that does NOT scroll with the page
+ * content. The inner .lector-canvas is the actual scroll container. */
+.lector-canvas-host {
+  position: absolute;
+  inset: 0;
+}
+
+.lector-canvas {
+  position: absolute;
+  inset: 0;
+  overflow: auto;
+  background: var(--lector-canvas-bg);
+}
+
+.lector-canvas:focus-visible {
+  outline: var(--lector-focus-outline);
+  outline-offset: -2px;
+}
+
+/* ─── Split-pane layout ───────────────────────────────────
+ * When the viewer is in split mode, the canvas-wrap switches from
+ * single-absolute-host to a flex layout that holds the primary canvas
+ * host, dividers, and additional LectorPane instances side-by-side
+ * (or stacked). The canvas host's absolute positioning is overridden
+ * so it participates in the flex layout. */
+
+.lector-canvas-wrap--split {
+  display: flex;
+}
+
+.lector-canvas-wrap--horizontal {
+  flex-direction: row;
+}
+
+.lector-canvas-wrap--vertical {
+  flex-direction: column;
+}
+
+.lector-canvas-wrap--split > .lector-canvas-host {
+  position: relative;
+  inset: auto;
+  flex: 1 1 0;
+  min-width: 0;
+  min-height: 0;
+  /* Isolate the stacking context so the ::after active frame
+   * (z-index: 9050) can't escape this pane and fight with dropdowns,
+   * menus, popovers, or other chrome in ancestor stacking contexts.
+   * Without isolation, the high z-index hoists the frame into the
+   * root context where it folds menus / toolbar dropdowns underneath
+   * itself. */
+  isolation: isolate;
+}
+
+.lector-canvas-wrap--split > .lector-pane {
+  position: relative;
+  flex: 1 1 0;
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  background: var(--lector-canvas-bg);
+  /* Same rationale as .lector-canvas-host — keep the active frame
+   * scoped to this pane's local stacking context. */
+  isolation: isolate;
+}
+
+.lector-canvas-wrap--split > .lector-pane > .lector-pane__canvas {
+  position: relative;
+  flex: 1 1 auto;
+  min-width: 0;
+  min-height: 0;
+  overflow: auto;
+  background: var(--lector-canvas-bg);
+}
+
+.lector-canvas-wrap--split > .lector-pane > .lector-pane__canvas:focus-visible {
+  outline: var(--lector-focus-outline);
+  outline-offset: -2px;
+}
+
+/* In split mode, hide the bottom-center floating page controls. They
+ * show "page X of N" for one viewport, which is ambiguous when there
+ * are multiple panes side-by-side. Per-pane page indicators can come
+ * later as a follow-up. */
+.lector-canvas-wrap--split > .lector-page-controls {
+  display: none;
+}
+
+/* Active-pane indication: a proper 3px inset accent frame around the
+ * pane the user last clicked in. The frame wraps all four edges of
+ * the pane viewport via a pointer-events:none pseudo-element so it
+ * never intercepts clicks, scrolls, or drags. A faint outer glow
+ * makes the frame feel lit rather than drawn. Nothing is rendered
+ * on the inactive pane — no reserved space, no layout shift on
+ * activation, both PDFs stay fully visible and uncluttered.
+ *
+ * The frame is attached to non-scrolling wrappers — .lector-canvas-host
+ * for the primary pane and .lector-pane for extra panes — so it stays
+ * pinned to the viewport edges regardless of scroll offset. If it lived
+ * on the scrolling .lector-canvas / .lector-pane__canvas directly, it
+ * would scroll with the page content and only cover the first viewport
+ * height. */
+.lector-canvas-wrap--split .lector-pane--active::after,
+.lector-canvas-wrap--split > .lector-canvas-host--active::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  border: 3px solid var(--lector-accent, #3b82f6);
+  border-radius: 2px;
+  box-shadow:
+    0 0 0 1px color-mix(in srgb, var(--lector-accent, #3b82f6) 25%, transparent);
+  pointer-events: none;
+  z-index: 9050;
+}
+
+/* Pane dividers between adjacent canvases. Same visual language as the
+ * sidebar drag handle. */
+.lector-pane-divider {
+  background: var(--lector-border);
+  position: relative;
+  z-index: 50;
+  user-select: none;
+  touch-action: none;
+  flex: 0 0 6px;
+  transition: background 0.12s ease;
+}
+
+.lector-pane-divider--horizontal {
+  cursor: col-resize;
+}
+
+.lector-pane-divider--vertical {
+  cursor: row-resize;
+}
+
+.lector-pane-divider:hover,
+.lector-pane-divider--dragging {
+  background: var(--lector-accent, #3b82f6);
+}
+
+/* ── Empty-pane placeholder ──────────────────────────────────
+ * Shown in the right side of a split tab when the user has split the
+ * view but not yet chosen a second document. The pane is the same flex
+ * child as a regular LectorPane, but instead of mounting a viewport we
+ * render a centered call-to-action that opens a file picker / accepts
+ * a file drop. */
+.lector-canvas-wrap--split > .lector-pane--empty {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--lector-canvas-bg);
+  position: relative;
+  transition: background 0.15s ease;
+}
+
+.lector-pane--empty.lector-pane-empty--over {
+  background: color-mix(in srgb, var(--lector-accent, #3b82f6) 8%, var(--lector-canvas-bg));
+  outline: 2px dashed var(--lector-accent, #3b82f6);
+  outline-offset: -8px;
+}
+
+.lector-pane-empty__inner {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 12px;
+  padding: 24px;
+  pointer-events: none;
+}
+
+.lector-pane-empty__btn {
+  pointer-events: auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 18px;
+  border-radius: var(--lector-radius, 6px);
+  background: var(--lector-bg);
+  color: var(--lector-fg);
+  border: 1px solid var(--lector-border);
+  font: inherit;
+  font-size: var(--lector-font-size-sm, 13px);
+  font-weight: 500;
+  cursor: pointer;
+  box-shadow: var(--lector-shadow-sm, 0 1px 2px rgba(0, 0, 0, 0.06));
+  transition: background 0.12s ease, border-color 0.12s ease, transform 0.06s ease;
+}
+
+.lector-pane-empty__btn:hover {
+  background: var(--lector-bg-hover, #f5f5f5);
+  border-color: var(--lector-accent, #3b82f6);
+}
+
+.lector-pane-empty__btn:active {
+  transform: translateY(1px);
+}
+
+.lector-pane-empty__btn .lector-btn__icon svg {
+  width: 16px;
+  height: 16px;
+}
+
+.lector-pane-empty__label {
+  white-space: nowrap;
+}
+
+.lector-pane-empty__hint {
+  font-size: var(--lector-font-size-xs, 11px);
+  color: var(--lector-fg-muted);
+  pointer-events: none;
+}
+
+/* Empty side in the doctab bar — muted label + italic so the user can
+ * tell at a glance that this side has no document yet. The close
+ * button still works (closes the placeholder, demoting the tab). */
+.lector-doctab__side--empty .lector-doctab__side-label {
+  color: var(--lector-fg-muted);
+  font-style: italic;
+}
+
+.lector-canvas__scroll-area {
+  position: relative;
+  display: inline-block;
+  overflow: visible;
+  min-height: 100%;
+}
+
+.lector-page {
+  position: absolute;
+  background: var(--lector-page-bg);
+  overflow: hidden;
+}
+
+.lector-page__canvas {
+  display: block;
+  width: 100%;
+  height: 100%;
+}
+
+/* ── Loading skeleton — shimmer placeholder while page renders ── */
+
+@keyframes lector-skeleton-shimmer {
+  0% { background-position: -200% 0; }
+  100% { background-position: 200% 0; }
+}
+
+.lector-page--loading {
+  background:
+    linear-gradient(
+      90deg,
+      var(--lector-bg-alt) 25%,
+      var(--lector-bg-hover) 50%,
+      var(--lector-bg-alt) 75%
+    );
+  background-size: 200% 100%;
+  animation: lector-skeleton-shimmer 1.5s ease-in-out infinite;
+}
+
+.lector-page--loading > .lector-page__canvas {
+  visibility: hidden;
+}
+
+/* Tile-mode marker — applied by TileManager when a page switches to
+   tile-based rendering. Currently no visual difference; the class is
+   available for debugging (inspect .lector-page--tiled to see which
+   pages are tile-rendered vs full-bitmap). */
+.lector-page--tiled {}
+
+/* ── Page overlay — sits on top of canvas for interactive layers ── */
+
+.lector-page__overlay {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  overflow: hidden;
+}
+
+/* The embedding application's own page-aligned layer (see PageMountedEvent).
+   Sits above the viewer's overlay; interactive host content re-enables
+   pointer events on its own nodes. */
+.lector-page__host-overlay {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+}
+
+/* When drawing mode is active, disable ALL overlay pointer events
+   so the draw handler on the canvas receives all pointer events. */
+.lector-canvas--drawing .lector-page__overlay,
+.lector-canvas--drawing .lector-page__overlay * {
+  pointer-events: none !important;
+}
+
+/* Text selection highlight */
+.lector-text-highlight {
+  position: absolute;
+  background: rgba(59, 130, 246, 0.3); /* blue-500 at 30% */
+  mix-blend-mode: multiply;
+  border-radius: 1px;
+}
+
+/* Search match highlight */
+.lector-search-highlight {
+  position: absolute;
+  background: rgba(250, 204, 21, 0.4); /* yellow-400 at 40% */
+  mix-blend-mode: multiply;
+  border-radius: 1px;
+}
+
+.lector-search-highlight--active {
+  background: rgba(249, 115, 22, 0.5); /* orange-500 at 50% */
+  outline: 2px solid rgba(249, 115, 22, 0.8);
+  border-radius: 2px;
+}
+
+/* Comparison change highlights — drawn on each pane in compare mode.
+   Colors mirror common diff conventions: red for deletions, green for
+   insertions, amber for replacements, blue for visual-region changes. */
+.lector-compare-overlay {
+  position: absolute;
+  pointer-events: auto;
+  cursor: pointer;
+  border-radius: 2px;
+  mix-blend-mode: multiply;
+  transition: outline-color var(--lector-transition-fast);
+  outline: 1px solid transparent;
+}
+/* WCAG 1.4.1: each change type has a unique pattern + color so they
+   are distinguishable without relying on color alone. */
+.lector-compare-overlay--delete {
+  background:
+    repeating-linear-gradient(
+      -45deg,
+      rgba(239, 68, 68, 0.18),
+      rgba(239, 68, 68, 0.18) 3px,
+      rgba(239, 68, 68, 0.06) 3px,
+      rgba(239, 68, 68, 0.06) 7px
+    );
+  outline-color: rgba(239, 68, 68, 0.7);
+}
+.lector-compare-overlay--insert {
+  background:
+    radial-gradient(circle, rgba(34, 197, 94, 0.35) 1px, transparent 1px),
+    rgba(34, 197, 94, 0.08);
+  background-size: 6px 6px;
+  outline-color: rgba(34, 197, 94, 0.7);
+}
+.lector-compare-overlay--replace {
+  background:
+    repeating-linear-gradient(
+      45deg,
+      rgba(245, 158, 11, 0.18),
+      rgba(245, 158, 11, 0.18) 3px,
+      rgba(245, 158, 11, 0.06) 3px,
+      rgba(245, 158, 11, 0.06) 7px
+    ),
+    repeating-linear-gradient(
+      -45deg,
+      rgba(245, 158, 11, 0.18),
+      rgba(245, 158, 11, 0.18) 3px,
+      rgba(245, 158, 11, 0.06) 3px,
+      rgba(245, 158, 11, 0.06) 7px
+    );
+  outline-color: rgba(245, 158, 11, 0.7);
+}
+.lector-compare-overlay--region {
+  background: rgba(59, 130, 246, 0.25); /* blue-500 / 25% */
+  outline-color: rgba(59, 130, 246, 0.7);
+}
+.lector-compare-overlay--active {
+  outline-width: 2px;
+  outline-style: solid;
+  z-index: 5;
+  box-shadow: 0 0 0 2px rgba(255, 255, 255, 0.7);
+}
+
+/* Link overlay — clickable transparent area */
+.lector-link-overlay {
+  position: absolute;
+  pointer-events: auto;
+  cursor: pointer;
+  border-radius: 2px;
+  transition: background var(--lector-transition-fast);
+}
+
+.lector-link-overlay:hover {
+  background: rgba(59, 130, 246, 0.1);
+}
+
+.lector-link-overlay--uri {
+  border-bottom: 1px dashed rgba(59, 130, 246, 0.4);
+}
+
+/* Annotation overlay */
+.lector-annot-overlay {
+  position: absolute;
+  pointer-events: auto;
+  cursor: pointer;
+  border-radius: 1px;
+}
+
+/* Selected annotations switch to grab cursor for drag-to-move */
+.lector-annot-overlay.lector-annot-overlay--selected,
+.lector-annot-overlay.lector-annot-overlay--multi-selected {
+  cursor: grab;
+}
+
+.lector-annot-overlay--highlight {
+  mix-blend-mode: multiply;
+}
+
+.lector-annot-overlay--underline {
+  border-bottom: 2px solid currentColor;
+}
+
+.lector-annot-overlay--squiggly {
+  border-bottom: none;
+}
+
+.lector-annot-overlay--squiggly::after {
+  content: '';
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  height: 4px;
+  background: currentColor;
+  -webkit-mask-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='8' height='4' viewBox='0 0 8 4'%3E%3Cpath d='M0 3Q2 0 4 3Q6 6 8 3' fill='none' stroke='black' stroke-width='1.5'/%3E%3C/svg%3E");
+  mask-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='8' height='4' viewBox='0 0 8 4'%3E%3Cpath d='M0 3Q2 0 4 3Q6 6 8 3' fill='none' stroke='black' stroke-width='1.5'/%3E%3C/svg%3E");
+  -webkit-mask-repeat: repeat-x;
+  mask-repeat: repeat-x;
+  -webkit-mask-size: 8px 4px;
+  mask-size: 8px 4px;
+}
+
+.lector-annot-overlay--strikeout {
+  text-decoration-line: line-through;
+  text-decoration-thickness: 2px;
+  display: flex;
+  align-items: center;
+}
+
+.lector-annot-overlay--strikeout::after {
+  content: '';
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: 50%;
+  height: 2px;
+  background: currentColor;
+  opacity: 0.6;
+}
+
+.lector-annot-overlay--ink {
+  pointer-events: none;
+}
+
+/* Ink/line stroke elements are clickable — 'stroke' detects even transparent hit areas */
+.lector-annot-overlay--ink polyline,
+.lector-annot-overlay--ink path,
+.lector-annot-overlay--ink line {
+  pointer-events: stroke;
+  cursor: pointer;
+}
+
+.lector-annot-overlay--rect {
+  border: 2px solid transparent;
+  background: transparent;
+  box-sizing: border-box;
+  cursor: pointer;
+}
+
+.lector-annot-overlay--rect:hover {
+  background: rgba(59, 130, 246, 0.05);
+}
+
+/* Selected rect-based annotations switch to grab cursor for drag */
+.lector-annot-overlay--rect.lector-annot-overlay--selected,
+.lector-annot-overlay--rect.lector-annot-overlay--multi-selected {
+  cursor: grab;
+}
+
+/* Sticky note icon */
+.lector-annot-note {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 4px;
+  box-shadow: 0 1px 4px rgba(0,0,0,0.2);
+  cursor: pointer;
+  pointer-events: auto;
+  /* Hint the compositor — sticky-note markers are dragged via
+     style.transform, so promote them to their own layer up front
+     instead of paying the layer-creation cost on the first move. */
+  will-change: transform;
+  /* Transition only on hover scale, NOT on drag translate. The drag
+     handler sets style.transform on every pointermove event; if we
+     transitioned that, every move event would queue an animation
+     that competes with the previous one and the marker would lag
+     visibly behind the cursor. */
+  transition: transform var(--lector-transition-fast);
+}
+
+.lector-annot-note:hover {
+  transform: scale(1.1);
+}
+
+/* While the user is dragging, the drag handler updates style.transform
+   on every pointermove. The CSS transition would animate each one over
+   the transition duration, so the marker visibly lags behind the
+   cursor and feels mushy. Disable the transition during drag — the
+   inline transform updates take effect immediately. (The hover scale
+   doesn't fight here because inline styles beat external CSS rules.) */
+.lector-annot-note--dragging {
+  transition: none !important;
+}
+
+.lector-annot-note.lector-annot-overlay--selected {
+  outline: 2px solid var(--lector-accent);
+  outline-offset: 2px;
+}
+
+.lector-annot-overlay--freetext {
+  font-size: 12px;
+  padding: 2px 4px;
+  overflow: hidden;
+  white-space: pre-wrap;
+  color: var(--lector-fg);
+  pointer-events: auto;
+  cursor: pointer;
+}
+
+.lector-annot-overlay--freetext:hover {
+  background: rgba(59, 130, 246, 0.05);
+}
+
+.lector-annot-overlay--freetext.lector-annot-overlay--selected,
+.lector-annot-overlay--freetext.lector-annot-overlay--multi-selected {
+  cursor: grab;
+}
+
+.lector-annot-overlay--selected {
+  outline: 2px solid var(--lector-accent);
+  outline-offset: 1px;
+}
+
+/* Secondary multi-selection: dashed accent outline so the user sees
+   which annotations belong to the active selection without crowding
+   them with handles. The primary still gets the solid outline above. */
+.lector-annot-overlay--multi-selected:not(.lector-annot-overlay--selected) {
+  outline: 2px dashed var(--lector-accent);
+  outline-offset: 1px;
+}
+.lector-annot-note.lector-annot-overlay--multi-selected:not(.lector-annot-overlay--selected) {
+  outline: 2px dashed var(--lector-accent);
+  outline-offset: 2px;
+}
+
+/* Ink/line SVGs cover the full page — don't outline the whole page.
+   These use the dashed .lector-ink-select-rect instead. */
+.lector-annot-overlay--ink.lector-annot-overlay--selected {
+  outline: none;
+}
+
+/* Selection bounding box for ink/line — transparent fill acts as a
+   drag hit area so the user can grab anywhere inside the box, not
+   just on the exact stroke line. */
+.lector-ink-select-rect {
+  pointer-events: all;
+}
+
+/* Line endpoint handles (start/end of line/arrow annotations) */
+.lector-line-handle {
+  box-shadow: 0 0 2px rgba(0, 0, 0, 0.3);
+  transition: background var(--lector-transition-fast),
+              transform var(--lector-transition-fast);
+}
+.lector-line-handle:hover {
+  background: #dbeafe !important;
+  transform: translate(-50%, -50%) scale(1.15);
+}
+
+/* Resize handles (corners/edges of annotation bounding box).
+   Small visible square with an invisible ::after expanding the
+   touch/click target to 24×24 for WCAG 2.5.8. */
+.lector-resize-handle {
+  box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.08);
+  transition: background var(--lector-transition-fast),
+              box-shadow var(--lector-transition-fast);
+}
+.lector-resize-handle::after {
+  content: '';
+  position: absolute;
+  inset: -7px;
+}
+.lector-resize-handle:hover {
+  background: var(--lector-accent, #3b82f6) !important;
+  border-color: var(--lector-accent, #3b82f6);
+  box-shadow: 0 0 0 2px rgba(59, 130, 246, 0.25);
+}
+
+/* Vertex edit handles (individual points on ink/polygon strokes) */
+.lector-vertex-handle {
+  box-shadow: 0 0 3px rgba(0, 0, 0, 0.35);
+  transition: background var(--lector-transition-fast),
+              transform var(--lector-transition-fast);
+}
+.lector-vertex-handle:hover {
+  background: #2563eb !important;
+  transform: translate(-50%, -50%) scale(1.3);
+}
+
+/* Polygon drawing tooltip — follows cursor */
+.lector-poly-tooltip {
+  position: absolute;
+  pointer-events: none;
+  z-index: 200;
+  padding: 4px 10px;
+  border-radius: 4px;
+  background: rgba(0, 0, 0, 0.78);
+  color: #fff;
+  font-size: 12px;
+  line-height: 1.4;
+  white-space: nowrap;
+  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.25);
+}
+
+/* Form field overlay */
+.lector-form-field {
+  position: absolute;
+  pointer-events: auto;
+}
+
+.lector-form-field__input {
+  width: 100%;
+  height: 100%;
+  box-sizing: border-box;
+  border: 1px solid rgba(0, 0, 0, 0.2);
+  border-radius: 2px;
+  background: rgba(224, 239, 255, 0.5);
+  padding: 2px 4px;
+  font-family: inherit;
+  font-size: inherit;
+  color: var(--lector-fg);
+  transition: border-color var(--lector-transition-fast);
+  resize: none;
+}
+
+.lector-form-field__input:focus-visible {
+  outline: var(--lector-focus-outline);
+  outline-offset: -1px;
+  border-color: var(--lector-accent);
+  background: rgba(224, 239, 255, 0.8);
+}
+
+.lector-form-field__check-hit {
+  width: 100%;
+  height: 100%;
+  cursor: pointer;
+  background: transparent;
+}
+
+.lector-form-field__check-hit:hover {
+  background: rgba(0, 0, 0, 0.06);
+}
+
+.lector-form-field__check-hit:focus-visible {
+  outline: var(--lector-focus-outline);
+  outline-offset: -1px;
+}
+
+.lector-form-field__select {
+  width: 100%;
+  height: 100%;
+  box-sizing: border-box;
+  border: 1px solid rgba(0, 0, 0, 0.2);
+  border-radius: 2px;
+  background: rgba(224, 239, 255, 0.5);
+  padding: 0 4px;
+  font-family: inherit;
+  font-size: inherit;
+  color: var(--lector-fg);
+}
+
+.lector-form-field__select:focus-visible {
+  outline: var(--lector-focus-outline);
+  outline-offset: -1px;
+  border-color: var(--lector-accent);
+}
+
+.lector-form-field__button {
+  width: 100%;
+  height: 100%;
+  box-sizing: border-box;
+  border: none;
+  border-radius: 3px;
+  background: transparent;
+  padding: 0;
+  cursor: pointer;
+  color: transparent;
+}
+
+.lector-form-field__button:hover {
+  background: rgba(0, 0, 0, 0.06);
+}
+
+.lector-form-field__button:active {
+  background: rgba(0, 0, 0, 0.12);
+}
+
+.lector-form-field__signature {
+  width: 100%;
+  height: 100%;
+  box-sizing: border-box;
+  border: 2px dashed rgba(37, 99, 235, 0.4);
+  border-radius: 3px;
+  background: rgba(224, 239, 255, 0.3);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--lector-accent, #2563eb);
+  font-style: italic;
+  overflow: hidden;
+}
+
+.lector-form-field__signature:hover {
+  border-color: var(--lector-accent, #2563eb);
+  background: rgba(224, 239, 255, 0.5);
+}
+
+.lector-form-field__signature--signed {
+  border-style: solid;
+  border-color: rgba(34, 197, 94, 0.4);
+  background: rgba(220, 252, 231, 0.3);
+  color: var(--lector-fg);
+  font-style: normal;
+  cursor: default;
+}
+
+/* ─── Signature Dialog ─────────────────────────────────── */
+
+.lector-sig-dialog__tabs {
+  display: flex;
+  border-bottom: 1px solid var(--lector-border);
+  margin-bottom: 12px;
+}
+
+.lector-sig-dialog__tab {
+  flex: 1;
+  padding: 8px 12px;
+  border: none;
+  border-bottom: 2px solid transparent;
+  background: none;
+  color: var(--lector-fg-muted);
+  font-size: var(--lector-font-size-sm);
+  cursor: pointer;
+}
+
+.lector-sig-dialog__tab:hover {
+  color: var(--lector-fg);
+}
+
+.lector-sig-dialog__tab--active {
+  color: var(--lector-accent, #2563eb);
+  border-bottom-color: var(--lector-accent, #2563eb);
+}
+
+/* Fixed content height so all signature tabs occupy the same space.
+   Prevents the modal from shrinking/growing when switching tabs. */
+.lector-sig-dialog__tabs + .lector-modal__body {
+  min-height: 200px;
+}
+
+.lector-sig-dialog__canvas {
+  width: 100%;
+  height: 150px;
+  border: 1px solid var(--lector-border);
+  border-radius: 4px;
+  cursor: crosshair;
+  touch-action: none;
+}
+
+.lector-sig-dialog__preview {
+  width: 100%;
+  height: 150px;
+  border: 1px solid var(--lector-border);
+  border-radius: 4px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+}
+
+.lector-sig-dialog__preview img {
+  max-width: 100%;
+  max-height: 100%;
+  object-fit: contain;
+}
+
+.lector-sig-dialog__type-input {
+  width: 100%;
+  height: 150px;
+  padding: 10px;
+  border: 1px solid var(--lector-border);
+  border-radius: 4px;
+  font-family: 'Brush Script MT', 'Segoe Script', cursive;
+  font-size: 36px;
+  text-align: center;
+  background: var(--lector-bg);
+  color: var(--lector-fg);
+}
+
+.lector-sig-dialog__actions {
+  display: flex;
+  justify-content: space-between;
+  margin-top: 12px;
+}
+
+.lector-sig-dialog__cert-section {
+  margin-top: 12px;
+  padding-top: 12px;
+  border-top: 1px solid var(--lector-border-subtle);
+}
+
+.lector-sig-dialog__cert-label {
+  font-size: var(--lector-font-size-sm);
+  font-weight: var(--lector-font-weight-medium);
+  color: var(--lector-fg-secondary);
+  margin-bottom: 8px;
+}
+
+.lector-sig-dialog__cert-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.lector-sig-dialog__cert-name {
+  font-size: var(--lector-font-size-sm);
+  color: var(--lector-fg-muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* ═══════════════════════════════════════════
+   Page controls — floating overlay at bottom center
+   ═══════════════════════════════════════════ */
+
+.lector-page-controls {
+  position: absolute;
+  bottom: 24px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 3;
+  pointer-events: none;
+}
+
+.lector-page-controls__inner {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px;
+  background: var(--lector-bg);
+  border: 1px solid var(--lector-border);
+  border-radius: var(--lector-radius-lg);
+  box-shadow: var(--lector-shadow-lg);
+  transition: opacity 300ms ease;
+  pointer-events: auto;
+}
+
+.lector-page-controls--hidden .lector-page-controls__inner {
+  opacity: 0;
+  pointer-events: none;
+}
+
+/* Page input within floating controls */
+
+.lector-page-input {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 0 4px;
+}
+
+.lector-page-input__field {
+  width: var(--lector-page-input-w, 3.5em);
+  height: 28px;
+  padding: 0 4px;
+  box-sizing: content-box;
+  border: 1px solid var(--lector-border);
+  border-radius: var(--lector-radius);
+  background: var(--lector-bg-input);
+  color: var(--lector-fg);
+  font-family: inherit;
+  font-size: 1rem;
+  text-align: center;
+  transition: border-color var(--lector-transition-fast);
+}
+
+.lector-page-input__field:focus-visible {
+  outline: var(--lector-focus-outline);
+  outline-offset: var(--lector-focus-outline-offset);
+  border-color: var(--lector-accent);
+}
+
+.lector-page-input__total {
+  color: var(--lector-fg-secondary);
+  font-size: 1rem;
+  line-height: 28px;
+  white-space: nowrap;
+}
+
+/* ═══════════════════════════════════════════
+   Zoom control (toolbar) — compact inline group
+   ═══════════════════════════════════════════ */
+
+.lector-zoom {
+  display: flex;
+  align-items: center;
+  height: 32px;
+  background: var(--lector-bg-hover);
+  border-radius: var(--lector-radius);
+  position: relative;
+}
+
+.lector-zoom__btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 100%;
+  border: none;
+  background: none;
+  color: var(--lector-fg-muted);
+  cursor: pointer;
+  padding: 0;
+  transition: background var(--lector-transition-fast),
+              color var(--lector-transition-fast);
+}
+
+.lector-zoom__btn:hover {
+  background: var(--lector-bg-active);
+  color: var(--lector-fg);
+}
+
+.lector-zoom__btn svg {
+  width: 20px;
+  height: 20px;
+  stroke: currentColor;
+  fill: none;
+}
+
+.lector-zoom__value {
+  display: flex;
+  align-items: center;
+  height: 100%;
+  cursor: pointer;
+}
+
+.lector-zoom__input {
+  width: 40px;
+  height: 100%;
+  border: none;
+  background: transparent;
+  color: var(--lector-fg);
+  font-family: inherit;
+  font-size: var(--lector-font-size-sm);
+  text-align: right;
+}
+
+.lector-zoom__input:focus-visible {
+  outline: var(--lector-focus-outline);
+  outline-offset: var(--lector-focus-outline-offset);
+}
+
+.lector-zoom__pct {
+  color: var(--lector-fg-muted);
+  font-size: var(--lector-font-size-sm);
+}
+
+.lector-zoom__chevron {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 100%;
+  color: var(--lector-fg-muted);
+  cursor: pointer;
+  border: none;
+  background: none;
+  padding: 0;
+  transition: background var(--lector-transition-fast);
+}
+
+.lector-zoom__chevron:hover {
+  background: var(--lector-bg-active);
+}
+
+.lector-zoom__chevron svg {
+  width: 14px;
+  height: 14px;
+  stroke: currentColor;
+  fill: none;
+}
+
+/* ═══════════════════════════════════════════
+   Annotation properties popover
+   ═══════════════════════════════════════════ */
+
+.lector-annot-popover {
+  position: absolute;
+  z-index: 50;
+  background: var(--lector-bg);
+  border: 1px solid var(--lector-border);
+  border-radius: var(--lector-radius-lg);
+  box-shadow: var(--lector-shadow-lg);
+  padding: 8px;
+  width: 220px;
+  pointer-events: auto;
+  user-select: none;
+}
+
+.lector-annot-popover__label {
+  font-size: var(--lector-font-size-xs);
+  color: var(--lector-fg-muted);
+  margin-bottom: 4px;
+  margin-top: 4px;
+}
+
+.lector-annot-popover__label:first-child {
+  margin-top: 0;
+}
+
+.lector-annot-popover__colors {
+  display: flex;
+  gap: 2px;
+  flex-wrap: nowrap;
+  margin-bottom: 4px;
+}
+
+.lector-annot-popover__color {
+  width: 20px;
+  height: 20px;
+  border: 2px solid transparent;
+  border-radius: var(--lector-radius-sm);
+  cursor: pointer;
+  padding: 0;
+  transition: border-color var(--lector-transition-fast),
+              transform var(--lector-transition-fast);
+}
+
+.lector-annot-popover__color:hover {
+  border-color: var(--lector-fg-muted);
+  transform: scale(1.15);
+}
+
+.lector-annot-popover__color--active {
+  border-color: var(--lector-accent);
+  box-shadow: 0 0 0 1px var(--lector-accent);
+}
+
+.lector-annot-popover__color--none {
+  background: var(--lector-bg) !important;
+  position: relative;
+}
+
+.lector-annot-popover__color--none::after {
+  content: '';
+  position: absolute;
+  inset: 2px;
+  border: 1px solid var(--lector-border);
+  border-radius: 1px;
+  background: linear-gradient(
+    to bottom right,
+    transparent calc(50% - 0.5px),
+    var(--lector-danger) calc(50% - 0.5px),
+    var(--lector-danger) calc(50% + 0.5px),
+    transparent calc(50% + 0.5px)
+  );
+}
+
+.lector-annot-popover__widths {
+  display: flex;
+  gap: 3px;
+  margin-bottom: 4px;
+}
+
+.lector-annot-popover__width {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 3px;
+  width: 32px;
+  height: 36px;
+  border: 1px solid transparent;
+  border-radius: var(--lector-radius);
+  background: none;
+  cursor: pointer;
+  padding: 2px;
+  transition: border-color var(--lector-transition-fast),
+              background var(--lector-transition-fast);
+}
+
+.lector-annot-popover__width:hover {
+  border-color: var(--lector-border);
+  background: var(--lector-bg-hover);
+}
+
+.lector-annot-popover__width--active {
+  border-color: var(--lector-accent);
+  background: var(--lector-bg-selected);
+}
+
+.lector-annot-popover__width-line {
+  width: 20px;
+  background: var(--lector-fg);
+  border-radius: 1px;
+  min-height: 1px;
+}
+
+.lector-annot-popover__width-label {
+  font-size: 9px;
+  color: var(--lector-fg-muted);
+  line-height: 1;
+}
+
+/* ── Popover slider control ── */
+
+.lector-annot-popover__slider-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 4px;
+}
+
+.lector-annot-popover__slider {
+  flex: 1;
+  height: 4px;
+  -webkit-appearance: none;
+  appearance: none;
+  background: var(--lector-border);
+  border-radius: 2px;
+  cursor: pointer;
+}
+
+.lector-annot-popover__slider:focus-visible {
+  outline: var(--lector-focus-outline);
+  outline-offset: 4px;
+}
+
+.lector-annot-popover__slider::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  background: var(--lector-accent);
+  border: 2px solid var(--lector-bg);
+  box-shadow: 0 0 0 1px var(--lector-border);
+  cursor: grab;
+}
+
+.lector-annot-popover__slider::-moz-range-thumb {
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  background: var(--lector-accent);
+  border: 2px solid var(--lector-bg);
+  box-shadow: 0 0 0 1px var(--lector-border);
+  cursor: grab;
+}
+
+.lector-annot-popover__slider-value {
+  min-width: 28px;
+  font-size: var(--lector-font-size-xs);
+  color: var(--lector-fg-secondary);
+  text-align: right;
+  user-select: none;
+}
+
+.lector-annot-popover__textarea {
+  width: 100%;
+  box-sizing: border-box;
+  border: 1px solid var(--lector-border);
+  border-radius: var(--lector-radius);
+  background: var(--lector-bg-input);
+  color: var(--lector-fg);
+  font-family: inherit;
+  font-size: var(--lector-font-size-sm);
+  padding: 6px 8px;
+  resize: vertical;
+  margin-bottom: 4px;
+}
+
+.lector-annot-popover__textarea:focus-visible {
+  outline: var(--lector-focus-outline);
+  outline-offset: -1px;
+  border-color: var(--lector-accent);
+}
+
+.lector-annot-popover__flip {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  width: 100%;
+  height: 28px;
+  border: 1px solid var(--lector-border);
+  border-radius: var(--lector-radius);
+  background: none;
+  color: var(--lector-fg);
+  font-family: inherit;
+  cursor: pointer;
+  padding: 0 8px;
+  transition: background var(--lector-transition-fast);
+}
+
+.lector-annot-popover__flip:hover {
+  background: var(--lector-bg-hover);
+}
+
+.lector-annot-popover__actions {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  margin-top: 8px;
+  padding-top: 8px;
+  border-top: 1px solid var(--lector-border-subtle);
+}
+
+.lector-annot-popover__action {
+  width: 28px;
+  height: 28px;
+  min-width: 28px;
+  padding: 0;
+  border: none;
+  border-radius: var(--lector-radius);
+  background: none;
+  color: var(--lector-fg-muted);
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.lector-annot-popover__action:hover {
+  background: var(--lector-bg-hover);
+  color: var(--lector-fg);
+}
+
+.lector-annot-popover__action svg {
+  width: 15px;
+  height: 15px;
+}
+
+.lector-annot-popover__delete {
+  margin-left: auto;
+  height: 28px;
+  padding: 0 10px;
+  border: none;
+  border-radius: var(--lector-radius);
+  background: none;
+  color: var(--lector-danger);
+  font-family: inherit;
+  font-size: var(--lector-font-size-sm);
+  font-weight: var(--lector-font-weight-medium);
+  cursor: pointer;
+  transition: background var(--lector-transition-fast);
+}
+
+.lector-annot-popover__delete:hover {
+  background: var(--lector-danger-light);
+  color: var(--lector-danger);
+}
+
+.lector-annot-popover__apply-redaction {
+  width: 100%;
+  height: 30px;
+  margin-bottom: 4px;
+  border: none;
+  border-radius: var(--lector-radius);
+  background: var(--lector-danger);
+  color: white;
+  font-family: inherit;
+  font-size: var(--lector-font-size-sm);
+  font-weight: var(--lector-font-weight-semibold, 600);
+  cursor: pointer;
+  transition: background var(--lector-transition-fast),
+              box-shadow var(--lector-transition-fast);
+}
+
+.lector-annot-popover__apply-redaction:hover {
+  background: var(--lector-danger-hover);
+}
+
+/* ═══════════════════════════════════════════
+   Color picker (annotation toolbar)
+   ═══════════════════════════════════════════ */
+
+.lector-color-swatch {
+  display: block;
+  width: 12px;
+  height: 12px;
+  border-radius: 2px;
+  border: 1px solid rgba(0, 0, 0, 0.15);
+  flex-shrink: 0;
+  margin-left: -2px;
+}
+
+.lector-color-picker {
+  padding: 8px !important;
+  min-width: 160px !important;
+}
+
+.lector-color-grid {
+  display: grid;
+  grid-template-columns: repeat(5, 1fr);
+  gap: 4px;
+  margin-bottom: 8px;
+}
+
+.lector-color-btn {
+  width: 28px;
+  height: 28px;
+  border: 2px solid transparent;
+  border-radius: var(--lector-radius);
+  cursor: pointer;
+  padding: 0;
+  transition: border-color var(--lector-transition-fast),
+              transform var(--lector-transition-fast);
+}
+
+.lector-color-btn:hover {
+  border-color: var(--lector-accent);
+  transform: scale(1.1);
+}
+
+.lector-color-picker__label {
+  font-size: var(--lector-font-size-xs);
+  color: var(--lector-fg-muted);
+  margin-bottom: 4px;
+  padding: 0 2px;
+}
+
+.lector-color-picker__row {
+  display: flex;
+  gap: 4px;
+  align-items: center;
+}
+
+.lector-color-picker__width-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  border: 1px solid transparent;
+  border-radius: var(--lector-radius);
+  background: none;
+  cursor: pointer;
+  padding: 0;
+  transition: border-color var(--lector-transition-fast),
+              background var(--lector-transition-fast);
+}
+
+.lector-color-picker__width-btn:hover {
+  border-color: var(--lector-border);
+  background: var(--lector-bg-hover);
+}
+
+/* ═══════════════════════════════════════════
+   Thumbnails
+   ═══════════════════════════════════════════ */
+
+.lector-thumbnails {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 10px;
+  align-items: center;
+}
+
+.lector-thumbnail {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  cursor: pointer;
+}
+
+.lector-thumbnail__canvas-wrap {
+  width: 150px;
+  border: 2px solid var(--lector-border);
+  border-radius: 4px;
+  overflow: hidden;
+  transition: border-color var(--lector-transition-fast),
+              box-shadow var(--lector-transition-fast);
+}
+
+.lector-thumbnail:hover .lector-thumbnail__canvas-wrap {
+  border-color: var(--lector-border-strong);
+}
+
+.lector-thumbnail--active .lector-thumbnail__canvas-wrap {
+  border-color: var(--lector-accent);
+  box-shadow: 0 0 0 2px var(--lector-accent-light);
+}
+
+.lector-thumbnail__canvas {
+  display: block;
+  width: 100%;
+  height: auto;
+}
+
+.lector-thumbnail__label {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: 30px;
+  margin-top: 4px;
+  font-size: var(--lector-font-size-xs);
+  color: var(--lector-fg-secondary);
+}
+
+/* ═══════════════════════════════════════════
+   Sidebar — shared panel styles
+   ═══════════════════════════════════════════ */
+
+.lector-sidebar-empty {
+  padding: 24px 16px;
+  color: var(--lector-fg-muted);
+  font-size: var(--lector-font-size-sm);
+  text-align: center;
+}
+
+/* ── Bookmarks panel ── */
+
+.lector-bookmark-panel { padding: 4px 0; overflow-y: auto; }
+
+.lector-bookmark-tree {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.lector-bookmark-tree .lector-bookmark-tree {
+  display: none;
+  padding-left: 16px;
+}
+
+.lector-bookmark-node--expanded > .lector-bookmark-tree {
+  display: block;
+}
+
+.lector-bookmark-node__row {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  padding: 5px 8px;
+  border-radius: var(--lector-radius);
+  transition: background var(--lector-transition-fast);
+  min-width: 0;
+}
+
+.lector-bookmark-node__row:hover {
+  background: var(--lector-bg-hover);
+}
+
+.lector-bookmark-node__toggle {
+  width: 18px;
+  height: 18px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: none;
+  background: none;
+  color: var(--lector-fg-muted);
+  cursor: pointer;
+  padding: 0;
+  flex-shrink: 0;
+  transition: transform var(--lector-transition-fast);
+}
+
+.lector-bookmark-node__toggle svg {
+  width: 14px;
+  height: 14px;
+}
+
+.lector-bookmark-node--expanded > .lector-bookmark-node__row > .lector-bookmark-node__toggle {
+  transform: rotate(90deg);
+}
+
+.lector-bookmark-node__spacer {
+  width: 18px;
+  flex-shrink: 0;
+}
+
+.lector-bookmark-node__label {
+  flex: 1;
+  font-size: var(--lector-font-size-sm);
+  color: var(--lector-fg);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.lector-bookmark-node__page {
+  font-size: 10px;
+  color: var(--lector-fg-muted);
+  flex-shrink: 0;
+  margin-left: 4px;
+}
+
+.lector-bookmark-node__delete {
+  display: none;
+  width: 20px;
+  height: 20px;
+  border: none;
+  border-radius: 3px;
+  background: none;
+  color: var(--lector-fg-muted);
+  cursor: pointer;
+  flex-shrink: 0;
+  margin-left: auto;
+  align-items: center;
+  justify-content: center;
+}
+
+.lector-bookmark-node__delete svg { width: 12px; height: 12px; }
+
+.lector-bookmark-node__row:hover .lector-bookmark-node__delete {
+  display: flex;
+}
+
+.lector-bookmark-node__delete:hover {
+  background: rgba(239, 68, 68, 0.1);
+  color: var(--lector-danger, #ef4444);
+}
+
+/* Edit (rename) button — same row affordances as delete, sibling next to it */
+.lector-bookmark-node__edit {
+  display: none;
+  width: 20px;
+  height: 20px;
+  border: none;
+  border-radius: 3px;
+  background: none;
+  color: var(--lector-fg-muted);
+  cursor: pointer;
+  flex-shrink: 0;
+  align-items: center;
+  justify-content: center;
+}
+
+.lector-bookmark-node__edit svg { width: 12px; height: 12px; }
+
+.lector-bookmark-node__row:hover .lector-bookmark-node__edit {
+  display: flex;
+}
+
+.lector-bookmark-node__edit:hover {
+  background: var(--lector-bg-hover);
+  color: var(--lector-fg);
+}
+
+/* Drag handle — only top-level rows have one */
+.lector-bookmark-node__grip {
+  width: 14px;
+  height: 18px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--lector-fg-muted);
+  opacity: 0;
+  cursor: grab;
+  flex-shrink: 0;
+  transition: opacity var(--lector-transition-fast);
+}
+
+.lector-bookmark-node__grip svg { width: 14px; height: 14px; }
+
+.lector-bookmark-node__row:hover .lector-bookmark-node__grip {
+  opacity: 0.7;
+}
+
+.lector-bookmark-node__grip:hover {
+  opacity: 1 !important;
+}
+
+/* Inline rename input — replaces label content while editing */
+.lector-bookmark-node__rename {
+  width: 100%;
+  font: inherit;
+  font-size: var(--lector-font-size-sm);
+  color: var(--lector-fg);
+  background: var(--lector-bg);
+  border: 1px solid var(--lector-accent);
+  border-radius: 3px;
+  padding: 1px 4px;
+  box-sizing: border-box;
+}
+
+.lector-bookmark-node__rename:focus-visible {
+  outline: var(--lector-focus-outline);
+  outline-offset: var(--lector-focus-outline-offset);
+}
+
+/* When the edit button must push delete to the right edge: ensure both
+   sit at the end of the row. The delete button used `margin-left: auto`
+   originally, so move that to the edit button so the pair stays grouped. */
+.lector-bookmark-node__row > .lector-bookmark-node__edit {
+  margin-left: auto;
+}
+.lector-bookmark-node__row > .lector-bookmark-node__edit + .lector-bookmark-node__delete {
+  margin-left: 0;
+}
+
+/* Drag-and-drop reordering: insertion line above/below drop target. */
+.lector-bookmark-node {
+  position: relative;
+}
+
+.lector-bookmark-node--dragging > .lector-bookmark-node__row {
+  opacity: 0.4;
+}
+
+.lector-bookmark-node--drop-before::before,
+.lector-bookmark-node--drop-after::after {
+  content: '';
+  position: absolute;
+  left: 4px;
+  right: 4px;
+  height: 2px;
+  background: var(--lector-accent);
+  border-radius: 1px;
+  pointer-events: none;
+}
+
+.lector-bookmark-node--drop-before::before {
+  top: -1px;
+}
+
+.lector-bookmark-node--drop-after::after {
+  bottom: -1px;
+}
+
+/* ── Annotations/Comments panel ── */
+
+.lector-annot-panel { padding: 4px 0; overflow-y: auto; }
+
+.lector-annot-panel__page-group {
+  margin-bottom: 4px;
+}
+
+.lector-annot-panel__page-header {
+  padding: 4px 12px;
+  font-size: 10px;
+  font-weight: var(--lector-font-weight-semibold);
+  color: var(--lector-fg-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  position: sticky;
+  top: 0;
+  background: var(--lector-bg-alt);
+  z-index: 1;
+}
+
+.lector-annot-panel__card {
+  padding: 8px 12px;
+  cursor: pointer;
+  border-bottom: 1px solid var(--lector-border-subtle);
+  transition: background var(--lector-transition-fast);
+}
+
+.lector-annot-panel__card:hover {
+  background: var(--lector-bg-hover);
+}
+
+.lector-annot-panel__card--unread {
+  border-left: 3px solid var(--lector-accent);
+}
+
+.lector-annot-panel__card-header {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 4px;
+  min-width: 0;
+}
+
+.lector-annot-panel__type {
+  font-size: 11px;
+  font-weight: var(--lector-font-weight-medium);
+  color: var(--lector-fg);
+  background: var(--lector-bg-active);
+  padding: 1px 6px;
+  border-radius: 3px;
+  flex-shrink: 0;
+  white-space: nowrap;
+}
+
+.lector-annot-panel__author {
+  font-size: var(--lector-font-size-sm);
+  color: var(--lector-fg);
+  font-weight: var(--lector-font-weight-medium);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+}
+
+.lector-annot-panel__time {
+  font-size: 10px;
+  color: var(--lector-fg-muted);
+  margin-left: auto;
+  flex-shrink: 0;
+  white-space: nowrap;
+}
+
+.lector-annot-panel__status {
+  display: inline-block;
+  font-size: 10px;
+  font-weight: var(--lector-font-weight-medium);
+  padding: 1px 6px;
+  border-radius: 8px;
+  margin-bottom: 4px;
+  white-space: nowrap;
+}
+
+.lector-annot-panel__status--accepted,
+.lector-annot-panel__status--completed,
+.lector-annot-panel__status--resolved { background: var(--lector-success-light, #dcfce7); color: var(--lector-success, #16a34a); }
+.lector-annot-panel__status--rejected { background: var(--lector-danger-light, #fef2f2); color: var(--lector-danger, #dc2626); }
+.lector-annot-panel__status--cancelled { background: var(--lector-bg-hover, #f3f4f6); color: var(--lector-fg-muted, #6b7280); }
+
+.lector-annot-panel__text {
+  font-size: var(--lector-font-size-sm);
+  color: var(--lector-fg-secondary);
+  line-height: 1.4;
+  overflow: hidden;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+}
+
+.lector-annot-panel__replies {
+  font-size: 10px;
+  color: var(--lector-accent);
+  margin-top: 4px;
+  display: block;
+}
+
+/* ── Attachments panel ── */
+
+.lector-attachment-panel { padding: 8px; overflow-y: auto; }
+
+.lector-attachment-card {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 10px;
+  border: 1px solid var(--lector-border-subtle);
+  border-radius: var(--lector-radius);
+  margin-bottom: 6px;
+  transition: background var(--lector-transition-fast);
+}
+
+.lector-attachment-card:hover {
+  background: var(--lector-bg-hover);
+}
+
+.lector-attachment-card__icon {
+  color: var(--lector-fg-muted);
+  flex-shrink: 0;
+}
+
+.lector-attachment-card__icon svg { width: 18px; height: 18px; }
+
+.lector-attachment-card__info {
+  flex: 1;
+  min-width: 0;
+}
+
+.lector-attachment-card__name {
+  font-size: var(--lector-font-size-sm);
+  font-weight: var(--lector-font-weight-medium);
+  color: var(--lector-fg);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.lector-attachment-card__meta {
+  font-size: 10px;
+  color: var(--lector-fg-muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.lector-attachment-card__download {
+  width: 28px;
+  height: 28px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: none;
+  border-radius: var(--lector-radius);
+  background: none;
+  color: var(--lector-fg-muted);
+  cursor: pointer;
+  flex-shrink: 0;
+  transition: background var(--lector-transition-fast),
+              color var(--lector-transition-fast);
+}
+
+.lector-attachment-card__download:hover {
+  background: var(--lector-bg-active);
+  color: var(--lector-accent);
+}
+
+.lector-attachment-card__download svg { width: 16px; height: 16px; }
+
+.lector-attachment-card__actions {
+  display: flex;
+  gap: 2px;
+  flex-shrink: 0;
+}
+
+.lector-attachment-card__delete {
+  width: 28px;
+  height: 28px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: none;
+  border-radius: var(--lector-radius);
+  background: none;
+  color: var(--lector-fg-muted);
+  cursor: pointer;
+  flex-shrink: 0;
+}
+
+.lector-attachment-card__delete:hover {
+  background: rgba(239, 68, 68, 0.1);
+  color: var(--lector-danger, #ef4444);
+}
+
+.lector-attachment-card__delete svg { width: 16px; height: 16px; }
+
+.lector-attachment-panel__actions {
+  padding: 8px;
+  border-bottom: 1px solid var(--lector-border);
+}
+
+.lector-attachment-panel__add {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 6px 12px;
+  border: 1px dashed var(--lector-border);
+  border-radius: 4px;
+  background: none;
+  color: var(--lector-fg-muted);
+  cursor: pointer;
+  width: 100%;
+  font-size: var(--lector-font-size-sm);
+}
+
+.lector-attachment-panel__add:hover {
+  background: var(--lector-bg-hover);
+  color: var(--lector-fg);
+  border-color: var(--lector-accent);
+}
+
+.lector-attachment-panel__add svg { width: 14px; height: 14px; }
+
+/* ── Signatures panel ── */
+
+.lector-signature-panel { padding: 8px; overflow-y: auto; }
+
+.lector-signature-card {
+  display: flex;
+  gap: 10px;
+  padding: 10px 12px;
+  border: 1px solid var(--lector-border-subtle);
+  border-radius: var(--lector-radius);
+  margin-bottom: 6px;
+}
+
+.lector-signature-card__icon {
+  flex-shrink: 0;
+  margin-top: 2px;
+}
+
+.lector-signature-card__icon svg { width: 20px; height: 20px; }
+
+.lector-signature-card__info {
+  flex: 1;
+  min-width: 0;
+}
+
+.lector-signature-card__title {
+  font-size: var(--lector-font-size-sm);
+  font-weight: var(--lector-font-weight-semibold);
+  color: var(--lector-fg);
+  margin-bottom: 2px;
+}
+
+.lector-signature-card__meta {
+  font-size: 11px;
+  color: var(--lector-fg-muted);
+  line-height: 1.5;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.lector-signature-card__badge {
+  display: inline-block;
+  font-size: 10px;
+  font-weight: var(--lector-font-weight-medium);
+  padding: 1px 8px;
+  border-radius: 8px;
+  margin-bottom: 4px;
+}
+
+.lector-signature-card__badge--valid { background: var(--lector-success-light, #dcfce7); color: var(--lector-success, #16a34a); }
+.lector-signature-card__badge--invalid { background: var(--lector-danger-light, #fef2f2); color: var(--lector-danger, #dc2626); }
+.lector-signature-card__badge--error { background: var(--lector-danger-light, #fef2f2); color: var(--lector-danger, #dc2626); }
+.lector-signature-card__badge--unknown { background: var(--lector-bg-hover, #f3f4f6); color: var(--lector-fg-muted, #6b7280); }
+
+.lector-signature-card__detail {
+  font-size: 11px;
+  line-height: 1.5;
+  padding-left: 14px;
+  position: relative;
+}
+
+.lector-signature-card__detail::before {
+  content: '';
+  position: absolute;
+  left: 0;
+  top: 6px;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+}
+
+.lector-signature-card__detail--ok { color: var(--lector-success, #16a34a); }
+.lector-signature-card__detail--ok::before { background: var(--lector-success, #16a34a); }
+.lector-signature-card__detail--fail { color: var(--lector-danger, #dc2626); }
+.lector-signature-card__detail--fail::before { background: var(--lector-danger, #dc2626); }
+.lector-signature-card__detail--warn { color: var(--lector-warning, #d97706); }
+.lector-signature-card__detail--warn::before { background: var(--lector-warning, #d97706); }
+
+/* ── Layers panel ── */
+
+.lector-layer-panel { padding: 8px; overflow-y: auto; }
+
+.lector-layer-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 8px;
+  border-radius: var(--lector-radius);
+  transition: background var(--lector-transition-fast);
+}
+
+.lector-layer-row:hover {
+  background: var(--lector-bg-hover);
+}
+
+.lector-layer-row__checkbox {
+  width: 16px;
+  height: 16px;
+  cursor: pointer;
+  accent-color: var(--lector-accent);
+  flex-shrink: 0;
+}
+
+.lector-layer-row__name {
+  font-size: var(--lector-font-size-sm);
+  color: var(--lector-fg);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* ═══════════════════════════════════════════
+   Tooltip
+   ═══════════════════════════════════════════ */
+
+.lector-tooltip {
+  position: fixed;
+  padding: 8px 12px;
+  background: var(--lector-tooltip-bg, #111827);
+  color: var(--lector-tooltip-fg, #ffffff);
+  font-size: 14px;
+  font-family: system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
+  border-radius: 8px;
+  pointer-events: none;
+  z-index: 10000;
+  white-space: nowrap;
+  box-shadow: 0 4px 6px -1px rgba(0,0,0,0.1), 0 2px 4px -2px rgba(0,0,0,0.1);
+  user-select: none;
+  line-height: 1.4;
+}
+
+/* ═══════════════════════════════════════════
+   Accessibility & Print
+   ═══════════════════════════════════════════ */
+
+@media (prefers-reduced-motion: reduce) {
+  .lector-workspace *,
+  .lector-workspace *::before,
+  .lector-workspace *::after {
+    animation-duration: 0.01ms !important;
+    transition-duration: 0.01ms !important;
+  }
+}
+
+@media print {
+  .lector-toolbar,
+  .lector-sidebar,
+  .lector-doctabs,
+  .lector-tooltip,
+  .lector-page-controls {
+    display: none !important;
+  }
+  .lector-viewer {
+    display: block;
+    background: white;
+  }
+  .lector-canvas {
+    overflow: visible;
+  }
+  .lector-page {
+    position: relative;
+    page-break-after: always;
+  }
+}
+
+/* ─── Context Menu ─────────────────────────────────────── */
+
+.lector-context-menu {
+  position: fixed;
+  z-index: 10000;
+  min-width: 180px;
+  background: var(--lector-bg);
+  border: 1px solid var(--lector-border);
+  border-radius: 6px;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.15);
+  padding: 4px 0;
+  font-size: var(--lector-font-size-sm);
+}
+
+.lector-context-menu__item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 6px 12px;
+  border: none;
+  background: none;
+  color: var(--lector-fg);
+  cursor: pointer;
+  font-size: inherit;
+  text-align: left;
+}
+
+.lector-context-menu__item:hover {
+  background: var(--lector-bg-hover);
+}
+
+.lector-context-menu__item--danger {
+  color: var(--lector-danger, #ef4444);
+}
+
+.lector-context-menu__item--danger:hover {
+  background: rgba(239, 68, 68, 0.1);
+}
+
+.lector-context-menu__icon {
+  width: 16px;
+  height: 16px;
+  flex-shrink: 0;
+}
+
+.lector-context-menu__icon svg {
+  width: 16px;
+  height: 16px;
+}
+
+.lector-context-menu__label {
+  flex: 1;
+}
+
+/* ─── Modal Dialog ─────────────────────────────────────── */
+
+.lector-modal-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 10001;
+  background: rgba(0, 0, 0, 0.4);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.lector-modal {
+  background: var(--lector-bg);
+  border: 1px solid var(--lector-border);
+  border-radius: 8px;
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.2);
+  padding: 20px;
+  min-width: 360px;
+  max-width: 480px;
+  font-size: var(--lector-font-size-sm);
+  color: var(--lector-fg);
+}
+
+.lector-modal__title {
+  margin: 0 0 12px;
+  font-size: 16px;
+  font-weight: 600;
+}
+
+.lector-modal__body {
+  margin-bottom: 16px;
+  line-height: 1.5;
+}
+
+.lector-modal__label {
+  display: block;
+  font-weight: 500;
+  margin-bottom: 6px;
+}
+
+.lector-modal__radio-group {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.lector-modal__radio-label {
+  display: inline;
+  margin-left: 4px;
+  cursor: pointer;
+}
+
+.lector-modal__input {
+  display: block;
+  width: 100%;
+  margin-top: 4px;
+  padding: 6px 8px;
+  border: 1px solid var(--lector-border);
+  border-radius: 4px;
+  background: var(--lector-bg);
+  color: var(--lector-fg);
+  font-size: var(--lector-font-size-sm);
+  box-sizing: border-box;
+}
+
+.lector-modal__input:disabled {
+  opacity: 0.5;
+}
+
+.lector-modal__actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.lector-modal__btn {
+  padding: 6px 16px;
+  border: 1px solid var(--lector-border);
+  border-radius: 4px;
+  background: var(--lector-bg);
+  color: var(--lector-fg);
+  cursor: pointer;
+  font-size: var(--lector-font-size-sm);
+}
+
+.lector-modal__btn:hover {
+  background: var(--lector-bg-hover);
+}
+
+.lector-modal__btn--primary {
+  background: var(--lector-accent);
+  color: white;
+  border-color: var(--lector-accent);
+}
+
+.lector-modal__btn--primary:hover {
+  background: var(--lector-accent-hover);
+}
+
+.lector-modal__btn--danger {
+  background: var(--lector-danger);
+  color: white;
+  border-color: var(--lector-danger);
+}
+
+.lector-modal__btn--danger:hover {
+  background: var(--lector-danger-hover);
+}
+
+/* ─── Calibration dialog rows ──────────────────────────── */
+
+.lector-cal-dialog__row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+
+.lector-cal-dialog__label {
+  flex: 0 0 130px;
+  font-size: var(--lector-font-size-sm);
+  color: var(--lector-fg);
+}
+
+.lector-cal-dialog__field {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex: 1;
+}
+
+.lector-cal-dialog__input {
+  width: 100px;
+  padding: 6px 8px;
+  border: 1px solid var(--lector-border);
+  border-radius: 4px;
+  background: var(--lector-bg);
+  color: var(--lector-fg);
+  font-size: var(--lector-font-size-sm);
+}
+
+.lector-cal-dialog__select {
+  padding: 6px 8px;
+  border: 1px solid var(--lector-border);
+  border-radius: 4px;
+  background: var(--lector-bg);
+  color: var(--lector-fg);
+  font-size: var(--lector-font-size-sm);
+  min-width: 60px;
+}
+
+.lector-modal__btn:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+/* ─── Toast ────────────────────────────────────────────── */
+
+.lector-toast {
+  position: fixed;
+  bottom: 20px;
+  left: 50%;
+  transform: translateX(-50%) translateY(10px);
+  background: var(--lector-fg);
+  color: var(--lector-bg);
+  padding: 8px 20px;
+  border-radius: 6px;
+  font-size: var(--lector-font-size-sm);
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.2);
+  opacity: 0;
+  transition: opacity 0.3s, transform 0.3s;
+  z-index: 10002;
+  pointer-events: none;
+}
+
+.lector-toast--visible {
+  opacity: 1;
+  transform: translateX(-50%) translateY(0);
+}
+
+/* ─── Marquee capture ──────────────────────────────────── */
+
+.lector-marquee-preview {
+  /* SVG positioning is handled inline by the plugin */
+}
+
+/* ─── Drop zone (document manager) ─────────────────────── */
+
+.lector-drop-zone--over {
+  position: relative;
+}
+
+.lector-drop-zone--over::after {
+  content: '';
+  position: absolute;
+  inset: 12px;
+  border: 3px dashed var(--lector-accent, #3b82f6);
+  border-radius: 12px;
+  background: rgba(59, 130, 246, 0.08);
+  pointer-events: none;
+  z-index: 9500;
+  animation: lector-drop-zone-pulse 1.4s ease-in-out infinite;
+}
+
+@keyframes lector-drop-zone-pulse {
+  0%, 100% { opacity: 0.85; }
+  50%      { opacity: 1; }
+}
+
+.lector-drop-zone__prompt {
+  position: absolute;
+  inset: 12px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  pointer-events: none;
+  z-index: 9501;
+  border-radius: 12px;
+}
+
+.lector-drop-zone__prompt-text {
+  display: inline-flex;
+  align-items: center;
+  gap: 12px;
+  padding: 18px 28px;
+  background: var(--lector-bg);
+  color: var(--lector-fg);
+  border: 1px solid var(--lector-border);
+  border-radius: 10px;
+  font-size: 1rem;
+  font-weight: 600;
+  letter-spacing: 0.01em;
+  box-shadow: 0 16px 48px rgba(0, 0, 0, 0.32);
+  user-select: none;
+}
+
+.lector-drop-zone__prompt-text::before {
+  content: '⤓';
+  display: inline-block;
+  font-size: 1.4em;
+  line-height: 1;
+  color: var(--lector-accent, #3b82f6);
+}
+
+/* ─── Split view ───────────────────────────────────────── */
+
+.lector-split-view {
+  display: grid;
+  width: 100%;
+  height: 100%;
+  background: var(--lector-bg);
+  overflow: hidden;
+}
+
+.lector-split-view--horizontal {
+  grid-template-rows: 1fr;
+}
+
+.lector-split-view--vertical {
+  grid-template-columns: 1fr;
+}
+
+/* Panes are flush — no border or margin so the split view feels like
+ * one app divided into views, not two windows glued together. The
+ * divider track between them is the only separator. */
+.lector-split-view__pane {
+  position: relative;
+  overflow: hidden;
+  display: flex;
+  min-width: 0;
+  min-height: 0;
+  background: var(--lector-bg);
+}
+
+.lector-split-view__pane-host {
+  flex: 1 1 auto;
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  position: relative;
+}
+
+.lector-split-view__pane-host > .lector-workspace {
+  flex: 1 1 auto;
+  min-width: 0;
+  min-height: 0;
+}
+
+/* In split mode, hide the per-pane document tabs strip — each pane is
+ * intended for a single document and the doctabs strip is the most
+ * visually noisy element when stacked. The viewer's other chrome
+ * (toolbar, sidebar, canvas) stays so each pane is still fully
+ * functional on its own. */
+.lector-viewer--in-split .lector-doctabs {
+  display: none;
+}
+
+/* Floating close-pane button. Hidden by default; revealed on pane
+ * hover (or active state) when there are multiple panes. Uses the
+ * standard icon-button visual language. */
+.lector-split-view__close-pane {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  width: 28px;
+  height: 28px;
+  display: none;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  background: var(--lector-bg);
+  color: var(--lector-fg-muted, var(--lector-fg));
+  border: 1px solid var(--lector-border);
+  border-radius: 6px;
+  cursor: pointer;
+  z-index: 9100;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.12);
+  transition:
+    background 0.12s ease,
+    color 0.12s ease,
+    border-color 0.12s ease,
+    transform 0.12s ease,
+    opacity 0.12s ease;
+  opacity: 0;
+}
+
+.lector-split-view__close-pane svg {
+  width: 16px;
+  height: 16px;
+  display: block;
+}
+
+.lector-split-view:not(.lector-split-view--single) .lector-split-view__pane:hover .lector-split-view__close-pane {
+  display: inline-flex;
+  opacity: 1;
+}
+
+.lector-split-view__close-pane:hover {
+  background: var(--lector-bg-hover, var(--lector-bg));
+  color: var(--lector-fg);
+  border-color: var(--lector-fg-muted, var(--lector-border));
+  transform: scale(1.06);
+}
+
+.lector-split-view__close-pane:active {
+  transform: scale(0.96);
+}
+
+/* Active-pane indication is a thin top accent bar rather than a heavy
+ * border + box-shadow. Subtle enough to coexist with the rest of the
+ * chrome, clear enough to know which pane has focus. */
+.lector-split-view__pane::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 2px;
+  background: transparent;
+  pointer-events: none;
+  z-index: 9050;
+  transition: background 0.12s ease;
+}
+
+.lector-split-view:not(.lector-split-view--single) .lector-split-view__pane--active::before {
+  background: var(--lector-accent, #3b82f6);
+}
+
+/* Divider — narrow accent track between panes. Background uses the
+ * theme border color so it integrates with the rest of the chrome,
+ * brightens to the accent color on hover/drag. */
+.lector-split-view__divider {
+  background: var(--lector-border);
+  position: relative;
+  z-index: 50;
+  user-select: none;
+  touch-action: none;
+  transition: background 0.12s ease;
+}
+
+.lector-split-view__divider--horizontal {
+  cursor: col-resize;
+}
+
+.lector-split-view__divider--vertical {
+  cursor: row-resize;
+}
+
+.lector-split-view__divider:hover,
+.lector-split-view__divider--dragging {
+  background: var(--lector-accent, #3b82f6);
+}
+
+.lector-capture-action-bar {
+  position: absolute;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 8px;
+  background: var(--lector-bg);
+  color: var(--lector-fg);
+  border: 1px solid var(--lector-border);
+  border-radius: 8px;
+  box-shadow: 0 6px 24px rgba(0, 0, 0, 0.18);
+  z-index: 9000;
+  pointer-events: auto;
+}
+
+.lector-capture-action-bar__preview {
+  display: block;
+  width: 56px;
+  height: 40px;
+  object-fit: contain;
+  background: var(--lector-bg-alt);
+  border: 1px solid var(--lector-border);
+  border-radius: 4px;
+  margin-right: 4px;
+}
+
+.lector-capture-action-bar__btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 10px;
+  background: var(--lector-bg-alt);
+  color: var(--lector-fg);
+  border: 1px solid var(--lector-border);
+  border-radius: 6px;
+  font-size: var(--lector-font-size-sm);
+  cursor: pointer;
+  transition: background 0.12s ease, border-color 0.12s ease;
+}
+
+.lector-capture-action-bar__btn:hover {
+  background: var(--lector-bg-hover);
+  border-color: var(--lector-border-strong, var(--lector-border));
+}
+
+.lector-capture-action-bar__btn-label {
+  white-space: nowrap;
+}
+
+.lector-capture-action-bar__close {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  margin-left: 2px;
+  background: transparent;
+  color: var(--lector-fg-muted, var(--lector-fg));
+  border: 1px solid transparent;
+  border-radius: 6px;
+  cursor: pointer;
+}
+
+.lector-capture-action-bar__close:hover {
+  background: var(--lector-bg-hover);
+  color: var(--lector-fg);
+}
+
+/* ─── Stamp Picker ─────────────────────────────────────── */
+
+.lector-stamp-picker {
+  min-width: 200px;
+  max-height: 320px;
+  overflow-y: auto;
+  padding: 4px 0;
+}
+
+.lector-stamp-picker__trigger {
+  display: flex;
+  align-items: center;
+}
+
+.lector-stamp-picker__chevron {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 28px;
+  padding: 0;
+  border: none;
+  background: none;
+  color: var(--lector-fg-muted);
+  cursor: pointer;
+}
+
+.lector-stamp-picker__chevron svg {
+  width: 12px;
+  height: 12px;
+}
+
+.lector-stamp-picker__item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 6px 12px;
+  border: none;
+  background: none;
+  color: var(--lector-fg);
+  cursor: pointer;
+  font-size: var(--lector-font-size-sm);
+  text-align: left;
+}
+
+.lector-stamp-picker__item:hover {
+  background: var(--lector-bg-hover);
+}
+
+.lector-stamp-picker__item--active {
+  background: var(--lector-bg-selected);
+  font-weight: 500;
+}
+
+.lector-stamp-picker__swatch {
+  width: 12px;
+  height: 12px;
+  border-radius: 2px;
+  flex-shrink: 0;
+}
+
+.lector-stamp-picker__label {
+  flex: 1;
+}
+
+/* ─── Annotation presets picker ────────────────────────── */
+
+.lector-preset-picker__triggerWrap {
+  display: flex;
+  align-items: center;
+}
+
+.lector-preset-picker__trigger {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 8px;
+  max-width: 160px;
+}
+
+.lector-preset-picker__trigger-label {
+  font-size: var(--lector-font-size-sm);
+  color: var(--lector-fg-muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.lector-preset-picker__trigger--active .lector-preset-picker__trigger-label {
+  color: var(--lector-fg);
+  font-weight: 500;
+}
+
+.lector-preset-picker__chevron {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 28px;
+  padding: 0;
+  border: none;
+  background: none;
+  color: var(--lector-fg-muted);
+  cursor: pointer;
+}
+.lector-preset-picker__chevron svg { width: 12px; height: 12px; }
+
+.lector-preset-picker__menu {
+  min-width: 220px;
+  max-height: 360px;
+  overflow-y: auto;
+  padding: 4px 0;
+}
+
+.lector-preset-picker__empty {
+  padding: 12px;
+  font-size: var(--lector-font-size-sm);
+  color: var(--lector-fg-muted);
+  text-align: center;
+}
+
+.lector-preset-picker__item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 6px 10px;
+  border: none;
+  background: none;
+  color: var(--lector-fg);
+  cursor: pointer;
+  font-size: var(--lector-font-size-sm);
+  text-align: left;
+}
+
+.lector-preset-picker__item:hover {
+  background: var(--lector-bg-hover);
+}
+
+.lector-preset-picker__item--active {
+  background: var(--lector-bg-selected);
+  font-weight: 500;
+}
+
+.lector-preset-picker__swatch {
+  width: 14px;
+  height: 14px;
+  border-radius: 3px;
+  flex-shrink: 0;
+  border: 1px solid var(--lector-border);
+}
+
+.lector-preset-picker__swatch--none {
+  background:
+    linear-gradient(to bottom right,
+      transparent calc(50% - 1px),
+      var(--lector-fg-muted) calc(50% - 1px),
+      var(--lector-fg-muted) calc(50% + 1px),
+      transparent calc(50% + 1px));
+}
+
+.lector-preset-picker__label {
+  flex: 1;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.lector-preset-picker__delete {
+  display: none;
+  width: 18px;
+  height: 18px;
+  align-items: center;
+  justify-content: center;
+  border-radius: 3px;
+  color: var(--lector-fg-muted);
+  cursor: pointer;
+  flex-shrink: 0;
+}
+.lector-preset-picker__delete svg { width: 12px; height: 12px; }
+
+.lector-preset-picker__item:hover .lector-preset-picker__delete {
+  display: flex;
+}
+
+.lector-preset-picker__delete:hover {
+  background: rgba(239, 68, 68, 0.1);
+  color: var(--lector-danger, #ef4444);
+}
+
+.lector-preset-picker__footer {
+  border-top: 1px solid var(--lector-border);
+  margin-top: 4px;
+  padding-top: 4px;
+}
+
+.lector-preset-picker__save {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  padding: 8px 12px;
+  border: none;
+  background: none;
+  color: var(--lector-fg);
+  cursor: pointer;
+  font-size: var(--lector-font-size-sm);
+  text-align: left;
+}
+
+.lector-preset-picker__save:hover {
+  background: var(--lector-bg-hover);
+}
+
+.lector-preset-picker__save svg { width: 14px; height: 14px; }
+
+/* ─── Danger button (for Apply Redactions) ─────────────── */
+
+.lector-btn--danger {
+  background: var(--lector-danger, #ef4444);
+  color: white;
+  border-radius: 4px;
+  padding: 2px 8px;
+  font-size: var(--lector-font-size-sm);
+}
+
+.lector-btn--danger:hover {
+  opacity: 0.85;
+}
+
+/* ─── Thumbnail Drag & Drop ────────────────────────────── */
+
+.lector-thumbnail--dragging {
+  opacity: 0.4;
+}
+
+.lector-thumbnail--drop-target {
+  outline: 2px dashed var(--lector-accent, #2563eb);
+  outline-offset: -2px;
+  background: rgba(37, 99, 235, 0.06);
+}
+
+/* ─── Stamp Annotation Overlay ─────────────────────────── */
+
+.lector-annot-stamp {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: 2px solid currentColor;
+  border-radius: 3px;
+  font-weight: 700;
+  font-size: 16px;
+  letter-spacing: 1.5px;
+  text-transform: uppercase;
+  opacity: 0.85;
+  cursor: pointer;
+  user-select: none;
+}
+
+.lector-annot-stamp:hover {
+  outline: 1px solid var(--lector-accent, #3b82f6);
+  outline-offset: 1px;
+}
+
+.lector-annot-stamp.lector-annot-overlay--selected,
+.lector-annot-stamp.lector-annot-overlay--multi-selected {
+  cursor: grab;
+}
+
+/* ─── Image Annotation Overlay ─────────────────────────── */
+
+.lector-annot-image {
+  cursor: pointer;
+  user-select: none;
+  background: transparent;
+  border: 1px solid transparent;
+  transition: border-color 80ms ease;
+}
+
+.lector-annot-image.lector-annot-overlay--selected,
+.lector-annot-image.lector-annot-overlay--multi-selected {
+  cursor: grab;
+}
+
+.lector-annot-image:hover {
+  border-color: var(--lector-accent, #3b82f6);
+}
+
+.lector-annot-image.lector-annot-overlay--selected,
+.lector-annot-image.lector-annot-overlay--multi-selected {
+  border-color: var(--lector-accent, #3b82f6);
+}
+
+/* ─── Callout Leader (SVG sibling layered over the page) ─ */
+
+.lector-annot-callout-leader {
+  z-index: 2;
+}
+
+/* ─── Redaction Annotation Overlay ─────────────────────── */
+
+.lector-annot-redaction {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 11px;
+  color: white;
+  cursor: pointer;
+  user-select: none;
+}
+
+.lector-annot-redaction:hover {
+  outline: 1px solid var(--lector-accent, #3b82f6);
+  outline-offset: 1px;
+}
+
+.lector-annot-redaction.lector-annot-overlay--selected,
+.lector-annot-redaction.lector-annot-overlay--multi-selected {
+  cursor: grab;
+}
+
+/* ─── Measurement Label ────────────────────────────────── */
+
+.lector-annot-measure-label {
+  position: absolute;
+  transform: translateX(-50%);
+  background: rgba(59, 130, 246, 0.9);
+  color: white;
+  padding: 2px 8px;
+  border-radius: 3px;
+  font-size: 11px;
+  font-weight: 500;
+  white-space: nowrap;
+  pointer-events: none;
+  z-index: 10;
+}
+
+/* ─── Text Selection Toolbar ───────────────────────────── */
+
+.lector-text-sel-toolbar {
+  position: absolute;
+  display: flex;
+  gap: 2px;
+  padding: 4px;
+  background: var(--lector-fg);
+  border-radius: 6px;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.2);
+  z-index: var(--lector-z-dropdown);
+  transform: translateX(-50%);
+}
+
+.lector-text-sel-toolbar__btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  border: none;
+  border-radius: 4px;
+  background: none;
+  color: var(--lector-bg);
+  cursor: pointer;
+}
+
+.lector-text-sel-toolbar__btn:hover {
+  background: rgba(255, 255, 255, 0.15);
+}
+
+.lector-text-sel-toolbar__btn svg {
+  width: 16px;
+  height: 16px;
+}
+
+/* ═══════════════════════════════════════════════════════════
+   Sidebar backdrop (mobile overlay mode)
+   ═══════════════════════════════════════════════════════════ */
+
+.lector-sidebar-backdrop {
+  display: none;
+  /* absolute, not fixed: dims the workspace, never the host window */
+  position: absolute;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.4);
+  z-index: calc(var(--lector-z-sidebar) - 1);
+}
+
+.lector-sidebar-backdrop--visible {
+  display: block;
+}
+
+/* ═══════════════════════════════════════════════════════════
+   Annotation toolbar — tool group dropdowns for compact/medium
+   ═══════════════════════════════════════════════════════════ */
+
+.lector-tool-group {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+}
+
+.lector-tool-group__trigger {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 32px;
+  height: 32px;
+  padding: 5px;
+  border: none;
+  border-radius: var(--lector-radius) 0 0 var(--lector-radius);
+  background: transparent;
+  color: var(--lector-fg-muted);
+  cursor: pointer;
+  transition: background var(--lector-transition-fast),
+              color var(--lector-transition-fast);
+}
+
+.lector-tool-group__trigger:hover {
+  background: var(--lector-bg-hover);
+  color: var(--lector-fg);
+}
+
+.lector-tool-group__trigger--active {
+  background: var(--lector-bg-selected);
+  color: var(--lector-accent);
+}
+
+.lector-tool-group__chevron {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 32px;
+  padding: 0;
+  border: none;
+  border-radius: 0 var(--lector-radius) var(--lector-radius) 0;
+  background: transparent;
+  color: var(--lector-fg-muted);
+  cursor: pointer;
+  transition: background var(--lector-transition-fast);
+}
+
+.lector-tool-group__chevron:hover {
+  background: var(--lector-bg-hover);
+}
+
+.lector-tool-group__chevron svg {
+  width: 10px;
+  height: 10px;
+}
+
+.lector-tool-group__panel {
+  display: none;
+  position: absolute;
+  top: 100%;
+  left: 0;
+  margin-top: 4px;
+  background: var(--lector-bg);
+  border: 1px solid var(--lector-border);
+  border-radius: 6px;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.15);
+  padding: 4px;
+  z-index: var(--lector-z-dropdown);
+  min-width: 120px;
+}
+
+.lector-tool-group__panel--open {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 2px;
+}
+
+/* ═══════════════════════════════════════════════════════════
+   Search Bar — floating overlay (top-right of canvas)
+   ═══════════════════════════════════════════════════════════ */
+
+.lector-search-bar {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  z-index: var(--lector-z-dropdown);
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 6px 8px;
+  background: var(--lector-bg);
+  border: 1px solid var(--lector-border);
+  border-radius: var(--lector-radius-lg);
+  box-shadow: var(--lector-shadow-lg);
+  max-width: calc(100% - 16px);
+}
+
+.lector-search-bar--hidden {
+  display: none;
+}
+
+.lector-search-bar__input {
+  width: 200px;
+  height: 28px;
+  padding: 0 8px;
+  border: 1px solid var(--lector-border);
+  border-radius: var(--lector-radius);
+  background: var(--lector-bg);
+  color: var(--lector-fg);
+  font-family: inherit;
+  font-size: var(--lector-font-size-sm);
+}
+
+.lector-search-bar__input:focus-visible {
+  outline: var(--lector-focus-outline);
+  outline-offset: var(--lector-focus-outline-offset);
+  border-color: var(--lector-accent);
+}
+
+.lector-search-bar__input::placeholder {
+  color: var(--lector-fg-muted);
+}
+
+.lector-search-bar__count {
+  font-size: var(--lector-font-size-xs);
+  color: var(--lector-fg-secondary);
+  white-space: nowrap;
+  min-width: 48px;
+  text-align: center;
+  user-select: none;
+}
+
+.lector-search-bar__divider {
+  width: 1px;
+  height: 20px;
+  background: var(--lector-border);
+  flex-shrink: 0;
+}
+
+.lector-search-bar__btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  border: none;
+  border-radius: var(--lector-radius);
+  background: none;
+  color: var(--lector-fg-secondary);
+  cursor: pointer;
+  flex-shrink: 0;
+}
+
+.lector-search-bar__btn:hover {
+  background: var(--lector-bg-hover);
+  color: var(--lector-fg);
+}
+
+.lector-search-bar__btn:disabled {
+  opacity: 0.35;
+  cursor: default;
+}
+
+.lector-search-bar__btn:disabled:hover {
+  background: none;
+}
+
+.lector-search-bar__btn svg {
+  width: 16px;
+  height: 16px;
+  stroke: currentColor;
+  fill: none;
+}
+
+.lector-search-bar__btn--active {
+  background: var(--lector-bg-selected);
+  color: var(--lector-accent);
+}
+
+.lector-search-bar__toggle {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  border: 1px solid transparent;
+  border-radius: var(--lector-radius);
+  background: none;
+  color: var(--lector-fg-secondary);
+  cursor: pointer;
+  flex-shrink: 0;
+  font-size: 11px;
+  font-weight: 600;
+  font-family: inherit;
+}
+
+.lector-search-bar__toggle:hover {
+  background: var(--lector-bg-hover);
+}
+
+.lector-search-bar__toggle--active {
+  background: var(--lector-bg-selected);
+  color: var(--lector-accent);
+  border-color: var(--lector-accent);
+}
+
+/* ═══════════════════════════════════════════════════════════
+   Responsive — Compact (<640px, mobile)
+
+   Applied via .lector-workspace--compact class (set by JS
+   breakpoint observer). Uses class-based approach instead of
+   container queries for broader browser support.
+   ═══════════════════════════════════════════════════════════ */
+
+.lector-workspace--compact .lector-viewer {
+  grid-template-columns: 1fr;
+  grid-template-areas:
+    "toolbar"
+    "annot-toolbar"
+    "canvas";
+}
+
+/* Sidebar: overlay mode on mobile — a drawer over the WORKSPACE, not the
+   window, so a narrow embedded viewer stays inside its pane */
+.lector-workspace--compact .lector-sidebar {
+  position: absolute;
+  top: 0;
+  left: 0;
+  bottom: 0;
+  width: 280px;
+  max-width: 85vw;
+  min-width: 0;
+  z-index: calc(var(--lector-z-dropdown) + 10);
+  transform: translateX(-100%);
+  transition: transform var(--lector-transition-slow);
+  box-shadow: var(--lector-shadow-lg);
+}
+
+.lector-workspace--compact .lector-sidebar:not(.lector-sidebar--collapsed) {
+  transform: translateX(0);
+}
+
+.lector-workspace--compact .lector-sidebar--collapsed {
+  transform: translateX(-100%);
+  visibility: visible;
+  width: 280px;
+}
+
+/* Sidebar resize handle: hidden on mobile */
+.lector-workspace--compact .lector-sidebar__resize-handle {
+  display: none;
+}
+
+/* Comments sidebar: GONE when closed, not merely zero-width.
+
+   The compact template above drops the `comments` area entirely. A grid item
+   whose named area does not exist is not hidden - it auto-places into the
+   IMPLICIT grid, which means a brand-new row underneath `canvas`. The
+   --collapsed rule zeroes width and min-width but nothing zeroes height, and
+   visibility:hidden still reserves the box, so that phantom row stood at the
+   height of the panel header and ate vertical space no one could explain.
+
+   Found 2026-08-14 in paddock's document pane: below the 640 breakpoint the
+   thumbnails correctly went away and the viewer grew an empty second row.
+
+   Only the CLOSED case is forced out of flow. An open comments panel keeps
+   auto-placing under the canvas, which on a narrow container is a reasonable
+   stacked layout - and is the state a reviewer actually asked for. */
+.lector-workspace--compact .lector-comments-sidebar--collapsed {
+  display: none;
+}
+
+/* Toolbar: compact layout */
+.lector-workspace--compact .lector-toolbar {
+  padding: 6px 8px;
+  gap: 4px;
+}
+
+/* Hide button labels on compact */
+.lector-workspace--compact .lector-btn__label {
+  display: none;
+}
+
+/* Shrink buttons slightly */
+.lector-workspace--compact .lector-btn {
+  min-width: 28px;
+  height: 28px;
+  padding: 4px;
+}
+
+/* Hide dividers on compact to save space */
+.lector-workspace--compact .lector-toolbar .lector-toolbar__divider {
+  display: none;
+}
+
+/* Doc tabs: hide on single doc, slim on multi */
+.lector-workspace--compact .lector-doctabs {
+  padding: 4px 8px 0;
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
+}
+
+.lector-workspace--compact .lector-doctab {
+  min-width: 80px;
+  max-width: 160px;
+  padding: 4px 10px;
+  font-size: 11px;
+}
+
+/* The single-document tab bar USED to be hidden here. It is not any more:
+   that strip is what names the document you are reading, it is one slim row,
+   and unlike the thumbnails it costs nothing at a narrow width. Narrow is
+   exactly where a reader most needs telling what they have open, since the
+   sidebar has just become a drawer. `.lector-doctabs:empty`
+   still covers the no-document case at every tier. */
+
+/* Toolbar: minimal — hide zoom control, fit buttons, tool mode buttons */
+.lector-workspace--compact .lector-toolbar {
+  padding: 4px 8px;
+  gap: 2px;
+}
+
+.lector-workspace--compact .lector-zoom {
+  display: none;
+}
+
+/* Pan goes; text-select STAYS. Selecting text is a reading tool — the last
+   thing a narrow viewer should give up, not the first — and it is the only
+   route to the floating copy/search toolbar, which appears on a live
+   selection and is where a phone-width reader takes words out of a document.
+   Pointer (the interaction plugin's default mode) has no hide rule of its
+   own, so the pair that survives compact is pointer + text-select: a toggle
+   in and a way back out. Panning is the one that a scroll gesture already
+   does on a touch screen. */
+.lector-workspace--compact .lector-toolbar [data-tool="pan"] {
+  display: none;
+}
+
+.lector-workspace--compact .lector-toolbar [data-action="zoom.fit-page"],
+.lector-workspace--compact .lector-toolbar [data-action="zoom.fit-width"] {
+  display: none;
+}
+
+/* Annotation toolbar: compact wrapping layout. Excludes the hidden
+   state so the responsive overrides don't beat .lector-annot-toolbar--hidden
+   on specificity (2 classes vs 1) and resurrect the padding/max-height
+   when the workspace is in the compact tier. */
+.lector-workspace--compact .lector-annot-toolbar:not(.lector-annot-toolbar--hidden) {
+  padding: 4px 8px;
+  gap: 2px;
+  flex-wrap: wrap;
+  max-height: none;
+  justify-content: center;
+}
+
+.lector-workspace--compact .lector-annot-toolbar .lector-toolbar__divider {
+  display: none;
+}
+
+.lector-workspace--compact .lector-annot-toolbar .lector-toolbar__spacer {
+  display: none;
+}
+
+/* Page controls: always visible on mobile */
+.lector-workspace--compact .lector-page-controls {
+  bottom: 8px;
+}
+
+/* Annotation popover: full width at bottom on mobile (contained in the
+   workspace like the drawer above) */
+.lector-workspace--compact .lector-annot-popover {
+  position: absolute;
+  left: 0 !important;
+  right: 0;
+  bottom: 0 !important;
+  top: auto !important;
+  width: 100%;
+  max-width: none;
+  max-height: 50vh;
+  overflow-y: auto;
+  border-radius: 12px 12px 0 0;
+  box-shadow: 0 -4px 16px rgba(0, 0, 0, 0.15);
+  z-index: var(--lector-z-dropdown);
+}
+
+/* Search bar: full-width on mobile */
+.lector-workspace--compact .lector-search-bar {
+  top: 4px;
+  left: 4px;
+  right: 4px;
+}
+
+.lector-workspace--compact .lector-search-bar__input {
+  width: 100%;
+  min-width: 0;
+  flex: 1;
+}
+
+/* Sidebar tabs: icon-only on mobile to fit 6 tabs */
+.lector-workspace--compact .lector-sidebar__tabs {
+  margin: 8px 8px 0;
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
+}
+
+.lector-workspace--compact .lector-sidebar__tab {
+  min-width: 32px;
+  padding: 0 6px;
+}
+
+
+/* Context menu: prevent going offscreen */
+.lector-workspace--compact .lector-context-menu {
+  max-width: 90vw;
+}
+
+/* Modal: full-width on mobile */
+.lector-workspace--compact .lector-modal {
+  min-width: 0;
+  max-width: 95vw;
+  margin: 16px;
+}
+
+/* ═══════════════════════════════════════════════════════════
+   Annotation multi-select action bar
+   ═══════════════════════════════════════════════════════════ */
+
+.lector-multi-select-bar {
+  position: absolute;
+  bottom: 24px;
+  left: 50%;
+  transform: translateX(-50%);
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 10px;
+  background: var(--lector-bg);
+  border: 1px solid var(--lector-border);
+  border-radius: 8px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.18);
+  z-index: 50;
+  font-size: 12px;
+}
+
+.lector-multi-select-bar__count {
+  color: var(--lector-fg-muted);
+  padding: 0 6px;
+}
+
+.lector-multi-select-bar__sep {
+  width: 1px;
+  height: 20px;
+  background: var(--lector-border);
+}
+
+.lector-multi-select-bar__btn {
+  padding: 6px 10px;
+}
+
+.lector-multi-select-bar__btn:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.lector-multi-select-bar__btn--danger:not(:disabled):hover {
+  background: rgba(239, 68, 68, 0.12);
+  color: rgb(220, 38, 38);
+}
+
+/* ═══════════════════════════════════════════════════════════
+   Comparison sidebar panel
+   ═══════════════════════════════════════════════════════════ */
+
+.lector-compare-panel {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  font-size: 13px;
+}
+
+.lector-compare-panel__header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--lector-border);
+}
+
+.lector-compare-panel__title {
+  font-weight: 600;
+  color: var(--lector-fg);
+}
+
+.lector-compare-panel__nav {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.lector-compare-panel__summary {
+  padding: 8px 12px;
+  color: var(--lector-fg-muted);
+  font-size: 12px;
+  border-bottom: 1px solid var(--lector-border);
+}
+
+.lector-compare-panel__chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--lector-border);
+}
+
+.lector-compare-chip {
+  background: transparent;
+  border: 1px solid var(--lector-border);
+  color: var(--lector-fg-muted);
+  border-radius: 999px;
+  padding: 3px 10px;
+  font-size: 11px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: all var(--lector-transition-fast);
+}
+.lector-compare-chip:hover {
+  background: var(--lector-bg-hover);
+  color: var(--lector-fg);
+}
+.lector-compare-chip--active {
+  background: var(--lector-accent);
+  border-color: var(--lector-accent);
+  color: #fff;
+}
+.lector-compare-chip--insert.lector-compare-chip--active {
+  background: rgb(34, 197, 94);
+  border-color: rgb(34, 197, 94);
+}
+.lector-compare-chip--delete.lector-compare-chip--active {
+  background: rgb(239, 68, 68);
+  border-color: rgb(239, 68, 68);
+}
+.lector-compare-chip--replace.lector-compare-chip--active {
+  background: rgb(245, 158, 11);
+  border-color: rgb(245, 158, 11);
+}
+
+.lector-compare-panel__list {
+  flex: 1;
+  overflow-y: auto;
+  padding: 4px 0;
+}
+
+.lector-compare-group__heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 8px 12px 4px;
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--lector-fg-muted);
+}
+
+.lector-compare-group__badge {
+  font-size: 10px;
+  padding: 1px 6px;
+  border-radius: 4px;
+  text-transform: none;
+  letter-spacing: 0;
+  font-weight: 500;
+}
+.lector-compare-group__badge--region {
+  background: rgba(59, 130, 246, 0.15);
+  color: var(--lector-accent, rgb(37, 99, 235));
+}
+.lector-compare-group__badge--mismatched {
+  background: rgba(239, 68, 68, 0.15);
+  color: var(--lector-danger, rgb(220, 38, 38));
+}
+
+.lector-compare-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  width: 100%;
+  padding: 8px 12px;
+  background: transparent;
+  border: none;
+  border-left: 3px solid transparent;
+  text-align: left;
+  cursor: pointer;
+  font: inherit;
+  color: var(--lector-fg);
+  transition: background var(--lector-transition-fast), border-color var(--lector-transition-fast);
+}
+.lector-compare-row:hover {
+  background: var(--lector-bg-hover);
+}
+.lector-compare-row--active {
+  background: var(--lector-bg-hover);
+  border-left-color: var(--lector-accent);
+}
+.lector-compare-row--insert {
+  border-left-color: rgba(34, 197, 94, 0.6);
+}
+.lector-compare-row--delete {
+  border-left-color: rgba(239, 68, 68, 0.6);
+}
+.lector-compare-row--replace {
+  border-left-color: rgba(245, 158, 11, 0.6);
+}
+.lector-compare-row--region {
+  border-left-color: rgba(59, 130, 246, 0.6);
+}
+
+.lector-compare-row__icon {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  flex-shrink: 0;
+  margin-top: 1px;
+}
+.lector-compare-row--insert .lector-compare-row__icon { color: rgb(22, 163, 74); }
+.lector-compare-row--delete .lector-compare-row__icon { color: rgb(220, 38, 38); }
+.lector-compare-row--replace .lector-compare-row__icon { color: rgb(217, 119, 6); }
+.lector-compare-row--region .lector-compare-row__icon { color: rgb(37, 99, 235); }
+
+.lector-compare-row__text {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  font-size: 12px;
+  line-height: 1.4;
+}
+
+.lector-compare-row__before {
+  color: rgb(220, 38, 38);
+  text-decoration: line-through;
+  text-decoration-color: rgba(220, 38, 38, 0.5);
+  word-break: break-word;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+.lector-compare-row__after {
+  color: rgb(22, 163, 74);
+  word-break: break-word;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+.lector-compare-row__region {
+  color: var(--lector-fg-muted);
+  font-style: italic;
+}
+
+/* ═══════════════════════════════════════════════════════════
+   Responsive — Medium (640–1024px, tablet / narrow embed)
+   ═══════════════════════════════════════════════════════════ */
+
+.lector-workspace--medium .lector-btn__label {
+  display: none;
+}
+
+.lector-workspace--medium .lector-toolbar {
+  padding: 6px 12px;
+  gap: 4px;
+}
+
+.lector-workspace--medium .lector-sidebar {
+  --lector-sidebar-width: 200px;
+}
+
+/* Annotation toolbar: slightly tighter. Excludes the hidden state so
+   the medium-tier padding doesn't resurrect when the toolbar is hidden. */
+.lector-workspace--medium .lector-annot-toolbar:not(.lector-annot-toolbar--hidden) {
+  gap: 4px;
+  padding: 4px 12px;
+}
+
+.lector-workspace--medium .lector-annot-toolbar .lector-toolbar__spacer {
+  display: none;
+}
+
+
+/* ═══════════════════════════════════════════════════════════
+   Touch — prevent iOS double-tap zoom, handle touch actions
+   ═══════════════════════════════════════════════════════════ */
+
+.lector-canvas {
+  touch-action: pan-x pan-y;
+  -webkit-overflow-scrolling: touch;
+}
+
+/* Prevent browser zoom gestures on the viewer */
+.lector-workspace {
+  touch-action: manipulation;
+}

@@ -1,0 +1,118 @@
+[package]
+name = "paddock-manager"
+description = "The paddock manager + Studio: supervisor, catalog, collector, and the resident API client. Contains zero inference code - serving lives in paddock-runner."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[features]
+# The shipped-binary flavour. The manager reads no kernel
+# switches of its own - its share is sealing the environment it hands to
+# every runner it spawns (runners inherit the manager's env, so a shell
+# variable set before `paddock` started would otherwise reach the engine).
+#
+# No paddock-websearch edge: the manager does not link that crate - zero Rust
+# references to it. The runner is its only consumer and chains
+# `paddock-websearch/hardened` itself, so the switch is sealed where the code
+# actually is.
+hardened = ["paddock-models/hardened"]
+
+[[bin]]
+name = "paddock"
+path = "src/main.rs"
+
+[dependencies]
+axum = { workspace = true, features = ["ws"] }
+# The box's own https identity and the one-port listener that serves both
+# schemes. Its own crate rather than a module here, because the
+# RUNNER is the likely second consumer and rcgen has no business in a binary
+# that does not issue certificates yet.
+paddock-tls = { path = "../paddock-tls" }
+# WebSocket CLIENT, for relaying a runner's realtime transcription socket to
+# the Studio  - the same tungstenite axum's own `ws` feature uses.
+tokio-tungstenite = "0.30"
+tokio = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+toml = { workspace = true }
+clap = { workspace = true }
+tracing = { workspace = true }
+thiserror = { workspace = true }
+uuid = { workspace = true }
+sha2 = { workspace = true }
+futures = { workspace = true }
+async-stream = { workspace = true }
+futures-util = { workspace = true }
+chrono = { workspace = true }
+rust-embed = { workspace = true }
+rusqlite = { workspace = true }
+# Model registry puller (streaming HTTP-Range downloads from the content-addressed
+# origin, Cloudflare R2) + the manager's API-client role. rustls so https:// works
+# without a system OpenSSL.
+reqwest = { version = "0.13", default-features = false, features = ["rustls", "stream", "http2", "json", "form", "query"] }
+# Cross-platform free/total disk space for the models dir (pull-fit guard + UI).
+fs4 = "1.1"
+# GPU telemetry: in-process NVML binding (dynamically loads the driver's
+# management lib). Not nvidia-smi - no process is ever spawned. NVML runs in
+# exactly one process per box: this one (manager-runner doc §9).
+nvml-wrapper = "0.12"
+# fallback leg of the readiness probe: when we have shipped nothing, ask the OS
+# to load CUDA's libraries exactly the way the runner will
+# what a shipped CUDA runtime looks like on disk - the same manifest the engine
+# preloads, so the probe and the loader cannot disagree.
+#
+# Not paddock-kernels: that crate is the kernel ABI, this one is control-plane
+# bookkeeping. Keeping them apart is what lets the manager be built and read on
+# its own, without a GPU or a kernel pack anywhere in sight.
+paddock-api = { workspace = true }
+paddock-models = { workspace = true }
+paddock-estimator = { workspace = true }
+paddock-mcp = { workspace = true }
+# Embedded file metadata for stored attachments. The manager reads
+# it from the blob it already has, so a photo's EXIF does not depend on a model
+# being loaded - an attachment's metadata has nothing to do with which GPU
+# server is up. Same crate the runner serves from, so the two answers cannot
+# drift.
+paddock-filemeta = { workspace = true }
+# HEIC/AVIF decode for the rendition endpoint. Here rather than in
+# the runner because a photo's viewable copy, like its metadata, has nothing to
+# do with which model is loaded - and the side panel has to show one on a cloud
+# chat, with no GPU server up at all. The native library is opened at runtime,
+# so this dependency costs nothing on an install without the pack.
+paddock-heif = { workspace = true }
+# JPEG encoding for those renditions, and the resample that fits one to a
+# viewing size. Decoders are on for the same shared build as everywhere else;
+# what this crate actually uses is jpeg encode.
+image = { workspace = true }
+# The manager HOSTS an MCP server too (artifacts) - same SDK the
+# client side uses, server features on.
+rmcp = { workspace = true }
+schemars = "1"
+# No paddock-websearch. The Studio's web-search settings surface (+ the "test
+# key" button) looks like it would need it, but there are zero Rust references
+# and removing it still compiles. Those settings
+# are stored and the key is exercised through the RUNNER, which is the crate
+# that actually links web search - consistent with the manager never being a
+# proxy. Do not re-add it for a UI surface; add it when manager code calls it.
+paddock-admin = { version = "0.1.0", path = "../paddock-admin" }
+toml_edit = "0.25.13"
+base64.workspace = true
+
+[dev-dependencies]
+# start_paused tests (graph.rs wedged-tab timeout) need tokio's virtual clock
+tokio = { workspace = true, features = ["test-util"] }
+tower = { workspace = true, features = ["util"] }
+http-body-util = { workspace = true }
+tempfile = "3"
+
+[target."cfg(windows)".dependencies]
+# Per-runner Job Objects (doc §11.4): create + assign + duplicate-into-runner.
+windows-sys = { version = "0.61.2", features = ["Win32_Foundation", "Win32_System_JobObjects", "Win32_System_Threading", "Win32_System_SystemInformation"] }
+
+[lints]
+workspace = true
+
+[target."cfg(windows)".build-dependencies]
+# VERSIONINFO + the .ico, so the exe says who it is. See build.rs.
+winresource = "0.1.31"
