@@ -52,6 +52,7 @@
 #include "src/asr/whisper.cuh"      // whisper decode lane (flash-decoding attn + fused decode epilogues)
 #include "src/asr/granite_speech.cuh"  // granite-speech conformer tower (macaron FFN, GLU, centered dwconv, Shaw-RPE attention)
 #include "src/moe/kquant.cuh"       // k-quant MoE expert seats (needs the two kquant segments)
+#include "src/moe/offload.cuh"      // MoE expert offload: device-managed LRU slot cache over host-mapped expert planes (needs kquant.cuh layouts; plain CUDA)
 #include "src/dflash.cuh"        // DFlash2 drafter grouped dynamic conv (abi.cuh helpers only)
 #include "src/tier/xfer.cuh"     // KV tier extent gather/scatter (kv-offload 1a.2; abi.cuh helpers only)
 #include "src/exports.cuh"

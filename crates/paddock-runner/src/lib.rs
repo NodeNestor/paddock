@@ -231,6 +231,27 @@ pub async fn run(
             .clone()
             .map(|(p, gb)| (p, (gb * (1u64 << 30) as f64) as u64)),
     );
+    // [moe_offload]: armed the same way, read by the MoE families at load
+    // (host-map the expert planes) and at enable_batch (seat the slot cache).
+    let mo = &cfg.moe_offload;
+    if !mo.enabled && mo.vram_gb.is_some() {
+        tracing::warn!(
+            "[moe_offload] vram_gb is set but enabled = false - experts stay VRAM-resident \
+             and a model that does not fit will be refused. Set enabled = true."
+        );
+    }
+    paddock_engine::gpu::set_moe_offload(paddock_engine::gpu::MoeOffloadCfg {
+        enabled: mo.enabled,
+        vram_bytes: mo
+            .vram_gb
+            .map(|g| (g.max(0.0) * (1u64 << 30) as f64) as u64),
+    });
+    if mo.enabled {
+        tracing::info!(
+            vram_gb = mo.vram_gb,
+            "[moe_offload] MoE expert offload armed (slot cache auto-sized from the KV plan's leftover unless vram_gb caps it)"
+        );
+    }
     if ram_armed {
         tracing::info!(
             ram_gb = kv.ram_gb,

@@ -5945,7 +5945,45 @@ pub struct KernelTableV1 {
     pub swiglu_fused_nvf4_il: Option<SwigluFusedNvf4Fn>,
     /// Slot 536: pd_swiglu_quant_nvf4_from_parts over interleaved partials.
     pub swiglu_quant_nvf4_from_parts_il: Option<SwigluQuantNvf4FromPartsFn>,
+    /// Slot 537: MoE expert-offload cache resolve - routed expert ids to
+    /// VRAM slot ids with device-side LRU bookkeeping; writes the miss jobs.
+    /// (idx, rows, n_slots, slot_of[n_expert], expert_in[S], last_use[S],
+    /// tick, idx_slot[rows], jobs[2*rows], n_jobs, stats[2] (rows, misses
+    /// accumulators), stream); rows <= n_slots.
+    pub moe_cache_resolve: Option<MoeCacheResolveFn>,
+    /// Slot 538: MoE expert-offload cache fill - copies the resolve's miss
+    /// jobs from the host-mapped mirror into their slots over six streams
+    /// (gate/up/down x data/scales). (jobs, n_jobs (device), max_jobs,
+    /// src[6], dst[6], bytes[6] (HOST u64 arrays), stream).
+    pub moe_cache_fill: Option<MoeCacheFillFn>,
 }
+
+/// MoE expert-offload cache resolve (see `KernelTableV1::moe_cache_resolve`).
+pub type MoeCacheResolveFn = unsafe extern "C" fn(
+    *const core::ffi::c_void,
+    u32,
+    u32,
+    *mut core::ffi::c_void,
+    *mut core::ffi::c_void,
+    *mut core::ffi::c_void,
+    *mut core::ffi::c_void,
+    *mut core::ffi::c_void,
+    *mut core::ffi::c_void,
+    *mut core::ffi::c_void,
+    *mut core::ffi::c_void,
+    *mut core::ffi::c_void,
+) -> i32;
+
+/// MoE expert-offload cache fill (see `KernelTableV1::moe_cache_fill`).
+pub type MoeCacheFillFn = unsafe extern "C" fn(
+    *const core::ffi::c_void,
+    *const core::ffi::c_void,
+    u32,
+    *const core::ffi::c_void,
+    *const core::ffi::c_void,
+    *const core::ffi::c_void,
+    *mut core::ffi::c_void,
+) -> i32;
 
 /// Slot 533: see the KernelTableV1 field doc.
 pub type Nvf4GemmF4tSwqFn = unsafe extern "C" fn(
@@ -6295,7 +6333,7 @@ pub type AddRmsnormQ8XnFn = unsafe extern "C" fn(
 /// the copy to the smaller of declared and expected, so an old pack against a
 /// new engine (or the reverse) reads missing entries as None rather than a
 /// shifted slot.
-pub const KERNEL_TABLE_SLOTS: usize = 537;
+pub const KERNEL_TABLE_SLOTS: usize = 539;
 
 const _: () = assert!(
     core::mem::size_of::<KernelTableV1>() == 8 + KERNEL_TABLE_SLOTS * 8,
@@ -9378,6 +9416,8 @@ mod tests {
         // 250/251: bf16_to_f8r + f8r_gemm_mma_ks (per-row scale-free stream).
         // 252: swiglu_fused_e4m3 (decode step-glue fusion).
         // 253: add_rmsnorm_e4m3_xn (decode norm+quant fuse).
+        // 537/538: moe_cache_resolve + moe_cache_fill (MoE expert offload,
+        // device-managed LRU slot cache over host-mapped expert planes).
         // 254..256: the tile-linear f8 lane (f8w_repack_lin / f8_gemm_lin /
         // f8_gemm_lin_kt - access-pattern fix).
         // 257: add_rmsnorm_e4m3_xn_b16 (prefill glue fusion).

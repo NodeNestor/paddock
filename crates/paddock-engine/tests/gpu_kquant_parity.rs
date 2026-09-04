@@ -2534,3 +2534,123 @@ fn q40_transcode_is_exact() {
         }
     }
 }
+
+/// MoE expert offload, phase A: the same expert block served from a
+/// device-mapped host mirror must produce BIT-identical gate_up and down
+/// outputs to the VRAM-resident plane. Same repack, same kernels, same
+/// addressing - only the memory the bytes sit in differs.
+#[test]
+fn kq_moe_pair_host_mapped_bitmatches_resident() {
+    let Some(model) = common::model("QWEN36_MOE_UD_GGUF", common::QWEN36_35B_A3B_UD_Q4) else {
+        return;
+    };
+    let Some(exec) = common::gpu() else {
+        return;
+    };
+    if !exec.has_kquant_moe() {
+        eprintln!("pack lacks the k-quant MoE pair - skipping");
+        return;
+    }
+    let map = MappedGguf::open(&model).expect("open gguf");
+    let names = [
+        "blk.0.ffn_gate_exps.weight".to_string(),
+        "blk.0.ffn_up_exps.weight".to_string(),
+        "blk.0.ffn_down_exps.weight".to_string(),
+    ];
+    let res: Vec<_> = names
+        .iter()
+        .map(|n| exec.repack_kquant(&map, n).expect("resident repack"))
+        .collect();
+    let host: Vec<_> = names
+        .iter()
+        .map(|n| {
+            exec.try_repack_kquant_host_mapped(&map, n)
+                .expect("host-mapped repack")
+                .expect("k-quant expert tensor")
+        })
+        .collect();
+    let (embd, ff, ne) = (res[0].dims[0], res[0].dims[1], res[0].dims[2]);
+    eprintln!(
+        "host-mapped expert block [{embd}x{ff}x{ne}] {:.1} MB in host memory",
+        host.iter().map(|h| h.host_bytes()).sum::<u64>() as f64 / 1e6
+    );
+
+    let batch = 3usize;
+    let n_active = 8usize;
+    let idx_h: Vec<u32> = (0..batch * n_active)
+        .map(|i| ((i as u32).wrapping_mul(2654435761) >> 7) % ne as u32)
+        .collect();
+    let topk_h: Vec<f32> = (0..batch * n_active)
+        .map(|i| 1.0 / (1.0 + (i % n_active) as f32))
+        .collect();
+    let d_idx = exec.to_device_u32(&idx_h).expect("idx");
+    let d_topk = exec.to_device(&topk_h).expect("topk");
+    let x = deterministic_input(batch * embd, 11);
+    let d_x = exec.to_device(&x).expect("x");
+    let mut d_xq = exec.alloc_i8(batch * embd).expect("xq");
+    let mut d_xs = exec.alloc(batch * embd / 32).expect("xs");
+    exec.quantize_q8(&d_x, &mut d_xq, &mut d_xs, batch * embd)
+        .expect("quantize");
+    let mut d_sums = exec
+        .alloc(batch * embd.max(n_active * ff) / 16)
+        .expect("sums");
+    exec.q8_sums_strided(&d_xq, &mut d_sums, embd, batch)
+        .expect("sums");
+
+    let run = |gate: &paddock_engine::gpu::RepackedKQ,
+               up: &paddock_engine::gpu::RepackedKQ,
+               down: &paddock_engine::gpu::RepackedKQ|
+     -> (Vec<f32>, Vec<f32>) {
+        let mut d_fused = exec.alloc(batch * n_active * ff).expect("fused");
+        exec.kquant_moe_gate_up(
+            gate,
+            up,
+            &d_idx,
+            &d_xq,
+            &d_xs,
+            Some(&d_sums),
+            &mut d_fused,
+            n_active,
+            batch,
+        )
+        .expect("gate_up");
+        let fused = exec.to_host(&d_fused).expect("fused host");
+        let mut d_fq = exec.alloc_i8(batch * n_active * ff).expect("fq");
+        let mut d_fs = exec.alloc(batch * n_active * ff / 32).expect("fs");
+        exec.quantize_q8(&d_fused, &mut d_fq, &mut d_fs, batch * n_active * ff)
+            .expect("fq quant");
+        let mut d_fsums = exec.alloc(batch * n_active * ff / 16).expect("fsums");
+        exec.q8_sums_strided(&d_fq, &mut d_fsums, ff, batch * n_active)
+            .expect("fsums");
+        let mut d_out = exec.alloc(batch * embd).expect("out");
+        exec.kquant_moe_down(
+            down,
+            &d_idx,
+            &d_topk,
+            &d_fq,
+            &d_fs,
+            Some(&d_fsums),
+            &mut d_out,
+            n_active,
+            batch,
+        )
+        .expect("down");
+        (fused, exec.to_host(&d_out).expect("out host"))
+    };
+    let (fused_r, out_r) = run(&res[0], &res[1], &res[2]);
+    let (fused_h, out_h) = run(&host[0], &host[1], &host[2]);
+    let same = |a: &[f32], b: &[f32]| a.iter().zip(b).all(|(x, y)| x.to_bits() == y.to_bits());
+    eprintln!(
+        "host-mapped vs resident: gate_up bitwise={} down bitwise={}",
+        same(&fused_r, &fused_h),
+        same(&out_r, &out_h)
+    );
+    assert!(
+        same(&fused_r, &fused_h),
+        "gate_up differs between host-mapped and resident planes"
+    );
+    assert!(
+        same(&out_r, &out_h),
+        "down differs between host-mapped and resident planes"
+    );
+}

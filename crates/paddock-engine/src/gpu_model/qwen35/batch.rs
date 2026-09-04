@@ -475,6 +475,13 @@ impl GpuQwen35 {
             .plan(grant)
             .map_err(|e| GpuModelError::Config(e.message))?;
         plan.report(&demand, grant);
+        // What the plan leaves after its pools and every listed reserve is
+        // the expert-offload slot cache's budget (sized at the end of this
+        // function, once the pools are allocated).
+        let plan_reserved: u64 = demand.reserves.iter().map(|r| r.bytes).sum::<u64>()
+            + plan.pool_bytes
+            + plan.slot_bytes;
+        let moe_cache_budget = grant.saturating_sub(plan_reserved);
         // An explicit pin is a development instrument: it overrides the plan
         // outright, including past the budget, and says so.
         let pool_block_count = match explicit_pool_pin {
@@ -847,9 +854,18 @@ impl GpuQwen35 {
         // during the prefill phase) and cut TTFT p50 2618 -> 616 ms at
         // equal throughput. The scheduler's overlap_ok conditions still
         // guard per tick; PADDOCK_OVERLAP=0 is the A/B kill switch.
+        // [moe_offload]: the slot cache takes what the plan left, less a
+        // 256 MiB allocator margin - the operator's levers stay max_ctx and
+        // max_batch, exactly as for the KV pool.
+        if !self.moe_cache_active() {
+            self.enable_moe_cache(moe_cache_budget.saturating_sub(256 << 20))?;
+        }
         let overlap_on = paddock_models::dev_var!("PADDOCK_OVERLAP")
             .map(|v| v != "0")
             .unwrap_or(true);
+        // The slot cache is per-layer device state updated in-graph; two
+        // execution lanes replaying against it would race the LRU bookkeeping.
+        let overlap_on = overlap_on && !self.moe_cache_active();
         if self.overlap_exec.is_none() && overlap_on {
             self.overlap_exec = Some(Arc::new(self.exec.fork_stream()?));
             tracing::info!(

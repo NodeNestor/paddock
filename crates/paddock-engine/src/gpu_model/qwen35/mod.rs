@@ -19,7 +19,8 @@
 //! Split into gemma4-shaped submodules.
 
 use crate::gpu::{
-    DeviceTensor, GpuExecutor, KvDtype, QuantTensor, QuantW, RepackedKQ, RepackedMxfp4, RepackedQ8,
+    DeviceTensor, ExpertCache, GpuExecutor, HostMappedKq, KvDtype, QuantTensor, QuantW, RepackedKQ,
+    RepackedMxfp4, RepackedQ8,
 };
 use crate::gpu_model::gpt_oss::GpuModelError;
 use crate::gpu_model::prefix_cache::BLOCK_TOKENS;
@@ -1127,16 +1128,118 @@ fn build_nv4_planes(
 /// their own sorted mma pair (20_kquant_moe, the ks-ring kernels) past the
 /// same pair-count boundary the Q8 seats use - large prefill reads each
 /// touched expert's weights once per pass on both seat kinds.
+impl GpuQwen35 {
+    /// Seat the expert-offload slot cache over every host-mapped MoE layer:
+    /// as many experts per layer as `budget` bytes buy (one slot is one
+    /// expert's gate+up+down bytes in every such layer), capped by
+    /// `[moe_offload] vram_gb`. PADDOCK_MOE_CACHE_SLOTS pins the count
+    /// outright (development instrument, not budget-checked). Returns the
+    /// slots seated; 0 when nothing is host-mapped or the budget buys too few
+    /// to matter, in which case the experts keep serving zero-copy.
+    pub fn enable_moe_cache(&mut self, budget: u64) -> Result<usize, GpuModelError> {
+        fn host_seats(m: &MoeFfnWeights) -> Option<(&HostMappedKq, &HostMappedKq, &HostMappedKq)> {
+            match (&m.gate_exps, &m.up_exps, &m.down_exps) {
+                (ExpW::KqHost(g), ExpW::KqHost(u), ExpW::KqHost(d)) => Some((g, u, d)),
+                _ => None,
+            }
+        }
+        let mut moe: Vec<&mut MoeFfnWeights> = self
+            .layers
+            .iter_mut()
+            .map(|l| &mut l.ffn)
+            .chain(self.mtp.as_mut().map(|m| &mut m.ffn))
+            .filter_map(|ffn| match ffn {
+                Ffn::Moe(m) if m.cache.is_none() => Some(m),
+                _ => None,
+            })
+            .collect();
+        let price: u64 = moe
+            .iter()
+            .filter_map(|m| host_seats(m))
+            .map(|(g, u, d)| ExpertCache::slot_bytes(g, u, d))
+            .sum();
+        if price == 0 || !self.exec.has_moe_cache() {
+            return Ok(0);
+        }
+        let cfg = crate::gpu::moe_offload();
+        let budget = cfg.vram_bytes.map_or(budget, |cap| budget.min(cap));
+        let auto = (budget / price) as usize;
+        let slots = crate::gpu::moe_cache_slots_pin().unwrap_or(auto);
+        let gib = |b: u64| b as f64 / (1u64 << 30) as f64;
+        if slots < 8 {
+            tracing::warn!(
+                slots,
+                budget_gib = gib(budget),
+                "qwen35 MoE expert offload: no room for a slot cache after the KV plan - \
+                 experts serve zero-copy over PCIe (slow); lower max_ctx or max_batch"
+            );
+            return Ok(0);
+        }
+        let mut seated = 0;
+        for m in moe.iter_mut() {
+            if let Some((g, u, d)) = host_seats(m) {
+                let n = slots.min(g.dims[2]);
+                m.cache = Some(self.exec.new_expert_cache(g, u, d, n, 1024)?);
+                seated = n;
+            }
+        }
+        tracing::info!(
+            slots = seated,
+            cache_gib = gib(seated as u64 * price),
+            budget_gib = gib(budget),
+            pinned = crate::gpu::moe_cache_slots_pin().is_some(),
+            "qwen35 MoE expert offload: VRAM slot cache seated (lower max_ctx / max_batch to grow it)"
+        );
+        Ok(seated)
+    }
+
+    /// True when any layer serves its experts through the offload slot cache.
+    pub fn moe_cache_active(&self) -> bool {
+        self.layers
+            .iter()
+            .any(|l| matches!(&l.ffn, Ffn::Moe(m) if m.cache.is_some()))
+    }
+
+    /// Cache counters summed over the layers: `(rows resolved, misses)` since
+    /// load; `None` without a cache. Syncs the stream - for gates and logs.
+    pub fn moe_cache_stats(&self) -> Result<Option<(u64, u64)>, GpuModelError> {
+        let mut acc: Option<(u64, u64)> = None;
+        for l in &self.layers {
+            if let Ffn::Moe(m) = &l.ffn
+                && let Some(c) = &m.cache
+            {
+                let (r, m) = c.stats(&self.exec)?;
+                let a = acc.get_or_insert((0, 0));
+                a.0 += r;
+                a.1 += m;
+            }
+        }
+        Ok(acc)
+    }
+}
+
 enum ExpW {
     Q8(RepackedQ8),
     Kq(RepackedKQ),
+    /// k-quant plane in device-mapped host memory (`[moe_offload]`): the
+    /// kernels read it over PCIe on the same addressing as `Kq`. No VRAM.
+    KqHost(HostMappedKq),
 }
 
 impl ExpW {
     fn q8(&self) -> Option<&RepackedQ8> {
         match self {
             ExpW::Q8(w) => Some(w),
-            ExpW::Kq(_) => None,
+            ExpW::Kq(_) | ExpW::KqHost(_) => None,
+        }
+    }
+    /// The k-quant plane whichever memory it lives in - every launch takes
+    /// the same `RepackedKQ` view.
+    fn kq(&self) -> Option<&RepackedKQ> {
+        match self {
+            ExpW::Q8(_) => None,
+            ExpW::Kq(w) => Some(w),
+            ExpW::KqHost(w) => Some(w),
         }
     }
 }
@@ -1168,6 +1271,10 @@ struct MoeFfnWeights {
     /// mmq kernels, which read a per-(expert,row) bias unconditionally. qwen MoE
     /// has no bias, so every layer points at one buffer via `Arc`.
     moe_zero_bias: Option<Arc<CudaSlice<f32>>>,
+    /// `[moe_offload]`: the VRAM slot cache over host-mapped expert planes,
+    /// seated by `enable_moe_cache`; the token-batched class serves through
+    /// it when the launch's rows fit its slots.
+    cache: Option<ExpertCache>,
 }
 
 /// Dense SwiGLU or routed-expert MoE - per-layer FFN. MoE expert weights stay
@@ -2082,6 +2189,8 @@ impl AuSum {
         match w {
             ExpW::Q8(x) => self.q8(x),
             ExpW::Kq(x) => self.kq(x),
+            // host-mapped: no VRAM, no device allocation to count
+            ExpW::KqHost(_) => {}
         }
     }
     fn fp4(&mut self, w: &RepackedMxfp4) {
