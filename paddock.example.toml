@@ -119,3 +119,18 @@
 # ram_gb = 24.0
 # nvme_gb = 200.0
 # nvme_path = "D:/paddock-cache"
+
+# --- MoE expert offload
+
+# Serves a mixture-of-experts model whose routed experts do not fit the card:
+# the expert planes live in page-locked system RAM the GPU reads over PCIe,
+# and a VRAM slot cache keeps the hot experts resident (LRU, managed on the
+# device, inside the decode graphs). The cache takes whatever VRAM the KV
+# plan leaves after the context/batch you configured - lower max_ctx or
+# max_batch to give it more room; vram_gb caps it. Only k-quant expert seats
+# (Q4_K/Q5_K/Q6_K/IQ4_XS GGUFs) offload today; Q8_0 experts stay resident.
+# Needs enough RAM to hold the experts page-locked (Windows allows roughly
+# half of system RAM).
+# [moe_offload]
+# enabled = true
+# vram_gb = 6.0

@@ -1466,6 +1466,8 @@ static const KernelTableV1 PD_KERNELS = {
     pd_swiglu_fused_il,
     pd_swiglu_fused_nvf4_il,
     pd_swiglu_quant_nvf4_from_parts_il,
+    pd_moe_cache_resolve,
+    pd_moe_cache_fill,
 };
 
 PD_EXPORT const PackInfo* paddock_pack_info(void) {

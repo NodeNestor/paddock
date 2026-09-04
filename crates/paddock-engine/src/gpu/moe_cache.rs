@@ -1,0 +1,270 @@
+//! MoE expert offload, the VRAM side: a per-layer LRU cache of routed
+//! experts over the host-mapped planes of `host_plane.rs`.
+//!
+//! The cache is three slot planes (gate/up/down) in the same repacked
+//! k-quant layout as a resident plane, holding `slots` experts instead of
+//! `n_expert`, plus the device-side bookkeeping the pack's resolve kernel
+//! updates in place: `slot_of[n_expert]`, `expert_in[slots]`,
+//! `last_use[slots]`, a tick counter. Per launch the engine runs
+//! resolve (ids -> slots, miss jobs) then fill (miss bytes from the mirror
+//! into their slots, PCIe-bound) and hands the unchanged MoE kernels the
+//! slot planes and the remapped ids. All of it captures into the decode
+//! graph; nothing here touches the host after load.
+//!
+//! Sizing: a slot is one expert's gate+up+down bytes (2.0 MB on the 35B-A3B
+//! UD file). Measured on a 4032-token prompt, per-layer LRU hit rates run
+//! 82% at 64 slots, 90% at 96, 94% at 128; enable_batch seats what the KV
+//! plan leaves.
+
+use cudarc::driver::{CudaSlice, DevicePtr};
+
+use super::error::check;
+use super::{GpuError, GpuExecutor, HostMappedKq, RepackedKQ};
+
+/// Sentinel in `slot_of` / `expert_in`: not resident.
+pub const MOE_CACHE_NONE: u32 = u32::MAX;
+
+/// The `[moe_offload]` election, armed once by the runner before any model
+/// loads (families read it at load and at enable_batch) - the same shape as
+/// `kv_tier::pool_tier::set_tier_ram_bytes`. Budgets only: `vram_gb` caps
+/// the slot cache; `None` lets the cache take what the KV plan leaves.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct MoeOffloadCfg {
+    pub enabled: bool,
+    pub vram_bytes: Option<u64>,
+}
+
+static MOE_OFFLOAD: std::sync::OnceLock<MoeOffloadCfg> = std::sync::OnceLock::new();
+
+pub fn set_moe_offload(cfg: MoeOffloadCfg) {
+    let _ = MOE_OFFLOAD.set(cfg);
+}
+
+/// The armed config; `PADDOCK_MOE_HOST=1` is the development switch that
+/// enables it without a config file (tests, bring-up).
+pub fn moe_offload() -> MoeOffloadCfg {
+    let mut c = MOE_OFFLOAD.get().copied().unwrap_or_default();
+    if paddock_models::dev_var_os!("PADDOCK_MOE_HOST").is_some() {
+        c.enabled = true;
+    }
+    c
+}
+
+/// `PADDOCK_MOE_CACHE_SLOTS=<n>`: development pin for the per-layer slot
+/// count, overriding the auto size (the same instrument class as
+/// PADDOCK_KV_POOL_BLOCKS). 0 = no cache (pure zero-copy).
+pub fn moe_cache_slots_pin() -> Option<usize> {
+    paddock_models::dev_var!("PADDOCK_MOE_CACHE_SLOTS")
+        .ok()
+        .and_then(|v| v.parse().ok())
+}
+
+pub struct ExpertCache {
+    pub slots: usize,
+    pub n_expert: usize,
+    /// Rows the per-launch scratch can take (`idx_slot`, `jobs`).
+    pub max_rows: usize,
+    pub gate: RepackedKQ,
+    pub up: RepackedKQ,
+    pub down: RepackedKQ,
+    slot_of: CudaSlice<u32>,
+    expert_in: CudaSlice<u32>,
+    last_use: CudaSlice<u32>,
+    tick: CudaSlice<u32>,
+    idx_slot: CudaSlice<u32>,
+    jobs: CudaSlice<u32>,
+    n_jobs: CudaSlice<u32>,
+    /// `[rows resolved, misses]`, accumulated by every resolve.
+    stats: CudaSlice<u32>,
+    /// Fill descriptors: mirror sources, slot destinations, bytes per expert -
+    /// gate data, gate scales, up data, up scales, down data, down scales.
+    src: [u64; 6],
+    dst: [u64; 6],
+    bytes: [u64; 6],
+}
+
+impl ExpertCache {
+    /// Remapped routing (slot ids) written by the last resolve; the MoE
+    /// kernels take it in place of the expert ids.
+    pub fn idx_slot(&self) -> &CudaSlice<u32> {
+        &self.idx_slot
+    }
+
+    /// `(rows resolved, misses)` since load - a sync + tiny readback, for
+    /// logs and gates, never on the tick.
+    pub fn stats(&self, exec: &GpuExecutor) -> Result<(u64, u64), GpuError> {
+        let v = exec.to_host_u32(&self.stats)?;
+        Ok((v[0] as u64, v[1] as u64))
+    }
+
+    /// VRAM the slot planes hold.
+    pub fn vram_bytes(&self) -> u64 {
+        (self.gate.data.len()
+            + self.gate.scales.len()
+            + self.up.data.len()
+            + self.up.scales.len()
+            + self.down.data.len()
+            + self.down.scales.len()) as u64
+    }
+
+    /// Bytes one slot (one expert across the three planes) costs, from the
+    /// mirrors' per-expert strides.
+    pub fn slot_bytes(gate: &HostMappedKq, up: &HostMappedKq, down: &HostMappedKq) -> u64 {
+        let per = |p: &RepackedKQ| ((p.data.len() + p.scales.len()) / p.dims[2]) as u64;
+        per(gate) + per(up) + per(down)
+    }
+}
+
+impl GpuExecutor {
+    pub fn has_moe_cache(&self) -> bool {
+        self.kernels.moe_cache_resolve.is_some() && self.kernels.moe_cache_fill.is_some()
+    }
+
+    /// Build a `slots`-expert cache over three host-mapped planes of one
+    /// layer. Slot planes are allocated empty; the first ticks fill them.
+    pub fn new_expert_cache(
+        &self,
+        gate: &HostMappedKq,
+        up: &HostMappedKq,
+        down: &HostMappedKq,
+        slots: usize,
+        max_rows: usize,
+    ) -> Result<ExpertCache, GpuError> {
+        let n_expert = gate.dims[2];
+        if slots == 0 || slots > n_expert || up.dims[2] != n_expert || down.dims[2] != n_expert {
+            return Err(GpuError::Driver(format!(
+                "expert cache: {slots} slots over {n_expert} experts (up {}, down {})",
+                up.dims[2], down.dims[2]
+            )));
+        }
+        let mut src = [0u64; 6];
+        let mut dst = [0u64; 6];
+        let mut bytes = [0u64; 6];
+        let mut planes = Vec::with_capacity(3);
+        for (i, p) in [gate, up, down].into_iter().enumerate() {
+            let per_data = p.data.len() / n_expert;
+            let per_scales = p.scales.len() / n_expert;
+            if per_data * n_expert != p.data.len() || per_scales * n_expert != p.scales.len() {
+                return Err(GpuError::Driver(
+                    "expert cache: plane bytes are not a whole number of experts".into(),
+                ));
+            }
+            let data = self.alloc_u8(per_data * slots)?;
+            let scales = self.alloc_u8(per_scales * slots)?;
+            {
+                let (sp, _g1) = p.data.device_ptr(&self.stream);
+                let (ssp, _g2) = p.scales.device_ptr(&self.stream);
+                let (dp, _g3) = data.device_ptr(&self.stream);
+                let (dsp, _g4) = scales.device_ptr(&self.stream);
+                src[2 * i] = sp;
+                src[2 * i + 1] = ssp;
+                dst[2 * i] = dp;
+                dst[2 * i + 1] = dsp;
+            }
+            bytes[2 * i] = per_data as u64;
+            bytes[2 * i + 1] = per_scales as u64;
+            let mut dims = p.dims.clone();
+            dims[2] = slots;
+            planes.push(RepackedKQ {
+                data,
+                scales,
+                dims,
+                ty: p.ty,
+            });
+        }
+        let down_p = planes.pop().expect("three planes pushed");
+        let up_p = planes.pop().expect("three planes pushed");
+        let gate_p = planes.pop().expect("three planes pushed");
+        Ok(ExpertCache {
+            slots,
+            n_expert,
+            max_rows,
+            gate: gate_p,
+            up: up_p,
+            down: down_p,
+            slot_of: self.to_device_u32(&vec![MOE_CACHE_NONE; n_expert])?,
+            expert_in: self.to_device_u32(&vec![MOE_CACHE_NONE; slots])?,
+            last_use: self.to_device_u32(&vec![0u32; slots])?,
+            tick: self.to_device_u32(&[0u32])?,
+            idx_slot: self.to_device_u32(&vec![0u32; max_rows])?,
+            jobs: self.to_device_u32(&vec![0u32; 2 * max_rows])?,
+            n_jobs: self.to_device_u32(&[0u32])?,
+            stats: self.to_device_u32(&[0u32, 0u32])?,
+            src,
+            dst,
+            bytes,
+        })
+    }
+
+    /// Resolve `rows` routed ids (`idx`) against the cache: writes
+    /// `idx_slot`, updates the LRU state, records miss jobs. `rows` must not
+    /// exceed the cache's slots (a tick never evicts what it reads).
+    pub fn moe_cache_resolve(
+        &self,
+        c: &ExpertCache,
+        idx: &CudaSlice<u32>,
+        rows: usize,
+    ) -> Result<(), GpuError> {
+        let f = self
+            .kernels
+            .moe_cache_resolve
+            .ok_or(GpuError::MissingOp("moe_cache_resolve"))?;
+        if rows > c.slots || rows > c.max_rows {
+            return Err(GpuError::Driver(format!(
+                "expert cache resolve: {rows} rows over {} slots / {} scratch rows",
+                c.slots, c.max_rows
+            )));
+        }
+        let (ip, _g0) = idx.device_ptr(&self.stream);
+        let (so, _g1) = c.slot_of.device_ptr(&self.stream);
+        let (ei, _g2) = c.expert_in.device_ptr(&self.stream);
+        let (lu, _g3) = c.last_use.device_ptr(&self.stream);
+        let (tk, _g4) = c.tick.device_ptr(&self.stream);
+        let (is, _g5) = c.idx_slot.device_ptr(&self.stream);
+        let (jb, _g6) = c.jobs.device_ptr(&self.stream);
+        let (nj, _g7) = c.n_jobs.device_ptr(&self.stream);
+        let (st, _g8) = c.stats.device_ptr(&self.stream);
+        // SAFETY: pack ABI v1 contract; the state buffers are written by the
+        // kernel in stream order and read by nothing else off-stream.
+        check(unsafe {
+            f(
+                ip as *const _,
+                rows as u32,
+                c.slots as u32,
+                so as *mut _,
+                ei as *mut _,
+                lu as *mut _,
+                tk as *mut _,
+                is as *mut _,
+                jb as *mut _,
+                nj as *mut _,
+                st as *mut _,
+                self.stream_ptr(),
+            )
+        })
+    }
+
+    /// Copy the last resolve's misses (at most `rows` of them) from the host
+    /// mirror into their slots.
+    pub fn moe_cache_fill(&self, c: &ExpertCache, rows: usize) -> Result<(), GpuError> {
+        let f = self
+            .kernels
+            .moe_cache_fill
+            .ok_or(GpuError::MissingOp("moe_cache_fill"))?;
+        let (jb, _g1) = c.jobs.device_ptr(&self.stream);
+        let (nj, _g2) = c.n_jobs.device_ptr(&self.stream);
+        // SAFETY: pack ABI v1 contract; src/dst/bytes are host arrays the
+        // launcher copies by value before returning.
+        check(unsafe {
+            f(
+                jb as *const _,
+                nj as *const _,
+                rows as u32,
+                c.src.as_ptr() as *const _,
+                c.dst.as_ptr() as *const _,
+                c.bytes.as_ptr() as *const _,
+                self.stream_ptr(),
+            )
+        })
+    }
+}
