@@ -1,6 +1,14 @@
 # Paddock
 
+[![Discord](https://img.shields.io/badge/Discord-join%20the%20server-5865F2?logo=discord&logoColor=white)](https://discord.gg/fMeKkPdrsW)
+
 ![Paddock Studio](assets/studio-graph.gif)
+
+## Community
+
+Questions, setups that do not work, benchmark results and ideas: the Paddock
+Discord, <https://discord.gg/fMeKkPdrsW>. Bugs and model requests are best as GitHub
+issues, where the templates ask for what makes a report actionable.
 
 ## What it is
 

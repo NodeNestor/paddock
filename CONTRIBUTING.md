@@ -6,6 +6,9 @@ change in.
 
 ## Where to start
 
+- **Questions** go to the [Paddock Discord](https://discord.gg/fMeKkPdrsW): setup, build
+  problems, "does this card work". Bugs stay here as issues so they are
+  searchable.
 - **Bugs and model support** are the most useful things to bring. Open an
   issue with the template; `paddock --version`, the GPU and driver, and the
   model file name are what make a report actionable.
