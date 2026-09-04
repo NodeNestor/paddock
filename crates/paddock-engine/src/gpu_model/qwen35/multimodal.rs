@@ -351,7 +351,7 @@ impl GpuQwen35 {
         assert!(t_len > 0);
         self.ensure_decode()?;
         assert_eq!(
-            self.decode.as_ref().unwrap().pos,
+            self.decode.as_ref().expect("decode state ensured").pos,
             0,
             "prefill requires a fresh sequence"
         );
@@ -441,7 +441,7 @@ impl GpuQwen35 {
                     // fused qkv plane, row-sliced at 0 / nq / nq+nk -- the same
                     // offsets prefix.rs uses (one plane, three consumers)
                     if let Some(l8) = lw8.filter(|l| l.wq.is_some()) {
-                        let p8 = l8.wq.as_ref().unwrap();
+                        let p8 = l8.wq.as_ref().expect("wq checked in the filter");
                         exec.quantize_e4m3(&sc.d_xn, &mut sc.d_pxq, &mut sc.d_exs, r * embd)?;
                         exec.f8_gemm_w8(
                             p8,
@@ -552,7 +552,9 @@ impl GpuQwen35 {
                     )?;
                     exec.kv_append_batch(
                         &sc.d_kn,
-                        ds.kv_k[li].as_mut().unwrap(),
+                        ds.kv_k[li]
+                            .as_mut()
+                            .expect("full-attn layer keeps a KV cache"),
                         &d_rows,
                         Some(&d_slots),
                         kv_dim,
@@ -562,7 +564,9 @@ impl GpuQwen35 {
                     )?;
                     exec.kv_append_batch(
                         &sc.d_v,
-                        ds.kv_v[li].as_mut().unwrap(),
+                        ds.kv_v[li]
+                            .as_mut()
+                            .expect("full-attn layer keeps a KV cache"),
                         &d_rows,
                         Some(&d_slots),
                         kv_dim,
@@ -573,8 +577,12 @@ impl GpuQwen35 {
                     prefill_attn(
                         &exec,
                         &sc.d_qn,
-                        ds.kv_k[li].as_ref().unwrap(),
-                        ds.kv_v[li].as_ref().unwrap(),
+                        ds.kv_k[li]
+                            .as_ref()
+                            .expect("full-attn layer keeps a KV cache"),
+                        ds.kv_v[li]
+                            .as_ref()
+                            .expect("full-attn layer keeps a KV cache"),
                         sinks,
                         &mut sc.d_attn,
                         &d_bound,
@@ -663,7 +671,9 @@ impl GpuQwen35 {
                         conv_k,
                     )?;
                     {
-                        let win = ds.conv_win[li].as_mut().unwrap();
+                        let win = ds.conv_win[li]
+                            .as_mut()
+                            .expect("DeltaNet layer keeps a conv window");
                         let km1 = conv_k - 1;
                         if r >= km1 {
                             exec.copy_region(
@@ -756,7 +766,9 @@ impl GpuQwen35 {
                     prefill_delta_recurrent(
                         &exec,
                         sc,
-                        ds.recur[li].as_mut().unwrap(),
+                        ds.recur[li]
+                            .as_mut()
+                            .expect("DeltaNet layer keeps recurrent state"),
                         0,
                         r,
                         n_v_heads,
@@ -1142,7 +1154,7 @@ impl GpuQwen35 {
         }
         let logits = exec.to_host(&sc.d_logits)?;
         {
-            let ds = self.decode.as_mut().unwrap();
+            let ds = self.decode.as_mut().expect("decode state ensured");
             ds.pos = t_len;
             ds.mrope_pos = final_mrope_pos;
         }
@@ -1180,10 +1192,17 @@ impl GpuQwen35 {
         if Some(out[0]) == stop || max_new == 1 {
             return Ok(out);
         }
-        let p = self.decode.as_ref().unwrap().pos;
+        let p = self
+            .decode
+            .as_ref()
+            .expect("prefill built the decode state")
+            .pos;
         assert!(p + max_new <= self.max_ctx);
         {
-            let ds = self.decode.as_mut().unwrap();
+            let ds = self
+                .decode
+                .as_mut()
+                .expect("prefill built the decode state");
             let mp = ds.mrope_pos as u32;
             let e = |x: cudarc::driver::DriverError| crate::gpu::from_driver(x);
             exec.stream
@@ -1196,7 +1215,13 @@ impl GpuQwen35 {
                 .memcpy_htod(&[mp; 4], &mut ds.d_mrope)
                 .map_err(e)?;
         }
-        if self.decode.as_ref().unwrap().graph_gen.is_none() {
+        if self
+            .decode
+            .as_ref()
+            .expect("prefill built the decode state")
+            .graph_gen
+            .is_none()
+        {
             self.capture_graph_gen()?;
         }
         let target = max_new - 1;
@@ -1204,28 +1229,43 @@ impl GpuQwen35 {
         while produced < target {
             let k = (target - produced).min(GEN_CHUNK);
             {
-                let ds = self.decode.as_mut().unwrap();
+                let ds = self
+                    .decode
+                    .as_mut()
+                    .expect("prefill built the decode state");
                 let e = |x: cudarc::driver::DriverError| crate::gpu::from_driver(x);
                 exec.stream
                     .memcpy_htod(&[0u32], &mut ds.d_step)
                     .map_err(e)?;
-                let g = ds.graph_gen.as_ref().unwrap();
+                let g = ds.graph_gen.as_ref().expect("gen graph captured above");
                 for _ in 0..k {
                     g.0.launch()
                         .map_err(|x| GpuError::Driver(format!("gen launch: {x}")))?;
                 }
             }
-            let ids = exec.to_host_u32(&self.decode.as_ref().unwrap().d_out)?;
+            let ids = exec.to_host_u32(
+                &self
+                    .decode
+                    .as_ref()
+                    .expect("prefill built the decode state")
+                    .d_out,
+            )?;
             for &id in ids.iter().take(k) {
                 out.push(id);
                 produced += 1;
                 if Some(id) == stop {
-                    self.decode.as_mut().unwrap().pos = p + produced;
+                    self.decode
+                        .as_mut()
+                        .expect("prefill built the decode state")
+                        .pos = p + produced;
                     return Ok(out);
                 }
             }
         }
-        self.decode.as_mut().unwrap().pos = p + produced;
+        self.decode
+            .as_mut()
+            .expect("prefill built the decode state")
+            .pos = p + produced;
         Ok(out)
     }
 }

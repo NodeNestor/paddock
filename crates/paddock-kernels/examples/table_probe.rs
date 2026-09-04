@@ -1,3 +1,7 @@
+// A development probe: it runs on a box its author is looking at, and a
+// failure should stop it where it happened rather than be reported.
+#![allow(clippy::unwrap_used)]
+
 // Throwaway diagnostic: load the CUDA pack and print which f8-family table
 // entries resolved non-NULL on this device (gemma4 sm_120 lane gates).
 fn main() {

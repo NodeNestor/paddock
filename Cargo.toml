@@ -187,8 +187,17 @@ paddock-pdfium = { path = "crates/paddock-pdfium" }
 paddock-kernels = { path = "crates/paddock-kernels" }
 
 [workspace.lints.clippy]
-# unwrap in library code hides failure modes we promised to surface (no-silent-failures principle)
-unwrap_used = "warn"
+# unwrap in library code hides failure modes we promised to surface (the
+# no-silent-failures principle). Tests are exempt (clippy.toml); examples
+# carry a file-level allow: they are development probes that must panic on a
+# bad box. Library code has none left, and a new one is a build error.
+# `expect` with the invariant named is the sanctioned form and stays allowed.
+unwrap_used = "deny"
+# Never in a commit: a leftover debug print, a placeholder that would panic
+# in a user's hands. The tree has none today and this keeps it that way.
+dbg_macro = "deny"
+todo = "deny"
+unimplemented = "deny"
 
 [profile.release]
 lto = "thin"

@@ -6,6 +6,10 @@
 //! oracle on the same inputs. PADDOCK_DNC_MMA / _MMA_G / _SCAN are process-
 //! latched in the pack - run once per env combo for the A/B. Span length via
 //! argv[1] (default 2048).
+// A development probe: it runs on a box its author is looking at, and a
+// failure should stop it where it happened rather than be reported.
+#![allow(clippy::unwrap_used)]
+
 use std::sync::Arc;
 
 use paddock_engine::gpu::GpuExecutor;
@@ -154,23 +158,10 @@ fn main() {
         } else {
             unsafe { std::env::remove_var("PADDOCK_NO_DNC_MMA_V2") };
         }
-        for li in 0..NL {
+        for st in states.iter_mut() {
             exec.gated_delta_chunked(
-                &d_q,
-                &d_k,
-                &d_v,
-                &d_g,
-                &d_beta,
-                &mut states[li],
-                0,
-                &mut d_out,
-                &mut dw,
-                &mut du,
-                &mut aqk,
-                &mut cg,
-                n,
-                h,
-                d,
+                &d_q, &d_k, &d_v, &d_g, &d_beta, st, 0, &mut d_out, &mut dw, &mut du, &mut aqk,
+                &mut cg, n, h, d,
             )
             .expect("warm");
         }

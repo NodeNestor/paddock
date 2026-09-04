@@ -2,6 +2,10 @@
 //! geometry (16 q-heads / 2 kv-heads GQA, head_dim 256), fp16 KV, paged with
 //! an identity block table, spans at done=0 (ctx 2048) and done=2048 (ctx
 //! 4096). PADDOCK_ATTN_PF_V2 is process-latched - run twice for the A/B.
+// A development probe: it runs on a box its author is looking at, and a
+// failure should stop it where it happened rather than be reported.
+#![allow(clippy::unwrap_used)]
+
 use std::sync::Arc;
 
 use paddock_engine::gpu::{GpuExecutor, KvDtype};

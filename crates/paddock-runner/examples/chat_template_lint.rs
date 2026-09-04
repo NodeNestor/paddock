@@ -8,6 +8,9 @@
 //! span and prints the source around it.
 //!
 //! Usage: chat_template_lint <model.gguf> [--render]
+// A development probe: it runs on a box its author is looking at, and a
+// failure should stop it where it happened rather than be reported.
+#![allow(clippy::unwrap_used)]
 
 use paddock_models::mapped::MappedGguf;
 
@@ -48,7 +51,7 @@ fn main() {
             let mut lo = 0usize;
             let mut hi = bytes.len();
             let fails = |n: usize| -> Option<String> {
-                let Some(s) = tmpl.get(..n) else { return None };
+                let s = tmpl.get(..n)?;
                 paddock_runner::chat_template::render(s, &msgs, None, None).err()
             };
             // Compare the full message minus the location. Matching only

@@ -378,8 +378,10 @@ pub fn load_ple_projections(
                 "{name}: want I64 x{want}"
             )));
         }
-        Ok(b.chunks_exact(8)
-            .map(|c| i64::from_le_bytes(c.try_into().unwrap()))
+        Ok(b.as_chunks::<8>()
+            .0
+            .iter()
+            .map(|c| i64::from_le_bytes(*c))
             .collect())
     };
     // table scale: bf16 scalar in this repo (F32 in the FP8 repo) - widen
@@ -390,7 +392,7 @@ pub fn load_ple_projections(
             .ok_or_else(|| GpuModelError::Unsupported(format!("{name}: missing")))?;
         match t.dtype {
             StDtype::Bf16 => bf16_to_f32(b)[0],
-            StDtype::F32 => f32::from_le_bytes(b[..4].try_into().unwrap()),
+            StDtype::F32 => f32::from_le_bytes(b[..4].try_into().expect("f32 scalar")),
             other => {
                 return Err(GpuModelError::Unsupported(format!(
                     "{name}: dtype {other:?}"

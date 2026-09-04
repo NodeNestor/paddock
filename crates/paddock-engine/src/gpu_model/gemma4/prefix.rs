@@ -334,7 +334,7 @@ impl GpuGemma4 {
             return Ok(());
         }
         let (pf, gp) = (
-            self.prefix.as_mut().unwrap(),
+            self.prefix.as_mut().expect("prefix checked above"),
             self.gpool.as_mut().expect("prefix requires the pool"),
         );
         let blocks = gp.tables[slot].blocks().to_vec();

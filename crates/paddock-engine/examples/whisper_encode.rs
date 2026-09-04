@@ -8,6 +8,9 @@
 //!
 //! Clips longer than 30 s are truncated to the first window here - long-form
 //! windowing is the serving lane's job.
+// A development probe: it runs on a box its author is looking at, and a
+// failure should stop it where it happened rather than be reported.
+#![allow(clippy::unwrap_used)]
 
 use std::sync::Arc;
 

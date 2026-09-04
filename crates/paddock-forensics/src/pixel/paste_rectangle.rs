@@ -201,9 +201,9 @@ fn gaussian_blur_5x5(input: &[u8], output: &mut [u8], w: usize, h: usize) {
     for y in 0..h {
         for x in 0..w {
             let mut acc = 0u32;
-            for k in 0..5usize {
+            for (k, &wt) in WEIGHTS.iter().enumerate() {
                 let sx = (x as isize + k as isize - 2).clamp(0, w as isize - 1) as usize;
-                acc += input[y * w + sx] as u32 * WEIGHTS[k];
+                acc += input[y * w + sx] as u32 * wt;
             }
             temp[y * w + x] = (acc / SUM) as u8;
         }
@@ -211,9 +211,9 @@ fn gaussian_blur_5x5(input: &[u8], output: &mut [u8], w: usize, h: usize) {
     for y in 0..h {
         for x in 0..w {
             let mut acc = 0u32;
-            for k in 0..5usize {
+            for (k, &wt) in WEIGHTS.iter().enumerate() {
                 let sy = (y as isize + k as isize - 2).clamp(0, h as isize - 1) as usize;
-                acc += temp[sy * w + x] as u32 * WEIGHTS[k];
+                acc += temp[sy * w + x] as u32 * wt;
             }
             output[y * w + x] = (acc / SUM) as u8;
         }
@@ -567,11 +567,11 @@ fn nms(
 fn smooth(data: &[f64], window: usize) -> Vec<f64> {
     let half = window / 2;
     let mut out = vec![0.0; data.len()];
-    for i in 0..data.len() {
+    for (i, o) in out.iter_mut().enumerate() {
         let start = i.saturating_sub(half);
         let end = (i + half + 1).min(data.len());
         let sum: f64 = data[start..end].iter().sum();
-        out[i] = sum / (end - start) as f64;
+        *o = sum / (end - start) as f64;
     }
     out
 }

@@ -8,6 +8,8 @@
 //! (Nordic + CJK + byte-fallback + literal-special-lookalikes) and the six
 //! task-prompt renderings with their exact input ids. Skips cleanly when the
 //! model or fixtures are absent.
+// Test code: a failed assumption stops the test where it happened.
+#![allow(clippy::unwrap_used)]
 
 use paddock_models::mapped::MappedGguf;
 use paddock_tokenizer::{GgufTokenizer, TokenizerError};

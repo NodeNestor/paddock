@@ -205,7 +205,7 @@ fn categorize(findings: &[Finding]) -> Vec<ExplanationCategory> {
         });
     }
 
-    categories.sort_by(|a, b| b.max_severity.cmp(&a.max_severity));
+    categories.sort_by_key(|c| std::cmp::Reverse(c.max_severity));
     categories
 }
 

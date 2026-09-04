@@ -6,6 +6,10 @@
 //! so this probe times the pure decode shape at several batches to settle
 //! whether the kernel is at its floor (=> only byte-reduction could help) or
 //! latency-bound (=> kernel work exists).
+// A development probe: it runs on a box its author is looking at, and a
+// failure should stop it where it happened rather than be reported.
+#![allow(clippy::unwrap_used)]
+
 use std::sync::Arc;
 
 use paddock_engine::gpu::GpuExecutor;
@@ -54,7 +58,7 @@ fn main() {
             .collect();
         let mut d_out = exec.alloc(n).expect("out");
         // warm
-        for li in 0..NL {
+        for state in states.iter_mut() {
             exec.gated_delta_recurrent_v2(
                 &d_q,
                 &d_k,
@@ -62,7 +66,7 @@ fn main() {
                 &d_g,
                 &d_beta,
                 Some(&d_slots),
-                &mut states[li],
+                state,
                 0,
                 None,
                 &mut d_out,

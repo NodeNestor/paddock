@@ -818,9 +818,9 @@ impl GpuQwen35 {
             let widest = layers
                 .iter()
                 .flat_map(|l| [&l.wq, &l.wk, &l.wv, &l.wo, &l.w_gate, &l.w_up, &l.w_down])
-                .filter_map(|w| match w {
-                    QuantW::Kq(k) => Some(k.dims[0] * k.dims[1]),
-                    QuantW::Q8(q) => Some(q.dims[0] * q.dims[1]),
+                .map(|w| match w {
+                    QuantW::Kq(k) => k.dims[0] * k.dims[1],
+                    QuantW::Q8(q) => q.dims[0] * q.dims[1],
                 })
                 .max()
                 .unwrap_or(0);

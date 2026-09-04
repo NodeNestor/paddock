@@ -8,6 +8,9 @@
 //! itself (one step from `<|startoftranscript|>`, argmax over the language
 //! tokens - what vLLM's detection path does). Clips longer than 30 s decode
 //! as sequential windows.
+// A development probe: it runs on a box its author is looking at, and a
+// failure should stop it where it happened rather than be reported.
+#![allow(clippy::unwrap_used)]
 
 use std::sync::Arc;
 

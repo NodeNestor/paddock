@@ -97,8 +97,10 @@ fn forward_logits_track_the_reference_dump() {
     }
     let raw = std::fs::read(dump.join("logits.bin")).expect("reference logits.bin");
     let want: Vec<f32> = raw
-        .chunks_exact(4)
-        .map(|c| f32::from_le_bytes(c.try_into().unwrap()))
+        .as_chunks::<4>()
+        .0
+        .iter()
+        .map(|c| f32::from_le_bytes(*c))
         .collect();
 
     let mut m = Qwen4ExpGpu::load(&exec, &dir, 512).expect("load qwen4exp");

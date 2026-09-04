@@ -488,7 +488,6 @@ impl GpuQwen35 {
             }
             None => plan.pool_blocks,
         };
-        let pool_blocks: Option<u32> = Some(pool_block_count as u32);
         let pool_active = paged;
         // full-attn K (and V) store per layer. One expression for every mode:
         // pool mode gets the planned shared budget; dense identity gets a plan
@@ -526,7 +525,7 @@ impl GpuQwen35 {
         //     attn_splits is always 1 -> the single-pass paged kernels cover
         //     decode; the split/GQA-fused paged path (≥128 SM) is P3b.
         let (d_block_tables, pool, tables, block_table_host) = if pool_active {
-            let n = pool_blocks.expect("pool_active implies pool_blocks");
+            let n = pool_block_count as u32;
             let gb = (n as f64
                 * BLOCK_TOKENS as f64
                 * kv_dim as f64
@@ -879,15 +878,17 @@ impl GpuQwen35 {
         if self.batch.as_ref().expect("batch").pool.is_none() {
             return Ok(());
         }
-        let before = self.batch.as_ref().unwrap().tables[slot].blocks().len();
+        let before = self.batch.as_ref().expect("batch enabled").tables[slot]
+            .blocks()
+            .len();
         // Grow the slot's table from the pool. On exhaustion, evict an LRU cached
         // prefix - its pages return to the pool (blocks a live slot still holds
         // survive on refcount) - and retry; when the tree is dry, surface
         // PoolExhausted for the scheduler to preempt.
         loop {
             let grew = {
-                let bs = self.batch.as_mut().unwrap();
-                let pool = bs.pool.as_mut().unwrap();
+                let bs = self.batch.as_mut().expect("batch enabled");
+                let pool = bs.pool.as_mut().expect("pool checked above");
                 bs.tables[slot].ensure(upto_pos, pool).is_ok()
             };
             if grew {
@@ -898,7 +899,7 @@ impl GpuQwen35 {
                 let state_bytes;
                 let ckpt_base;
                 {
-                    let bs = self.batch.as_ref().unwrap();
+                    let bs = self.batch.as_ref().expect("batch enabled");
                     state_bytes = (bs.state_ckpt_f32 * 4) as u64;
                     ckpt_base = bs.d_state_pool.as_ref().map(|sp| {
                         use cudarc::driver::DevicePtr;
@@ -906,8 +907,8 @@ impl GpuQwen35 {
                         pp
                     });
                 }
-                let bs = self.batch.as_mut().unwrap();
-                let pool = bs.pool.as_mut().unwrap();
+                let bs = self.batch.as_mut().expect("batch enabled");
+                let pool = bs.pool.as_mut().expect("pool checked above");
                 match (bs.tier.as_mut(), bs.paged_prefix.as_mut()) {
                     (Some(tier), Some(pr)) => {
                         // tier-aware shed: closing runs (and their DeltaNet
@@ -933,8 +934,8 @@ impl GpuQwen35 {
                 return Err(GpuModelError::PoolExhausted);
             }
         }
-        let bs = self.batch.as_mut().unwrap();
-        let pool = bs.pool.as_mut().unwrap();
+        let bs = self.batch.as_mut().expect("batch enabled");
+        let pool = bs.pool.as_mut().expect("pool checked above");
         let (free, cap) = (pool.free_blocks(), pool.capacity());
         let blocks = bs.tables[slot].blocks().to_vec();
         if blocks.len() > before {
@@ -1022,7 +1023,7 @@ impl GpuQwen35 {
         let state_elems = self.n_v_heads * self.state_size * self.state_size;
         let win_elems = (self.conv_k - 1) * self.conv_dim;
         let n_layers = self.n_layers;
-        let bs = self.batch.as_mut().unwrap();
+        let bs = self.batch.as_mut().ok_or(GpuModelError::BatchDisabled)?;
         let Some(sp) = bs.d_state_pool.as_ref() else {
             return Ok(());
         };
@@ -1084,7 +1085,7 @@ impl GpuQwen35 {
         idx: u32,
     ) -> Result<(), GpuModelError> {
         let exec = self.exec.clone();
-        let bs = self.batch.as_mut().unwrap();
+        let bs = self.batch.as_mut().ok_or(GpuModelError::BatchDisabled)?;
         let n = bs.state_ckpt_f32;
         let Some(sp) = bs.d_state_pool.as_mut() else {
             return Ok(());
@@ -1105,7 +1106,7 @@ impl GpuQwen35 {
         let state_elems = self.n_v_heads * self.state_size * self.state_size;
         let win_elems = (self.conv_k - 1) * self.conv_dim;
         let n_layers = self.n_layers;
-        let bs = self.batch.as_mut().unwrap();
+        let bs = self.batch.as_mut().ok_or(GpuModelError::BatchDisabled)?;
         let Some(sp) = bs.d_state_pool.as_ref() else {
             return Ok(());
         };
@@ -1748,13 +1749,13 @@ impl GpuQwen35 {
         for &(_, slot, _) in &shares {
             self.zero_slot_state(slot)?;
             self.last_reused[slot] = 0;
-            if self.batch.as_ref().unwrap().pool.is_some() {
-                let bs = self.batch.as_mut().unwrap();
-                let pool = bs.pool.as_mut().unwrap();
+            if self.batch.as_ref().expect("batch enabled").pool.is_some() {
+                let bs = self.batch.as_mut().expect("batch enabled");
+                let pool = bs.pool.as_mut().expect("pool checked above");
                 bs.tables[slot].clear(pool);
             }
         }
-        if self.batch.as_ref().unwrap().pool.is_some() {
+        if self.batch.as_ref().expect("batch enabled").pool.is_some() {
             for &(_, slot, take) in &shares {
                 // graph pads append KV up to bucket-1 (overwritten by decode
                 // before first attended) - back those positions too
@@ -1829,7 +1830,7 @@ impl GpuQwen35 {
         } = self
             .batch
             .as_mut()
-            .unwrap()
+            .expect("batch enabled")
             .pf_bufs
             .take()
             .expect("pf bufs present");
@@ -2044,11 +2045,7 @@ impl GpuQwen35 {
         // persistent buffer re-uploaded per replay); non-qualifying spans
         // keep the loop. Kill: PADDOCK_NO_PF7_VL (PADDOCK_NO_PF7 kills both
         // pf7 forms pack-side).
-        let attn_g = if n_kv_heads > 0 {
-            n_heads / n_kv_heads
-        } else {
-            0
-        };
+        let attn_g = n_heads.checked_div(n_kv_heads).unwrap_or(0);
         let mut pf_vl_share = vec![false; shares.len()];
         let d_pf_attn_items: Option<(cudarc::driver::CudaSlice<u32>, usize)> = if !graph_ok
             && mm.is_none()
@@ -2278,7 +2275,7 @@ impl GpuQwen35 {
                                     nqkv,
                                     r,
                                 )?;
-                                let bt = bs.d_block_tables.as_ref().unwrap();
+                                let bt = bs.d_block_tables.as_ref().expect("paged block tables");
                                 let bps = bs.blocks_per_slot;
                                 exec.q36_qkg_nra_rows(
                                     &sc.d_qg,
@@ -2290,8 +2287,8 @@ impl GpuQwen35 {
                                     &w.k_norm.buf,
                                     &mut sc.d_qn,
                                     &mut sc.d_gate,
-                                    bs.kv_k[li].as_mut().unwrap(),
-                                    bs.kv_v[li].as_mut().unwrap(),
+                                    bs.kv_k[li].as_mut().expect("full-attn layer KV"),
+                                    bs.kv_v[li].as_mut().expect("full-attn layer KV"),
                                     &d_pos,
                                     Some(&d_slots),
                                     &d_mrope,
@@ -2319,7 +2316,7 @@ impl GpuQwen35 {
                                 if qnf {
                                     let nqkv = w.wq.dims()[1] + w.wk.dims()[1] + w.wv.dims()[1];
                                     exec.f8_gemm_w8(
-                                        l8.wq.as_ref().unwrap(),
+                                        l8.wq.as_ref().expect("full-attn W8 qkv plane"),
                                         0,
                                         &sc.d_pxq,
                                         &sc.d_exs,
@@ -2328,7 +2325,8 @@ impl GpuQwen35 {
                                         nqkv,
                                         r,
                                     )?;
-                                    let bt = bs.d_block_tables.as_ref().unwrap();
+                                    let bt =
+                                        bs.d_block_tables.as_ref().expect("paged block tables");
                                     let bps = bs.blocks_per_slot;
                                     exec.q36_qkg_nra_rows(
                                         &sc.d_qg,
@@ -2340,8 +2338,8 @@ impl GpuQwen35 {
                                         &w.k_norm.buf,
                                         &mut sc.d_qn,
                                         &mut sc.d_gate,
-                                        bs.kv_k[li].as_mut().unwrap(),
-                                        bs.kv_v[li].as_mut().unwrap(),
+                                        bs.kv_k[li].as_mut().expect("full-attn layer KV"),
+                                        bs.kv_v[li].as_mut().expect("full-attn layer KV"),
                                         &d_pos,
                                         Some(&d_slots),
                                         &d_mrope,
@@ -2359,7 +2357,7 @@ impl GpuQwen35 {
                                     )?;
                                 } else {
                                     exec.f8_gemm_w8(
-                                        l8.wq.as_ref().unwrap(),
+                                        l8.wq.as_ref().expect("full-attn W8 qkv plane"),
                                         0,
                                         &sc.d_pxq,
                                         &sc.d_exs,
@@ -2377,7 +2375,7 @@ impl GpuQwen35 {
                                         head_dim,
                                     )?;
                                     exec.f8_gemm_w8(
-                                        l8.wq.as_ref().unwrap(),
+                                        l8.wq.as_ref().expect("full-attn W8 qkv plane"),
                                         w.wq.dims()[1],
                                         &sc.d_pxq,
                                         &sc.d_exs,
@@ -2387,7 +2385,7 @@ impl GpuQwen35 {
                                         r,
                                     )?;
                                     exec.f8_gemm_w8(
-                                        l8.wq.as_ref().unwrap(),
+                                        l8.wq.as_ref().expect("full-attn W8 qkv plane"),
                                         w.wq.dims()[1] + w.wk.dims()[1],
                                         &sc.d_pxq,
                                         &sc.d_exs,
@@ -2481,11 +2479,12 @@ impl GpuQwen35 {
                                     sections,
                                 )?;
                                 if bs.paged {
-                                    let bt = bs.d_block_tables.as_ref().unwrap();
+                                    let bt =
+                                        bs.d_block_tables.as_ref().expect("paged block tables");
                                     let bps = bs.blocks_per_slot;
                                     exec.kv_append_batch_paged(
                                         &sc.d_kn,
-                                        bs.kv_k[li].as_mut().unwrap(),
+                                        bs.kv_k[li].as_mut().expect("full-attn layer KV"),
                                         &d_pos,
                                         Some(&d_slots),
                                         bt,
@@ -2496,7 +2495,7 @@ impl GpuQwen35 {
                                     )?;
                                     exec.kv_append_batch_paged(
                                         &sc.d_v,
-                                        bs.kv_v[li].as_mut().unwrap(),
+                                        bs.kv_v[li].as_mut().expect("full-attn layer KV"),
                                         &d_pos,
                                         Some(&d_slots),
                                         bt,
@@ -2508,7 +2507,7 @@ impl GpuQwen35 {
                                 } else {
                                     exec.kv_append_batch(
                                         &sc.d_kn,
-                                        bs.kv_k[li].as_mut().unwrap(),
+                                        bs.kv_k[li].as_mut().expect("full-attn layer KV"),
                                         &d_pos,
                                         Some(&d_slots),
                                         kv_dim,
@@ -2518,7 +2517,7 @@ impl GpuQwen35 {
                                     )?;
                                     exec.kv_append_batch(
                                         &sc.d_v,
-                                        bs.kv_v[li].as_mut().unwrap(),
+                                        bs.kv_v[li].as_mut().expect("full-attn layer KV"),
                                         &d_pos,
                                         Some(&d_slots),
                                         kv_dim,
@@ -2540,14 +2539,14 @@ impl GpuQwen35 {
                             if let Some((it, n_tiles)) = d_pf_attn_items.as_ref() {
                                 exec.attn_prefill_f16_paged_vl(
                                     &sc.d_qn,
-                                    bs.kv_k[li].as_ref().unwrap(),
-                                    bs.kv_v[li].as_ref().unwrap(),
+                                    bs.kv_k[li].as_ref().expect("full-attn layer KV"),
+                                    bs.kv_v[li].as_ref().expect("full-attn layer KV"),
                                     sinks,
                                     &mut sc.d_attn,
                                     &d_pos,
                                     it,
                                     *n_tiles,
-                                    bs.d_block_tables.as_ref().unwrap(),
+                                    bs.d_block_tables.as_ref().expect("paged block tables"),
                                     bs.blocks_per_slot,
                                     n_heads,
                                     n_kv_heads,
@@ -2595,8 +2594,8 @@ impl GpuQwen35 {
                                     prefill_attn(
                                         &exec,
                                         &d_pf_qn,
-                                        bs.kv_k[li].as_ref().unwrap(),
-                                        bs.kv_v[li].as_ref().unwrap(),
+                                        bs.kv_k[li].as_ref().expect("full-attn layer KV"),
+                                        bs.kv_v[li].as_ref().expect("full-attn layer KV"),
                                         sinks,
                                         &mut d_pf_attn,
                                         &d_seg_bound,
@@ -2640,14 +2639,14 @@ impl GpuQwen35 {
                                     // (bit-identical - same kernel, offset pointers).
                                     exec.attn_prefill_f16_paged_at(
                                         &sc.d_qn,
-                                        bs.kv_k[li].as_ref().unwrap(),
-                                        bs.kv_v[li].as_ref().unwrap(),
+                                        bs.kv_k[li].as_ref().expect("full-attn layer KV"),
+                                        bs.kv_v[li].as_ref().expect("full-attn layer KV"),
                                         sinks,
                                         &mut sc.d_attn,
                                         &d_pos,
                                         &d_slots,
                                         rb,
-                                        bs.d_block_tables.as_ref().unwrap(),
+                                        bs.d_block_tables.as_ref().expect("paged block tables"),
                                         bs.blocks_per_slot,
                                         n_heads,
                                         n_kv_heads,
@@ -2676,8 +2675,8 @@ impl GpuQwen35 {
                                 prefill_attn(
                                     &exec,
                                     &d_pf_qn,
-                                    bs.kv_k[li].as_ref().unwrap(),
-                                    bs.kv_v[li].as_ref().unwrap(),
+                                    bs.kv_k[li].as_ref().expect("full-attn layer KV"),
+                                    bs.kv_v[li].as_ref().expect("full-attn layer KV"),
                                     sinks,
                                     &mut d_pf_attn,
                                     &d_seg_pos,
@@ -2754,7 +2753,7 @@ impl GpuQwen35 {
                                 });
                                 if (mo16 || (mo16t && r >= 256)) && exec.has_f8_o16() {
                                     exec.f8_gemm_w8_o16(
-                                        l8.wo.as_ref().unwrap(),
+                                        l8.wo.as_ref().expect("full-attn W8 wo plane"),
                                         0,
                                         &sc.d_pxq,
                                         &sc.d_exs,
@@ -2766,7 +2765,7 @@ impl GpuQwen35 {
                                     mixer_b16 = true;
                                 } else {
                                     exec.f8_gemm_w8(
-                                        l8.wo.as_ref().unwrap(),
+                                        l8.wo.as_ref().expect("full-attn W8 wo plane"),
                                         0,
                                         &sc.d_pxq,
                                         &sc.d_exs,
@@ -2883,7 +2882,7 @@ impl GpuQwen35 {
                                     paddock_models::dev_var_os!("PADDOCK_NO_DNF").is_none()
                                 }) {
                                     dn_fused = exec.f8_gemm_w8_split(
-                                        l8.in_qkv.as_ref().unwrap(),
+                                        l8.in_qkv.as_ref().expect("DeltaNet W8 in_qkv plane"),
                                         &sc.d_pxq,
                                         &sc.d_exs,
                                         &mut sc.d_mixed,
@@ -2896,7 +2895,7 @@ impl GpuQwen35 {
                                 }
                                 if !dn_fused {
                                     exec.f8_gemm_w8(
-                                        l8.in_qkv.as_ref().unwrap(),
+                                        l8.in_qkv.as_ref().expect("DeltaNet W8 in_qkv plane"),
                                         0,
                                         &sc.d_pxq,
                                         &sc.d_exs,
@@ -3010,7 +3009,9 @@ impl GpuQwen35 {
                                     // With d_win_spans the whole pass commits below in one
                                     // conv_win_store_vl launch instead (bit-identical bytes).
                                     if d_win_spans.is_none() {
-                                        let win = bs.conv_win[li].as_mut().unwrap();
+                                        let win = bs.conv_win[li]
+                                            .as_mut()
+                                            .expect("DeltaNet layer window");
                                         if take >= km1 {
                                             exec.copy_region(
                                                 &sc.d_mixed,
@@ -3031,7 +3032,9 @@ impl GpuQwen35 {
                                     }
                                 } else {
                                     {
-                                        let win = bs.conv_win[li].as_ref().unwrap();
+                                        let win = bs.conv_win[li]
+                                            .as_ref()
+                                            .expect("DeltaNet layer window");
                                         assert!(
                                             (km1 + take) * conv_dim <= bs.d_conv_ext.len(),
                                             "resumed span {take} rows outgrew the conv ext staging"
@@ -3067,7 +3070,9 @@ impl GpuQwen35 {
                                         take * conv_dim,
                                     )?;
                                     {
-                                        let win = bs.conv_win[li].as_mut().unwrap();
+                                        let win = bs.conv_win[li]
+                                            .as_mut()
+                                            .expect("DeltaNet layer window");
                                         exec.copy_region(
                                             &bs.d_conv_ext,
                                             take * conv_dim,
@@ -3080,7 +3085,7 @@ impl GpuQwen35 {
                                 rb += take;
                             }
                             if let Some(n_ws) = d_win_spans {
-                                let win = bs.conv_win[li].as_mut().unwrap();
+                                let win = bs.conv_win[li].as_mut().expect("DeltaNet layer window");
                                 exec.conv_win_store_vl(
                                     &sc.d_mixed,
                                     &d_win_buf,
@@ -3199,7 +3204,7 @@ impl GpuQwen35 {
                                             &sc.d_dv,
                                             &sc.d_g,
                                             &sc.d_beta,
-                                            bs.recur[li].as_mut().unwrap(),
+                                            bs.recur[li].as_mut().expect("DeltaNet layer state"),
                                             off,
                                             &mut sc.d_dattn,
                                             rb,
@@ -3219,7 +3224,7 @@ impl GpuQwen35 {
                                             &sc.d_dv,
                                             &sc.d_g,
                                             &sc.d_beta,
-                                            bs.recur[li].as_mut().unwrap(),
+                                            bs.recur[li].as_mut().expect("DeltaNet layer state"),
                                             off,
                                             &mut sc.d_dattn,
                                             rb,
@@ -3271,7 +3276,7 @@ impl GpuQwen35 {
                                             &d_pf_dv,
                                             &d_pf_g,
                                             &d_pf_beta,
-                                            bs.recur[li].as_mut().unwrap(),
+                                            bs.recur[li].as_mut().expect("DeltaNet layer state"),
                                             off,
                                             &mut d_pf_dattn,
                                             &mut sc.d_dnc_dw,
@@ -3290,7 +3295,7 @@ impl GpuQwen35 {
                                             &d_pf_g,
                                             &d_pf_beta,
                                             None,
-                                            bs.recur[li].as_mut().unwrap(),
+                                            bs.recur[li].as_mut().expect("DeltaNet layer state"),
                                             off,
                                             None,
                                             &mut d_pf_dattn,
@@ -3319,7 +3324,7 @@ impl GpuQwen35 {
                                         &sc.d_dv,
                                         &sc.d_g,
                                         &sc.d_beta,
-                                        bs.recur[li].as_mut().unwrap(),
+                                        bs.recur[li].as_mut().expect("DeltaNet layer state"),
                                         &mut sc.d_dattn,
                                         &mut sc.d_dnc_dw,
                                         &mut sc.d_dnc_du,
@@ -3341,7 +3346,7 @@ impl GpuQwen35 {
                                         &sc.d_dv,
                                         &sc.d_g,
                                         &sc.d_beta,
-                                        bs.recur[li].as_mut().unwrap(),
+                                        bs.recur[li].as_mut().expect("DeltaNet layer state"),
                                         &mut sc.d_dattn,
                                         &mut sc.d_dnc_dw,
                                         &mut sc.d_dnc_du,
@@ -3366,7 +3371,7 @@ impl GpuQwen35 {
                                     &sc.d_g,
                                     &sc.d_beta,
                                     &d_items_buf,
-                                    bs.recur[li].as_mut().unwrap(),
+                                    bs.recur[li].as_mut().expect("DeltaNet layer state"),
                                     &mut sc.d_dattn,
                                     None,
                                     None,
@@ -3398,7 +3403,7 @@ impl GpuQwen35 {
                             if let Some(l8) = lw8 {
                                 if !dn_fused {
                                     exec.f8_gemm_w8(
-                                        l8.in_qkv.as_ref().unwrap(),
+                                        l8.in_qkv.as_ref().expect("DeltaNet W8 in_qkv plane"),
                                         w.in_qkv.dims()[1],
                                         &sc.d_pxq,
                                         &sc.d_exs,
@@ -3500,7 +3505,7 @@ impl GpuQwen35 {
                                 });
                                 if (mo16 || (mo16t && r >= 256)) && exec.has_f8_o16() {
                                     exec.f8_gemm_w8_o16(
-                                        l8.out_w.as_ref().unwrap(),
+                                        l8.out_w.as_ref().expect("DeltaNet W8 out_w plane"),
                                         0,
                                         &sc.d_pxq,
                                         &sc.d_exs,
@@ -3512,7 +3517,7 @@ impl GpuQwen35 {
                                     mixer_b16 = true;
                                 } else {
                                     exec.f8_gemm_w8(
-                                        l8.out_w.as_ref().unwrap(),
+                                        l8.out_w.as_ref().expect("DeltaNet W8 out_w plane"),
                                         0,
                                         &sc.d_pxq,
                                         &sc.d_exs,
@@ -4243,7 +4248,7 @@ impl GpuQwen35 {
         // return the persistent pass buffers. The pass is
         // host-synchronized by the logits readback above, so nothing queued
         // still reads them.
-        self.batch.as_mut().unwrap().pf_bufs = Some(PfPassBufs {
+        self.batch.as_mut().expect("batch enabled").pf_bufs = Some(PfPassBufs {
             d_pf_dq,
             d_pf_dk,
             d_pf_dv,
@@ -4306,22 +4311,22 @@ impl GpuQwen35 {
             let drv2 = |e: cudarc::driver::DriverError| crate::gpu::from_driver(e);
             let mut rb = 0usize;
             for &(oi, slot, take) in &shares {
-                let in_range = slot < self.spec_batch.as_ref().unwrap().alloc_batch;
+                let in_range = slot < self.spec_batch.as_ref().expect("spec enabled").alloc_batch;
                 if in_range && take <= warm_max {
                     let zeros = vec![0f32; embd_w];
                     {
-                        let sb = self.spec_batch.as_mut().unwrap();
+                        let sb = self.spec_batch.as_mut().expect("spec enabled");
                         let mut v = sb.pending_h.slice_mut(slot * embd_w..(slot + 1) * embd_w);
                         self.exec.stream.memcpy_htod(&zeros, &mut v).map_err(drv2)?;
                     }
                     self.mtp_warm_slot(slot, &items[oi].1, 0, rb)?;
-                    let sb = self.spec_batch.as_mut().unwrap();
+                    let sb = self.spec_batch.as_mut().expect("spec enabled");
                     sb.pos[slot] = take;
                     sb.mtp_warm[slot] = true;
                     sb.mtp_toks[slot].clear();
                     sb.mtp_toks[slot].extend_from_slice(&items[oi].1[..take]);
                 } else if in_range {
-                    self.spec_batch.as_mut().unwrap().mtp_warm[slot] = false;
+                    self.spec_batch.as_mut().expect("spec enabled").mtp_warm[slot] = false;
                 }
                 // padded row stride under a captured pass (identity eager)
                 rb += wtake(take);
@@ -4432,13 +4437,16 @@ impl GpuQwen35 {
         if self.lane_swapped || self.overlap_exec.is_none() {
             return f(self);
         }
-        let lane = self.overlap_exec.take().unwrap();
+        let lane = self.overlap_exec.take().expect("lane checked above");
         let main = std::mem::replace(&mut self.exec, lane);
         self.overlap_exec = Some(main);
         self.lane_swapped = true;
         let r = f(self);
         self.lane_swapped = false;
-        let lane = std::mem::replace(&mut self.exec, self.overlap_exec.take().unwrap());
+        let lane = std::mem::replace(
+            &mut self.exec,
+            self.overlap_exec.take().expect("main lane parked"),
+        );
         self.overlap_exec = Some(lane);
         r
     }
@@ -5022,11 +5030,12 @@ impl GpuQwen35 {
         if nb == 0 {
             return Ok(());
         }
-        let blocks: Vec<u32> = self.batch.as_ref().unwrap().tables[slot].blocks()[..nb].to_vec();
+        let blocks: Vec<u32> =
+            self.batch.as_ref().expect("batch enabled").tables[slot].blocks()[..nb].to_vec();
         let idx = {
-            let bs = self.batch.as_mut().unwrap();
-            let pool = bs.pool.as_mut().unwrap();
-            let radix = bs.paged_prefix.as_mut().unwrap();
+            let bs = self.batch.as_mut().expect("batch enabled");
+            let pool = bs.pool.as_mut().expect("prefix cache implies pool");
+            let radix = bs.paged_prefix.as_mut().expect("prefix cache built");
             radix.insert(toks, &blocks, pool);
             radix.attach_state(toks, cut)
         };
@@ -5440,11 +5449,11 @@ impl GpuQwen35 {
         }
         // P5 budget pool: back this tick's writes. Fresh spans clear+grow their
         // slot; resumed spans just grow; each decode row grows to its position.
-        if self.batch.as_ref().unwrap().pool.is_some() {
+        if self.batch.as_ref().expect("batch enabled").pool.is_some() {
             for &(_, slot, done, take, _, _) in &shares {
                 if done == 0 {
-                    let bs = self.batch.as_mut().unwrap();
-                    let pool = bs.pool.as_mut().unwrap();
+                    let bs = self.batch.as_mut().expect("batch enabled");
+                    let pool = bs.pool.as_mut().expect("pool checked above");
                     bs.tables[slot].clear(pool);
                 }
                 self.ensure_slot_blocks(slot, done + take - 1)?;
@@ -5607,9 +5616,7 @@ impl GpuQwen35 {
                         // under the decode band and their stage copies fold
                         // in-kernel - those pack; walk-bound spans stay per-span.
                         if snaps.len() <= 2 && len <= 128 {
-                            for x in run0..=sj {
-                                packed_share[x] = true;
-                            }
+                            packed_share[run0..=sj].fill(true);
                             any_snap |= !snaps.is_empty();
                             let (sat, sas) = snaps.first().copied().unwrap_or((0, 0));
                             let (sbt, sbs) = snaps.get(1).copied().unwrap_or((0, 0));
@@ -5753,7 +5760,7 @@ impl GpuQwen35 {
         };
 
         let mrope_delta_of = {
-            let bs = self.batch.as_ref().unwrap();
+            let bs = self.batch.as_ref().expect("batch enabled");
             let mut v = vec![0i64; r];
             for (i, &(k, _, _)) in decodes.iter().enumerate() {
                 v[i] = bs.mrope_delta[k];
@@ -5794,11 +5801,7 @@ impl GpuQwen35 {
                     && paddock_models::dev_var_os!("PADDOCK_NO_PF7").is_none()
             })
         };
-        let attn_g = if n_kv_heads > 0 {
-            n_heads / n_kv_heads
-        } else {
-            0
-        };
+        let attn_g = n_heads.checked_div(n_kv_heads).unwrap_or(0);
         let mut attn_vl_share = vec![false; shares.len()];
         let d_attn_items: Option<(CudaSlice<u32>, usize)> = if attn_vl_on
             && matches!(kv_dtype, KvDtype::Fp8E4m3)
@@ -5989,7 +5992,7 @@ impl GpuQwen35 {
                             nqkv,
                             r,
                         )?;
-                        let bt = bs.d_block_tables.as_ref().unwrap();
+                        let bt = bs.d_block_tables.as_ref().expect("paged block tables");
                         let bps = bs.blocks_per_slot;
                         exec.q36_qkg_nra_rows(
                             &sc.d_qg,
@@ -6001,8 +6004,8 @@ impl GpuQwen35 {
                             &w.k_norm.buf,
                             &mut sc.d_qn,
                             &mut sc.d_gate,
-                            bs.kv_k[li].as_mut().unwrap(),
-                            bs.kv_v[li].as_mut().unwrap(),
+                            bs.kv_k[li].as_mut().expect("full-attn layer KV"),
+                            bs.kv_v[li].as_mut().expect("full-attn layer KV"),
                             &d_pos,
                             Some(&d_slots),
                             &d_mrope,
@@ -6026,7 +6029,7 @@ impl GpuQwen35 {
                         if qnf {
                             let nqkv = w.wq.dims()[1] + w.wk.dims()[1] + w.wv.dims()[1];
                             exec.f8_gemm_w8(
-                                l8.wq.as_ref().unwrap(),
+                                l8.wq.as_ref().expect("full-attn W8 qkv plane"),
                                 0,
                                 &sc.d_pxq,
                                 &sc.d_exs,
@@ -6035,7 +6038,7 @@ impl GpuQwen35 {
                                 nqkv,
                                 r,
                             )?;
-                            let bt = bs.d_block_tables.as_ref().unwrap();
+                            let bt = bs.d_block_tables.as_ref().expect("paged block tables");
                             let bps = bs.blocks_per_slot;
                             exec.q36_qkg_nra_rows(
                                 &sc.d_qg,
@@ -6047,8 +6050,8 @@ impl GpuQwen35 {
                                 &w.k_norm.buf,
                                 &mut sc.d_qn,
                                 &mut sc.d_gate,
-                                bs.kv_k[li].as_mut().unwrap(),
-                                bs.kv_v[li].as_mut().unwrap(),
+                                bs.kv_k[li].as_mut().expect("full-attn layer KV"),
+                                bs.kv_v[li].as_mut().expect("full-attn layer KV"),
                                 &d_pos,
                                 Some(&d_slots),
                                 &d_mrope,
@@ -6066,7 +6069,7 @@ impl GpuQwen35 {
                             )?;
                         } else {
                             exec.f8_gemm_w8(
-                                l8.wq.as_ref().unwrap(),
+                                l8.wq.as_ref().expect("full-attn W8 qkv plane"),
                                 0,
                                 &sc.d_pxq,
                                 &sc.d_exs,
@@ -6084,7 +6087,7 @@ impl GpuQwen35 {
                                 head_dim,
                             )?;
                             exec.f8_gemm_w8(
-                                l8.wq.as_ref().unwrap(),
+                                l8.wq.as_ref().expect("full-attn W8 qkv plane"),
                                 w.wq.dims()[1],
                                 &sc.d_pxq,
                                 &sc.d_exs,
@@ -6094,7 +6097,7 @@ impl GpuQwen35 {
                                 r,
                             )?;
                             exec.f8_gemm_w8(
-                                l8.wq.as_ref().unwrap(),
+                                l8.wq.as_ref().expect("full-attn W8 qkv plane"),
                                 w.wq.dims()[1] + w.wk.dims()[1],
                                 &sc.d_pxq,
                                 &sc.d_exs,
@@ -6181,11 +6184,11 @@ impl GpuQwen35 {
                             sections,
                         )?;
                         if bs.paged {
-                            let bt = bs.d_block_tables.as_ref().unwrap();
+                            let bt = bs.d_block_tables.as_ref().expect("paged block tables");
                             let bps = bs.blocks_per_slot;
                             exec.kv_append_batch_paged(
                                 &sc.d_kn,
-                                bs.kv_k[li].as_mut().unwrap(),
+                                bs.kv_k[li].as_mut().expect("full-attn layer KV"),
                                 &d_pos,
                                 Some(&d_slots),
                                 bt,
@@ -6196,7 +6199,7 @@ impl GpuQwen35 {
                             )?;
                             exec.kv_append_batch_paged(
                                 &sc.d_v,
-                                bs.kv_v[li].as_mut().unwrap(),
+                                bs.kv_v[li].as_mut().expect("full-attn layer KV"),
                                 &d_pos,
                                 Some(&d_slots),
                                 bt,
@@ -6208,7 +6211,7 @@ impl GpuQwen35 {
                         } else {
                             exec.kv_append_batch(
                                 &sc.d_kn,
-                                bs.kv_k[li].as_mut().unwrap(),
+                                bs.kv_k[li].as_mut().expect("full-attn layer KV"),
                                 &d_pos,
                                 Some(&d_slots),
                                 kv_dim,
@@ -6218,7 +6221,7 @@ impl GpuQwen35 {
                             )?;
                             exec.kv_append_batch(
                                 &sc.d_v,
-                                bs.kv_v[li].as_mut().unwrap(),
+                                bs.kv_v[li].as_mut().expect("full-attn layer KV"),
                                 &d_pos,
                                 Some(&d_slots),
                                 kv_dim,
@@ -6242,8 +6245,8 @@ impl GpuQwen35 {
                         .as_ref()
                         .filter(|_| bs.paged)
                         .map(|bt| (bt, bs.blocks_per_slot));
-                    let kv_k = bs.kv_k[li].as_ref().unwrap();
-                    let kv_v = bs.kv_v[li].as_ref().unwrap();
+                    let kv_k = bs.kv_k[li].as_ref().expect("full-attn layer KV");
+                    let kv_v = bs.kv_v[li].as_ref().expect("full-attn layer KV");
                     if b > 0 {
                         attn_decode_dispatch(
                             &exec,
@@ -6428,7 +6431,7 @@ impl GpuQwen35 {
                         });
                         if (mo16 || (mo16t && r >= 256)) && exec.has_f8_o16() {
                             exec.f8_gemm_w8_o16(
-                                l8.wo.as_ref().unwrap(),
+                                l8.wo.as_ref().expect("full-attn W8 wo plane"),
                                 0,
                                 &sc.d_pxq,
                                 &sc.d_exs,
@@ -6440,7 +6443,7 @@ impl GpuQwen35 {
                             mixer_b16 = true;
                         } else {
                             exec.f8_gemm_w8(
-                                l8.wo.as_ref().unwrap(),
+                                l8.wo.as_ref().expect("full-attn W8 wo plane"),
                                 0,
                                 &sc.d_pxq,
                                 &sc.d_exs,
@@ -6546,7 +6549,7 @@ impl GpuQwen35 {
                             .get_or_init(|| paddock_models::dev_var_os!("PADDOCK_NO_DNF").is_none())
                         {
                             dn_fused = exec.f8_gemm_w8_split(
-                                l8.in_qkv.as_ref().unwrap(),
+                                l8.in_qkv.as_ref().expect("DeltaNet W8 in_qkv plane"),
                                 &sc.d_pxq,
                                 &sc.d_exs,
                                 &mut sc.d_mixed,
@@ -6559,7 +6562,7 @@ impl GpuQwen35 {
                         }
                         if !dn_fused {
                             exec.f8_gemm_w8(
-                                l8.in_qkv.as_ref().unwrap(),
+                                l8.in_qkv.as_ref().expect("DeltaNet W8 in_qkv plane"),
                                 0,
                                 &sc.d_pxq,
                                 &sc.d_exs,
@@ -6589,7 +6592,7 @@ impl GpuQwen35 {
                     // ticks), writing into its rows of d_conv.
                     if b > 0 {
                         exec.conv_step_slots(
-                            bs.conv_win[li].as_mut().unwrap(),
+                            bs.conv_win[li].as_mut().expect("DeltaNet layer window"),
                             &sc.d_mixed,
                             &w.conv_w.buf,
                             &mut sc.d_conv,
@@ -6639,7 +6642,7 @@ impl GpuQwen35 {
                                     conv_k,
                                 )?;
                             }
-                            let win = bs.conv_win[li].as_mut().unwrap();
+                            let win = bs.conv_win[li].as_mut().expect("DeltaNet layer window");
                             if take >= km1 {
                                 exec.copy_region(
                                     &sc.d_mixed,
@@ -6661,7 +6664,7 @@ impl GpuQwen35 {
                             // resumed span: the window carries real history -
                             // the ext build stays (a window-aware conv kernel
                             // would be the next cut)
-                            let win = bs.conv_win[li].as_ref().unwrap();
+                            let win = bs.conv_win[li].as_ref().expect("DeltaNet layer window");
                             assert!(
                                 (km1 + take) * conv_dim <= bs.d_conv_ext.len(),
                                 "resumed span {take} rows outgrew the conv ext staging"
@@ -6689,7 +6692,7 @@ impl GpuQwen35 {
                                 rb * conv_dim,
                                 take * conv_dim,
                             )?;
-                            let win = bs.conv_win[li].as_mut().unwrap();
+                            let win = bs.conv_win[li].as_mut().expect("DeltaNet layer window");
                             exec.copy_region(
                                 &bs.d_conv_ext,
                                 take * conv_dim,
@@ -6719,7 +6722,7 @@ impl GpuQwen35 {
                             // the tail share (next iteration) overwrites it
                             let dst = lin_ord[li] * (state_elems + win_elems) + state_elems;
                             exec.copy_region(
-                                bs.conv_win[li].as_ref().unwrap(),
+                                bs.conv_win[li].as_ref().expect("DeltaNet layer window"),
                                 woff,
                                 &mut bs.d_ckpt_stage[stg],
                                 dst,
@@ -6845,7 +6848,7 @@ impl GpuQwen35 {
                             &sc.d_g,
                             &sc.d_beta,
                             Some(&d_slots),
-                            bs.recur[li].as_mut().unwrap(),
+                            bs.recur[li].as_mut().expect("DeltaNet layer state"),
                             0,
                             None,
                             &mut sc.d_dattn,
@@ -6887,7 +6890,7 @@ impl GpuQwen35 {
                                 &sc.d_dv,
                                 &sc.d_g,
                                 &sc.d_beta,
-                                bs.recur[li].as_mut().unwrap(),
+                                bs.recur[li].as_mut().expect("DeltaNet layer state"),
                                 off,
                                 &mut sc.d_dattn,
                                 rb,
@@ -6907,7 +6910,7 @@ impl GpuQwen35 {
                                 &sc.d_dv,
                                 &sc.d_g,
                                 &sc.d_beta,
-                                bs.recur[li].as_mut().unwrap(),
+                                bs.recur[li].as_mut().expect("DeltaNet layer state"),
                                 off,
                                 &mut sc.d_dattn,
                                 rb,
@@ -6926,7 +6929,7 @@ impl GpuQwen35 {
                             // seam IN-KERNEL instead.
                             let dst = lin_ord[li] * (state_elems + win_elems);
                             exec.copy_region(
-                                bs.recur[li].as_ref().unwrap(),
+                                bs.recur[li].as_ref().expect("DeltaNet layer state"),
                                 slot * st_copy,
                                 &mut bs.d_ckpt_stage[stg],
                                 dst,
@@ -6945,7 +6948,7 @@ impl GpuQwen35 {
                             &sc.d_dv,
                             &sc.d_g,
                             &sc.d_beta,
-                            bs.recur[li].as_mut().unwrap(),
+                            bs.recur[li].as_mut().expect("DeltaNet layer state"),
                             &mut sc.d_dattn,
                             &mut sc.d_dnc_dw,
                             &mut sc.d_dnc_du,
@@ -6969,7 +6972,7 @@ impl GpuQwen35 {
                             {
                                 let dst = lin_ord[li] * (state_elems + win_elems);
                                 exec.copy_region(
-                                    bs.recur[li].as_ref().unwrap(),
+                                    bs.recur[li].as_ref().expect("DeltaNet layer state"),
                                     slot2 * st_copy,
                                     &mut bs.d_ckpt_stage[stg],
                                     dst,
@@ -6995,7 +6998,7 @@ impl GpuQwen35 {
                             &sc.d_g,
                             &sc.d_beta,
                             d_items,
-                            bs.recur[li].as_mut().unwrap(),
+                            bs.recur[li].as_mut().expect("DeltaNet layer state"),
                             &mut sc.d_dattn,
                             snap0,
                             snap1,
@@ -7009,7 +7012,7 @@ impl GpuQwen35 {
                         // (alpha/beta read f32 xn directly, nothing clobbers it)
                         if !dn_fused {
                             exec.f8_gemm_w8(
-                                l8.in_qkv.as_ref().unwrap(),
+                                l8.in_qkv.as_ref().expect("DeltaNet W8 in_qkv plane"),
                                 w.in_qkv.dims()[1],
                                 &sc.d_pxq,
                                 &sc.d_exs,
@@ -7110,7 +7113,7 @@ impl GpuQwen35 {
                         });
                         if (mo16 || (mo16t && r >= 256)) && exec.has_f8_o16() {
                             exec.f8_gemm_w8_o16(
-                                l8.out_w.as_ref().unwrap(),
+                                l8.out_w.as_ref().expect("DeltaNet W8 out_w plane"),
                                 0,
                                 &sc.d_pxq,
                                 &sc.d_exs,
@@ -7122,7 +7125,7 @@ impl GpuQwen35 {
                             mixer_b16 = true;
                         } else {
                             exec.f8_gemm_w8(
-                                l8.out_w.as_ref().unwrap(),
+                                l8.out_w.as_ref().expect("DeltaNet W8 out_w plane"),
                                 0,
                                 &sc.d_pxq,
                                 &sc.d_exs,
@@ -8175,7 +8178,7 @@ impl GpuQwen35 {
             let mut rb = b;
             for &(idx, slot, done, take, _, _) in &shares {
                 let (in_range, chain_ok) = {
-                    let sb = self.spec_batch.as_ref().unwrap();
+                    let sb = self.spec_batch.as_ref().expect("spec enabled");
                     let ir = slot < sb.alloc_batch;
                     let within = done + take <= warm_max;
                     (
@@ -8186,7 +8189,7 @@ impl GpuQwen35 {
                 if chain_ok {
                     if done == 0 {
                         let zeros = vec![0f32; embd_w];
-                        let sb = self.spec_batch.as_mut().unwrap();
+                        let sb = self.spec_batch.as_mut().expect("spec enabled");
                         let mut v = sb.pending_h.slice_mut(slot * embd_w..(slot + 1) * embd_w);
                         self.exec
                             .stream
@@ -8195,13 +8198,13 @@ impl GpuQwen35 {
                     }
                     let toks: Vec<u32> = self.chunked[idx].tokens[done..done + take].to_vec();
                     self.mtp_warm_slot(slot, &toks, done, rb)?;
-                    let sb = self.spec_batch.as_mut().unwrap();
+                    let sb = self.spec_batch.as_mut().expect("spec enabled");
                     sb.pos[slot] = done + take;
                     sb.mtp_warm[slot] = true;
                     sb.mtp_toks[slot].truncate(done);
                     sb.mtp_toks[slot].extend_from_slice(&toks);
                 } else if in_range {
-                    self.spec_batch.as_mut().unwrap().mtp_warm[slot] = false;
+                    self.spec_batch.as_mut().expect("spec enabled").mtp_warm[slot] = false;
                 }
                 rb += take;
             }
@@ -8213,7 +8216,13 @@ impl GpuQwen35 {
         // snapshot is taken from the slot at the span boundary (state now sits at
         // `done+take` after the exit sync above). Only full pages / block-aligned
         // checkpoints are cached - the exact contract PagedRadix expects.
-        if self.batch.as_ref().unwrap().paged_prefix.is_some() {
+        if self
+            .batch
+            .as_ref()
+            .ok_or(GpuModelError::BatchDisabled)?
+            .paged_prefix
+            .is_some()
+        {
             let stage_of = Self::fused_stage_map(&shares);
             for (sidx, &(idx, slot, done, take, finishing, _)) in shares.iter().enumerate() {
                 let t_len = self.chunked[idx].tokens.len();
@@ -8221,19 +8230,19 @@ impl GpuQwen35 {
                 let landed = done + take;
                 if !finishing && landed > 0 && cuts.contains(&landed) {
                     let toks: Vec<u32> = self.chunked[idx].tokens[..landed].to_vec();
-                    let blocks: Vec<u32> = self.batch.as_ref().unwrap().tables[slot].blocks()
-                        [..landed / BLOCK_TOKENS]
+                    let blocks: Vec<u32> = self.batch.as_ref().expect("batch enabled").tables[slot]
+                        .blocks()[..landed / BLOCK_TOKENS]
                         .to_vec();
                     let si = {
-                        let bs = self.batch.as_mut().unwrap();
-                        let pool = bs.pool.as_mut().unwrap();
+                        let bs = self.batch.as_mut().expect("batch enabled");
+                        let pool = bs.pool.as_mut().expect("prefix cache implies pool");
                         bs.paged_prefix
                             .as_mut()
-                            .unwrap()
+                            .expect("prefix cache checked above")
                             .insert(&toks, &blocks, pool);
                         bs.paged_prefix
                             .as_mut()
-                            .unwrap()
+                            .expect("prefix cache checked above")
                             .attach_state(&toks, landed)
                     };
                     if let Some(si) = si {
@@ -8257,10 +8266,10 @@ impl GpuQwen35 {
                         let (w, s, r) = self
                             .batch
                             .as_ref()
-                            .unwrap()
+                            .expect("batch enabled")
                             .paged_prefix
                             .as_ref()
-                            .unwrap()
+                            .expect("prefix cache checked above")
                             .state_stats();
                         tracing::info!(
                             "qwen35-chunk-publish: t_len {t_len} landed {landed} -> {} \
@@ -8273,13 +8282,15 @@ impl GpuQwen35 {
                     if full > 0 {
                         let toks: Vec<u32> =
                             self.chunked[idx].tokens[..full * BLOCK_TOKENS].to_vec();
-                        let blocks: Vec<u32> =
-                            self.batch.as_ref().unwrap().tables[slot].blocks()[..full].to_vec();
-                        let bs = self.batch.as_mut().unwrap();
-                        let pool = bs.pool.as_mut().unwrap();
+                        let blocks: Vec<u32> = self.batch.as_ref().expect("batch enabled").tables
+                            [slot]
+                            .blocks()[..full]
+                            .to_vec();
+                        let bs = self.batch.as_mut().expect("batch enabled");
+                        let pool = bs.pool.as_mut().expect("prefix cache implies pool");
                         bs.paged_prefix
                             .as_mut()
-                            .unwrap()
+                            .expect("prefix cache checked above")
                             .insert(&toks, &blocks, pool);
                     }
                 }
@@ -8365,7 +8376,13 @@ impl GpuQwen35 {
     /// length come from the device position buffer), so one capture replays at
     /// every position.
     fn ensure_batch_graph(&mut self, b: usize) -> Result<(), GpuModelError> {
-        if self.batch.as_ref().unwrap().graphs.contains_key(&b) {
+        if self
+            .batch
+            .as_ref()
+            .ok_or(GpuModelError::BatchDisabled)?
+            .graphs
+            .contains_key(&b)
+        {
             return Ok(());
         }
         if b > f8t_dec_bmax() {
@@ -8395,7 +8412,7 @@ impl GpuQwen35 {
             graph?.ok_or_else(|| GpuError::Driver("batch capture produced no graph".into()))?;
         self.batch
             .as_mut()
-            .unwrap()
+            .expect("batch enabled")
             .graphs
             .insert(b, SendGraph(graph));
         Ok(())
@@ -8558,9 +8575,9 @@ impl GpuQwen35 {
         // stream-ordered ahead of the graph replay below. Row i drives its
         // mapped slot (identity unless the pipe carries an explicit set).
         // No-op in identity/dense mode.
-        if self.batch.as_ref().unwrap().pool.is_some() {
+        if self.batch.as_ref().expect("batch enabled").pool.is_some() {
             let (pos0, slot_map) = {
-                let p = self.pipe.as_ref().unwrap();
+                let p = self.pipe.as_ref().expect("pipe active");
                 (p.pos0.clone(), p.slots.clone())
             };
             for (i, &p0) in pos0.iter().enumerate().take(b) {
@@ -8573,14 +8590,14 @@ impl GpuQwen35 {
         let fold_off = Self::samp_fold_off();
         let any_trunc = any5 || any6;
         let mrope = {
-            let p = self.pipe.as_ref().unwrap();
+            let p = self.pipe.as_ref().expect("pipe active");
             Self::pipe_mrope_host(&p.pos0, &p.delta, tick)
         };
         let drv = |e: cudarc::driver::DriverError| crate::gpu::from_driver(e);
-        let max_batch = self.batch.as_ref().unwrap().max_batch;
+        let max_batch = self.batch.as_ref().expect("batch enabled").max_batch;
         // sampler params into this tick's ring plane
         {
-            let bs = self.batch.as_mut().unwrap();
+            let bs = self.batch.as_mut().expect("batch enabled");
             let off = ring * max_batch * 4;
             let mut v = bs.d_pipe_par.slice_mut(off..off + b * 4);
             exec.stream.memcpy_htod(&par, &mut v).map_err(drv)?;
@@ -8592,26 +8609,26 @@ impl GpuQwen35 {
         // advance the DEVICE-dependent inputs from the previous ring's out plane
         if advance {
             let prev = ((tick + 1) % 2) as usize;
-            let bs = self.batch.as_mut().unwrap();
+            let bs = self.batch.as_mut().expect("batch enabled");
             let (out, tok, pos) = (&bs.d_pipe_out, &mut bs.d_tokens, &mut bs.d_pos);
             exec.pipe_advance(out, prev * max_batch, tok, pos, b)?;
         }
         // rebuild mrope (deterministic positions) - stream-ordered before the
         // replay, so the captured graph reads this tick's RoPE positions
         {
-            let bs = self.batch.as_mut().unwrap();
+            let bs = self.batch.as_mut().expect("batch enabled");
             let mut v = bs.d_mrope.slice_mut(0..4 * b);
             exec.stream.memcpy_htod(&mrope, &mut v).map_err(drv)?;
         }
         // replay the same per-B step graph the classic path uses
-        self.batch.as_ref().unwrap().graphs[&b]
+        self.batch.as_ref().expect("batch enabled").graphs[&b]
             .0
             .launch()
             .map_err(|e| GpuError::Driver(format!("pipe step graph launch: {e}")))?;
         // fused device sampling into this tick's out ring plane (folded:
         // launch only the chains this tick's row modes need)
         if any_base || fold_off {
-            let bs = self.batch.as_mut().unwrap();
+            let bs = self.batch.as_mut().expect("batch enabled");
             let (logits, par_buf, out) = (&bs.d_logits, &bs.d_pipe_par, &mut bs.d_pipe_out);
             exec.sample_rows_at(
                 logits,
@@ -8633,7 +8650,7 @@ impl GpuQwen35 {
             PIPE5.call_once(|| {
                 eprintln!("[trunc-pipe] engaged: b={b} (mode-5 rows in the decode pipe)");
             });
-            let bs = self.batch.as_mut().unwrap();
+            let bs = self.batch.as_mut().expect("batch enabled");
             let (logits, par_buf, tpar_buf) = (&bs.d_logits, &bs.d_pipe_par, &bs.d_pipe_tpar);
             if any5 || fold_off {
                 exec.sample_rows_t_at(
@@ -8663,7 +8680,7 @@ impl GpuQwen35 {
             }
         }
         let ev = exec.record_event()?;
-        self.pipe.as_mut().unwrap().ev[ring] = Some(ev);
+        self.pipe.as_mut().expect("pipe active").ev[ring] = Some(ev);
         Ok(())
     }
 
@@ -8734,7 +8751,7 @@ impl GpuQwen35 {
         self.ensure_scratch(b)?;
         self.ensure_batch_graph(b)?;
         let delta: Vec<i64> = {
-            let bs = self.batch.as_ref().unwrap();
+            let bs = self.batch.as_ref().expect("batch enabled");
             (0..b)
                 .map(|i| bs.mrope_delta[slots.map_or(i, |s| s[i] as usize)])
                 .collect()
@@ -8745,7 +8762,7 @@ impl GpuQwen35 {
         // them); d_slots is identity (pure decode) unless an explicit mapping
         // rides the whole pipe - written once here, restored at drain/abort.
         {
-            let bs = self.batch.as_mut().unwrap();
+            let bs = self.batch.as_mut().expect("batch enabled");
             let mut vt = bs.d_tokens.slice_mut(0..b);
             exec.stream.memcpy_htod(tokens, &mut vt).map_err(drv)?;
             let mut vp = bs.d_pos.slice_mut(0..b);
@@ -8793,16 +8810,20 @@ impl GpuQwen35 {
             (p.b, p.tick)
         };
         assert_eq!(plans.len(), b, "one plan per row");
-        self.pipe.as_mut().unwrap().tick = j + 1;
+        self.pipe.as_mut().expect("pipe active").tick = j + 1;
         if let Err(e) = self.pipe_launch_tick(plans, true) {
             self.pipe_abort();
             return Err(e);
         }
         let ring = (j % 2) as usize;
-        let max_batch = self.batch.as_ref().unwrap().max_batch;
+        let max_batch = self
+            .batch
+            .as_ref()
+            .ok_or(GpuModelError::BatchDisabled)?
+            .max_batch;
         let r = {
             let bs = self.batch.as_ref().ok_or(GpuModelError::BatchDisabled)?;
-            let ev = self.pipe.as_ref().unwrap().ev[ring]
+            let ev = self.pipe.as_ref().expect("pipe active").ev[ring]
                 .as_ref()
                 .expect("in-flight tick event");
             exec.to_host_u32_after(ev, &bs.d_pipe_out, ring * max_batch, b)
@@ -8843,7 +8864,7 @@ impl GpuQwen35 {
         // so following pure-decode ticks see row i -> slot i again.
         if st.slots.is_some() {
             let ident: Vec<u32> = (0..st.b as u32).collect();
-            let bs = self.batch.as_mut().unwrap();
+            let bs = self.batch.as_mut().expect("batch enabled");
             let mut v = bs.d_slots.slice_mut(0..st.b);
             let drv = |e: cudarc::driver::DriverError| crate::gpu::from_driver(e);
             exec.stream.memcpy_htod(&ident, &mut v).map_err(drv)?;
@@ -8905,13 +8926,13 @@ impl GpuQwen35 {
             assert_eq!(s.len(), b, "one slot per row");
         }
         assert!(self.batch.is_some(), "enable_batch first");
-        assert!(b >= 1 && b <= self.batch.as_ref().unwrap().max_batch);
+        assert!(b >= 1 && b <= self.batch.as_ref().expect("batch enabled").max_batch);
         self.ensure_scratch(b)?;
         let exec = self.exec.clone();
         let drv = |e: cudarc::driver::DriverError| crate::gpu::from_driver(e);
 
         {
-            let bs = self.batch.as_mut().unwrap();
+            let bs = self.batch.as_mut().expect("batch enabled");
             // mrope delta is per-SLOT: identity indexes by row i, slot-explicit
             // by the row's actual slot (text sequences carry delta 0 either way).
             let mrope_host: Vec<u32> = (0..4)
@@ -8947,7 +8968,7 @@ impl GpuQwen35 {
         // token it writes this step (positions[i]) before the (captured) compute
         // reads the device table. The upload is outside the graph, so growth is
         // replay-safe. No-op in identity/dense mode.
-        if self.batch.as_ref().unwrap().pool.is_some() {
+        if self.batch.as_ref().expect("batch enabled").pool.is_some() {
             for (i, &p) in positions.iter().enumerate() {
                 let slot = slots.map_or(i, |s| s[i] as usize);
                 self.ensure_slot_blocks(slot, p as usize)?;
@@ -8958,7 +8979,7 @@ impl GpuQwen35 {
         // grid-stable for a given B (loop bounds like the KV length come from the
         // device position buffer, exactly as the single-stream graph relies on).
         self.ensure_batch_graph(b)?;
-        self.batch.as_ref().unwrap().graphs[&b]
+        self.batch.as_ref().expect("batch enabled").graphs[&b]
             .0
             .launch()
             .map_err(|e| GpuError::Driver(format!("batch graph launch: {e}")))?;
@@ -8966,7 +8987,7 @@ impl GpuQwen35 {
         // so a following pure-decode tick sees row i -> slot i again.
         if slots.is_some() {
             let ident: Vec<u32> = (0..b as u32).collect();
-            let bs = self.batch.as_mut().unwrap();
+            let bs = self.batch.as_mut().expect("batch enabled");
             let mut v = bs.d_slots.slice_mut(0..b);
             exec.stream.memcpy_htod(&ident, &mut v).map_err(drv)?;
         }
@@ -9421,7 +9442,7 @@ impl GpuQwen35 {
                                 paddock_models::dev_var_os!("PADDOCK_NO_QNF_DEC").is_none()
                             });
                         if qnf_dec {
-                            let bt = bs.d_block_tables.as_ref().unwrap();
+                            let bt = bs.d_block_tables.as_ref().expect("paged block tables");
                             let bps = bs.blocks_per_slot;
                             exec.q36_qkg_nra_rows(
                                 fused,
@@ -9433,8 +9454,8 @@ impl GpuQwen35 {
                                 &w.k_norm.buf,
                                 &mut sc.d_qn,
                                 &mut sc.d_gate,
-                                bs.kv_k[li].as_mut().unwrap(),
-                                bs.kv_v[li].as_mut().unwrap(),
+                                bs.kv_k[li].as_mut().expect("full-attn layer KV"),
+                                bs.kv_v[li].as_mut().expect("full-attn layer KV"),
                                 &bs.d_pos,
                                 Some(&bs.d_slots),
                                 &bs.d_mrope,
@@ -9485,7 +9506,7 @@ impl GpuQwen35 {
                         }
                         f8t_wo = Some(wo_t);
                     } else if f8_qkv {
-                        let l8 = l8d.unwrap();
+                        let l8 = l8d.expect("f8_qkv checked above");
                         if !e4m3_norms {
                             exec.quantize_e4m3(&sc.d_xn, &mut sc.d_pxq, &mut sc.d_exs, b * embd)?;
                         }
@@ -9496,7 +9517,7 @@ impl GpuQwen35 {
                         // time) + row_slice x3
                         let fused = bs.d_gu_fused.as_mut().expect("qkv fused landing");
                         exec.f8d_gemm_mma_ks(
-                            l8.wq.as_ref().unwrap(),
+                            l8.wq.as_ref().expect("full-attn W8 qkv plane"),
                             w.wq.dims()[0],
                             nt,
                             &sc.d_pxq,
@@ -9592,11 +9613,11 @@ impl GpuQwen35 {
                             sections,
                         )?;
                         if bs.paged {
-                            let bt = bs.d_block_tables.as_ref().unwrap();
+                            let bt = bs.d_block_tables.as_ref().expect("paged block tables");
                             let bps = bs.blocks_per_slot;
                             exec.kv_append_batch_paged(
                                 &sc.d_kn,
-                                bs.kv_k[li].as_mut().unwrap(),
+                                bs.kv_k[li].as_mut().expect("full-attn layer KV"),
                                 &bs.d_pos,
                                 Some(&bs.d_slots),
                                 bt,
@@ -9607,7 +9628,7 @@ impl GpuQwen35 {
                             )?;
                             exec.kv_append_batch_paged(
                                 &sc.d_v,
-                                bs.kv_v[li].as_mut().unwrap(),
+                                bs.kv_v[li].as_mut().expect("full-attn layer KV"),
                                 &bs.d_pos,
                                 Some(&bs.d_slots),
                                 bt,
@@ -9619,7 +9640,7 @@ impl GpuQwen35 {
                         } else {
                             exec.kv_append_batch(
                                 &sc.d_kn,
-                                bs.kv_k[li].as_mut().unwrap(),
+                                bs.kv_k[li].as_mut().expect("full-attn layer KV"),
                                 &bs.d_pos,
                                 Some(&bs.d_slots),
                                 kv_dim,
@@ -9629,7 +9650,7 @@ impl GpuQwen35 {
                             )?;
                             exec.kv_append_batch(
                                 &sc.d_v,
-                                bs.kv_v[li].as_mut().unwrap(),
+                                bs.kv_v[li].as_mut().expect("full-attn layer KV"),
                                 &bs.d_pos,
                                 Some(&bs.d_slots),
                                 kv_dim,
@@ -9642,8 +9663,8 @@ impl GpuQwen35 {
                     attn_decode_dispatch(
                         &exec,
                         &sc.d_qn,
-                        bs.kv_k[li].as_ref().unwrap(),
-                        bs.kv_v[li].as_ref().unwrap(),
+                        bs.kv_k[li].as_ref().expect("full-attn layer KV"),
+                        bs.kv_v[li].as_ref().expect("full-attn layer KV"),
                         sinks,
                         &mut sc.d_attn_o,
                         &mut sc.d_attn_ml,
@@ -9878,7 +9899,7 @@ impl GpuQwen35 {
                     // slot intentionally None since the merge)
                     let f8_dn = !dn_fused_done && l8d.is_some_and(|l| l.in_qkv.is_some());
                     if f8_dn {
-                        let l8 = l8d.unwrap();
+                        let l8 = l8d.expect("f8_dn checked above");
                         if !e4m3_norms {
                             exec.quantize_e4m3(&sc.d_xn, &mut sc.d_pxq, &mut sc.d_exs, b * embd)?;
                         }
@@ -9888,7 +9909,7 @@ impl GpuQwen35 {
                         // One fused 16384-out GEMM (vLLM's DN merge; -48
                         // launches/tick) + row_slice split into mixed/z
                         exec.f8d_gemm_mma_ks(
-                            l8.in_qkv.as_ref().unwrap(),
+                            l8.in_qkv.as_ref().expect("DeltaNet W8 in_qkv plane"),
                             nin,
                             nc + nz_,
                             &sc.d_pxq,
@@ -9922,7 +9943,7 @@ impl GpuQwen35 {
                     if dn_strided {
                         let fused = bs.d_dn_fused.as_ref().expect("dn fused landing");
                         exec.conv_step_slots_s(
-                            bs.conv_win[li].as_mut().unwrap(),
+                            bs.conv_win[li].as_mut().expect("DeltaNet layer window"),
                             fused,
                             0,
                             dn_tot,
@@ -9935,7 +9956,7 @@ impl GpuQwen35 {
                         )?;
                     } else {
                         exec.conv_step_slots(
-                            bs.conv_win[li].as_mut().unwrap(),
+                            bs.conv_win[li].as_mut().expect("DeltaNet layer window"),
                             &sc.d_mixed,
                             &w.conv_w.buf,
                             &mut sc.d_conv,
@@ -10026,7 +10047,7 @@ impl GpuQwen35 {
                             &w.ssm_a.buf,
                             &w.dt_bias.buf,
                             Some(&bs.d_slots),
-                            bs.recur[li].as_mut().unwrap(),
+                            bs.recur[li].as_mut().expect("DeltaNet layer state"),
                             &mut sc.d_dattn,
                             b,
                             n_k_heads,
@@ -10042,7 +10063,7 @@ impl GpuQwen35 {
                             &sc.d_g,
                             &sc.d_beta,
                             Some(&bs.d_slots),
-                            bs.recur[li].as_mut().unwrap(),
+                            bs.recur[li].as_mut().expect("DeltaNet layer state"),
                             &mut sc.d_dattn,
                             b,
                             n_k_heads,
@@ -10067,7 +10088,7 @@ impl GpuQwen35 {
                             &sc.d_g,
                             &sc.d_beta,
                             Some(&bs.d_slots),
-                            bs.recur[li].as_mut().unwrap(),
+                            bs.recur[li].as_mut().expect("DeltaNet layer state"),
                             0,
                             None,
                             &mut sc.d_dattn,

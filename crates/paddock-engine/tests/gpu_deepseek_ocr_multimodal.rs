@@ -9,6 +9,8 @@
 //!    not all 7;
 //!  * the pool footprint still PINS at ⌈(907 + W)/16⌉ blocks after 200
 //!    generated tokens with the vision prefix in place.
+// Test code: a failed assumption stops the test where it happened.
+#![allow(clippy::unwrap_used)]
 
 mod common;
 
@@ -52,16 +54,20 @@ fn mmproj_path() -> Option<std::path::PathBuf> {
 fn read_u32s(p: &std::path::Path) -> Vec<u32> {
     std::fs::read(p)
         .unwrap_or_else(|e| panic!("{}: {e}", p.display()))
-        .chunks_exact(4)
-        .map(|c| u32::from_le_bytes(c.try_into().unwrap()))
+        .as_chunks::<4>()
+        .0
+        .iter()
+        .map(|c| u32::from_le_bytes(*c))
         .collect()
 }
 
 fn read_f32s(p: &std::path::Path) -> Vec<f32> {
     std::fs::read(p)
         .unwrap_or_else(|e| panic!("{}: {e}", p.display()))
-        .chunks_exact(4)
-        .map(|c| f32::from_le_bytes(c.try_into().unwrap()))
+        .as_chunks::<4>()
+        .0
+        .iter()
+        .map(|c| f32::from_le_bytes(*c))
         .collect()
 }
 

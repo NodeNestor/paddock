@@ -4,6 +4,9 @@
 //! busy% lies.
 //!
 //! Usage: GEMMA4_GGUF=... PADDOCK_PACK=... [R=1] [N=64] gemma4_decode_bench
+// A development probe: it runs on a box its author is looking at, and a
+// failure should stop it where it happened rather than be reported.
+#![allow(clippy::unwrap_used)]
 
 use std::sync::Arc;
 
@@ -82,9 +85,9 @@ fn main() {
             );
         }
     } else {
-        for slot in 0..r {
+        for (slot, s) in salted.iter().enumerate() {
             let t1 = std::time::Instant::now();
-            m.forward_prefill(slot, &salted[slot]).expect("prefill");
+            m.forward_prefill(slot, s).expect("prefill");
             eprintln!(
                 "prefill slot {slot}: {:.1} ms",
                 t1.elapsed().as_secs_f32() * 1000.0
@@ -108,9 +111,9 @@ fn main() {
         let s = m
             .forward_batch_sampled(&tokens, &positions, &plans)
             .expect("step");
-        for b in 0..r {
-            tokens[b] = s.ids[b];
-            positions[b] += 1;
+        tokens[..r].copy_from_slice(&s.ids[..r]);
+        for p in positions.iter_mut() {
+            *p += 1;
         }
     }
     let t0 = std::time::Instant::now();
@@ -118,9 +121,9 @@ fn main() {
         let s = m
             .forward_batch_sampled(&tokens, &positions, &plans)
             .expect("step");
-        for b in 0..r {
-            tokens[b] = s.ids[b];
-            positions[b] += 1;
+        tokens[..r].copy_from_slice(&s.ids[..r]);
+        for p in positions.iter_mut() {
+            *p += 1;
         }
     }
     let dt = t0.elapsed().as_secs_f32();

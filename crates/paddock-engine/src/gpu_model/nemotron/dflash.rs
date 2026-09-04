@@ -108,8 +108,10 @@ pub(crate) struct DflashState {
 
 fn bf16_to_f32(bytes: &[u8]) -> Vec<f32> {
     bytes
-        .chunks_exact(2)
-        .map(|c| f32::from_bits((u16::from_le_bytes([c[0], c[1]]) as u32) << 16))
+        .as_chunks::<2>()
+        .0
+        .iter()
+        .map(|c| f32::from_bits((u16::from_le_bytes(*c) as u32) << 16))
         .collect()
 }
 
@@ -121,7 +123,14 @@ impl GpuNemotron {
         let dir = if path.is_dir() {
             path.to_path_buf()
         } else {
-            path.parent().unwrap().to_path_buf()
+            path.parent()
+                .ok_or_else(|| {
+                    GpuModelError::Unsupported(format!(
+                        "dflash path has no parent directory: {}",
+                        path.display()
+                    ))
+                })?
+                .to_path_buf()
         };
         let cfg = NemotronDflashConfig::read(&dir)
             .map_err(|e| GpuModelError::Unsupported(format!("dflash config: {e}")))?;
@@ -469,9 +478,7 @@ impl GpuNemotron {
             && slot < st.feat.len()
         {
             let (s, e) = st.feat[slot];
-            if s == 0 && start <= e as usize && end as u32 > e {
-                st.feat[slot] = (0, end as u32);
-            } else if start == 0 {
+            if (s == 0 && start <= e as usize && end as u32 > e) || start == 0 {
                 st.feat[slot] = (0, end as u32);
             }
         }

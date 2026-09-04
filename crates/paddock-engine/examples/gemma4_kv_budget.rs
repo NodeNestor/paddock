@@ -2,6 +2,9 @@
 //! at a given context - the paged-SWA WindowRing's memory win made visible.
 //!
 //! Usage: GEMMA4_GGUF=... PADDOCK_PACK=... [MAX_CTX=8192] [ASK=32] gemma4_kv_budget
+// A development probe: it runs on a box its author is looking at, and a
+// failure should stop it where it happened rather than be reported.
+#![allow(clippy::unwrap_used)]
 
 use std::sync::Arc;
 

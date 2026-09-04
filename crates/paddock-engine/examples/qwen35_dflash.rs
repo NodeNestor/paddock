@@ -10,6 +10,9 @@
 //!   QWEN_DFLASH=/models/Qwen3.8-27B-DFlash2/Qwen3.8-27B-DFlash2-Q4_K_M.gguf \
 //!   PADDOCK_PACK=packs/cuda/build/pd-cuda-sm120.so \
 //!   cargo run --release --example qwen35_dflash
+// A development probe: it runs on a box its author is looking at, and a
+// failure should stop it where it happened rather than be reported.
+#![allow(clippy::unwrap_used)]
 
 use std::sync::Arc;
 

@@ -18,6 +18,9 @@
 //! `uniq` column is the honest unique-byte rate.
 //!
 //! Usage: PADDOCK_PACK=... a4b_moe_kbench
+// A development probe: it runs on a box its author is looking at, and a
+// failure should stop it where it happened rather than be reported.
+#![allow(clippy::unwrap_used)]
 
 use std::sync::Arc;
 

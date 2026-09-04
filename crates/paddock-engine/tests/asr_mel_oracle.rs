@@ -10,6 +10,8 @@
 //! The gate is set ~10x above the observed max delta; a structural mistake
 //! (wrong window, wrong filterbank, off-by-one frame) moves values by
 //! orders of magnitude more.
+// Test code: a failed assumption stops the test where it happened.
+#![allow(clippy::unwrap_used)]
 
 use paddock_engine::audio::{self, wav};
 
@@ -88,8 +90,10 @@ fn asr_mel_matches_oracle() {
             "{name}: oracle size"
         );
         let ov: Vec<f32> = oracle
-            .chunks_exact(4)
-            .map(|c| f32::from_le_bytes(c.try_into().unwrap()))
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .map(|c| f32::from_le_bytes(*c))
             .collect();
         let our_frames = feat.data.len() / 128;
         assert_eq!(
@@ -100,8 +104,8 @@ fn asr_mel_matches_oracle() {
         let n = our_frames.min(m.stored_frames) * 128;
         let (mut max_d, mut sum_d) = (0f32, 0f64);
         let mut arg = 0usize;
-        for i in 0..n {
-            let d = (feat.data[i] - ov[i]).abs();
+        for (i, (&ours, &theirs)) in feat.data[..n].iter().zip(&ov[..n]).enumerate() {
+            let d = (ours - theirs).abs();
             if d > max_d {
                 max_d = d;
                 arg = i;
@@ -177,8 +181,8 @@ fn granite_mel_matches_oracle() {
         let oracle = std::fs::read(dir.join(format!("{name}.granite.f32"))).unwrap();
         assert_eq!(oracle.len(), feat.data.len() * 4, "{name}: oracle size");
         let (mut max_d, mut sum_d, mut arg) = (0f32, 0f64, 0usize);
-        for (i, c) in oracle.chunks_exact(4).enumerate() {
-            let d = (feat.data[i] - f32::from_le_bytes(c.try_into().unwrap())).abs();
+        for (i, c) in oracle.as_chunks::<4>().0.iter().enumerate() {
+            let d = (feat.data[i] - f32::from_le_bytes(*c)).abs();
             if d > max_d {
                 max_d = d;
                 arg = i;
@@ -237,12 +241,14 @@ fn whisper_mel_matches_oracle() {
         let oracle = std::fs::read(dir.join(format!("{name}.whisper.f32"))).unwrap();
         assert_eq!(oracle.len(), head * 128 * 4, "{name}: oracle size");
         let ov: Vec<f32> = oracle
-            .chunks_exact(4)
-            .map(|c| f32::from_le_bytes(c.try_into().unwrap()))
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .map(|c| f32::from_le_bytes(*c))
             .collect();
         let (mut max_d, mut sum_d, mut arg) = (0f32, 0f64, 0usize);
-        for i in 0..ov.len() {
-            let d = (feat.data[i] - ov[i]).abs();
+        for (i, &theirs) in ov.iter().enumerate() {
+            let d = (feat.data[i] - theirs).abs();
             if d > max_d {
                 max_d = d;
                 arg = i;

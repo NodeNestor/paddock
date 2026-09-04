@@ -4,6 +4,9 @@
 //! (llama-server --embeddings on the identical GGUF).
 //!
 //! Usage: qwen3_embed_bench [n_texts] [batch]   (env QWEN3_EMBED_GGUF overrides)
+// A development probe: it runs on a box its author is looking at, and a
+// failure should stop it where it happened rather than be reported.
+#![allow(clippy::unwrap_used)]
 
 use std::sync::Arc;
 use std::time::Instant;

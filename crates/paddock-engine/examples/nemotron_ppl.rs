@@ -26,6 +26,9 @@
 //! PADDOCK_KV_FP8 selects the fp8-e4m3 attention KV - the serving class every
 //! board leg runs - so the measured delta is the marginal effect of the SSM
 //! class on top of the real serving config, not on a config nobody serves.
+// A development probe: it runs on a box its author is looking at, and a
+// failure should stop it where it happened rather than be reported.
+#![allow(clippy::unwrap_used)]
 
 use std::io::Write;
 use std::sync::Arc;

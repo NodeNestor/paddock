@@ -3,6 +3,8 @@
 //! pycompat method shims - `messages[::-1]` slice-step, `loop.previtem` /
 //! `loop.nextitem`, `namespace()` - so this is the go/no-go gate for qwen chat
 //! serving, independent of any GPU.
+// Test code: a failed assumption stops the test where it happened.
+#![allow(clippy::unwrap_used)]
 
 use paddock_runner::chat_template;
 use serde_json::json;

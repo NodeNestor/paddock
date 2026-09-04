@@ -7,6 +7,8 @@
 //! knowable here. And the offline case must say plainly that nothing was sent -
 //! a user who believes a lost bug report was filed is worse off than one told it
 //! failed.
+// Test code: a failed assumption stops the test where it happened.
+#![allow(clippy::unwrap_used)]
 
 use std::sync::Arc;
 

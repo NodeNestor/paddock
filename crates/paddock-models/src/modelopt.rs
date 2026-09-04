@@ -207,7 +207,7 @@ pub fn nvfp4_view<'a>(st: &'a ShardedSafetensors, prefix: &str) -> Result<Nvfp4V
             s2t.dtype
         )));
     }
-    let raw = f32::from_le_bytes(s2b.try_into().unwrap());
+    let raw = f32::from_le_bytes(s2b.try_into().expect("length checked above"));
     if compressed && !(raw.is_finite() && raw > 0.0) {
         return Err(bad(format!(
             "{prefix}.{s2name}: not a positive finite scale ({raw:e})"
@@ -255,7 +255,9 @@ pub fn fp8_view<'a>(st: &'a ShardedSafetensors, prefix: &str) -> Result<Fp8View<
                 t.dtype
             )));
         }
-        Ok(f32::from_le_bytes(b.try_into().unwrap()))
+        Ok(f32::from_le_bytes(
+            b.try_into().expect("length checked above"),
+        ))
     };
     Ok(Fp8View {
         weight: wb,
@@ -307,12 +309,16 @@ pub fn fp8_channel_view<'a>(
     }
     let scales: Vec<f32> = match ts.dtype {
         StDtype::Bf16 => sb
-            .chunks_exact(2)
-            .map(|c| f32::from_bits((u16::from_le_bytes([c[0], c[1]]) as u32) << 16))
+            .as_chunks::<2>()
+            .0
+            .iter()
+            .map(|c| f32::from_bits((u16::from_le_bytes(*c) as u32) << 16))
             .collect(),
         StDtype::F32 => sb
-            .chunks_exact(4)
-            .map(|c| f32::from_le_bytes(c.try_into().unwrap()))
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .map(|c| f32::from_le_bytes(*c))
             .collect(),
         other => {
             return Err(bad(format!(

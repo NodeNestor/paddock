@@ -293,7 +293,10 @@ impl GpuGemma4 {
             "slot {slot} >= enabled {}",
             self.n_slots
         );
-        let (beg, end) = (self.img_beg_id.unwrap(), self.img_end_id.unwrap());
+        let (beg, end) = (
+            self.img_beg_id.expect("markers checked at vision attach"),
+            self.img_end_id.expect("markers checked at vision attach"),
+        );
 
         // pass 1: resolve every image (tower or cache) - needs &mut self,
         // so it runs before the row stream takes any other borrows

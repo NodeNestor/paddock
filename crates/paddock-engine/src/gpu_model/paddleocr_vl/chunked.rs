@@ -146,6 +146,18 @@ fn text_positions(n: usize) -> Positions {
     }
 }
 
+/// What `fuse_rows` hands the tick, in this order: the row stream as
+/// `(slot, token, pos)`, the per-row M-RoPE positions, the decode-row count
+/// at the head of the stream, the finisher rows as `(row, slot)`, and the
+/// prefill entries taken as `(queue index, rows consumed, finished)`.
+type FusedRows = (
+    Vec<(u32, u32, u32)>,
+    Vec<u32>,
+    usize,
+    Vec<(usize, usize)>,
+    Vec<(usize, usize, bool)>,
+);
+
 impl GpuPaddleOcrVl {
     // ── the chunked queue (text + queued-image entries) ─────────────────────
 
@@ -326,17 +338,7 @@ impl GpuPaddleOcrVl {
     /// Build the fused tick's row stream: decode rows first (one band, M-RoPE
     /// at pos+delta), then as much of the prefill queue as the scratch
     /// capacity allows (M-RoPE from each entry's plan).
-    fn fuse_rows(
-        &self,
-        decodes: &[(usize, u32, u32)],
-        budget: usize,
-    ) -> (
-        Vec<(u32, u32, u32)>,
-        Vec<u32>,
-        usize,
-        Vec<(usize, usize)>,
-        Vec<(usize, usize, bool)>,
-    ) {
+    fn fuse_rows(&self, decodes: &[(usize, u32, u32)], budget: usize) -> FusedRows {
         let mut rows: Vec<(u32, u32, u32)> =
             decodes.iter().map(|&(s, t, p)| (s as u32, p, t)).collect();
         let dec_n = rows.len();

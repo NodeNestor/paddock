@@ -49,7 +49,9 @@ pub(crate) struct DsMoe {
 }
 
 /// Per-layer FFN: layer 0 is dense (6848), layers 1..12 route.
-#[allow(dead_code)]
+// the MoE bundle dwarfs the dense triple by design; one per layer, matched in
+// forward.rs and batch.rs, so boxing would only add a hop on the hot path
+#[allow(dead_code, clippy::large_enum_variant)]
 pub(crate) enum DsFfn {
     Dense {
         gate: QuantW,

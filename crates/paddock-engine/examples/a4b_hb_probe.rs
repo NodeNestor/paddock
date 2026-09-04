@@ -2,6 +2,10 @@
 //! on identical synthetic inputs. hb is PRECISION-class (bf16 smem normed rows
 //! feeding the router dot), so the gates are top-k index agreement + weight/
 //! output maxrel - not bitwise. Also times chain vs hb (the M1 speed gate).
+// A development probe: it runs on a box its author is looking at, and a
+// failure should stop it where it happened rather than be reported.
+#![allow(clippy::unwrap_used)]
+
 use std::sync::Arc;
 
 use paddock_engine::gpu::GpuExecutor;

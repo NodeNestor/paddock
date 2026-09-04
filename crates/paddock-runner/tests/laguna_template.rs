@@ -4,6 +4,8 @@
 //! render semantics - neutralized before parse), `tojson(ensure_ascii=False)`
 //! on history tool-call values, and `messages[1:]` slicing. This is the
 //! go/no-go gate for laguna chat serving, independent of any GPU.
+// Test code: a failed assumption stops the test where it happened.
+#![allow(clippy::unwrap_used)]
 
 use paddock_runner::chat_template;
 use serde_json::json;

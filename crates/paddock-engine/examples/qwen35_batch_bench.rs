@@ -5,6 +5,9 @@
 //! -ngl 99 -fa 1 -npp 16 -ntg 64 -npl <B,...>` S_TG, same thermal window.
 //! Args: `<B list, e.g. 1,8,32>` `<steps>` (defaults 1,2,4,8,16,32,64 / 64).
 //! Env: QWEN35_GGUF picks the model; PADDOCK_KV_FP8=1 opts into fp8 KV.
+// A development probe: it runs on a box its author is looking at, and a
+// failure should stop it where it happened rather than be reported.
+#![allow(clippy::unwrap_used)]
 
 use std::sync::Arc;
 

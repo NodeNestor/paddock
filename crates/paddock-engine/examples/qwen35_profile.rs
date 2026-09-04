@@ -11,6 +11,9 @@
 //! `depth`-token prompt first so the STABLE decode probe runs at that context
 //! depth - the agentic-serving operating point, where the attention geometry
 //! matters. Env QWEN35_GGUF overrides the model path.
+// A development probe: it runs on a box its author is looking at, and a
+// failure should stop it where it happened rather than be reported.
+#![allow(clippy::unwrap_used)]
 
 use std::sync::Arc;
 use std::time::Instant;

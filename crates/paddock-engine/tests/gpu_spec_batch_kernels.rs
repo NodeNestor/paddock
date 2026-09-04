@@ -177,7 +177,7 @@ fn argmax_rows_matches_host() {
     exec.argmax_rows(&d_x, &mut d_out, rows, n)
         .expect("argmax rows");
     let got = exec.to_host_u32(&d_out).expect("dtoh");
-    for row in 0..rows {
+    for (row, &got_row) in got.iter().enumerate() {
         let base = row * n;
         let (mut bi, mut bv) = (0usize, f32::NEG_INFINITY);
         for i in 0..n {
@@ -187,9 +187,9 @@ fn argmax_rows_matches_host() {
             }
         }
         assert_eq!(
-            got[row], bi as u32,
+            got_row, bi as u32,
             "row {row}: device {} host {}",
-            got[row], bi
+            got_row, bi
         );
     }
     eprintln!("argmax_rows: matches host argmax on {rows} rows incl exact ties");

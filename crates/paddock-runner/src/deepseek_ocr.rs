@@ -461,13 +461,11 @@ pub(crate) fn set_body_text(messages: &mut [Value], task: &str, replace: bool) {
             }
             parts.push(json!({"type": "text", "text": task}));
         }
-        Some(c @ Value::String(_)) => {
-            let existing = if replace {
-                String::new()
-            } else {
-                c.as_str().unwrap().to_owned()
-            };
-            *c = Value::String(existing + task);
+        Some(Value::String(s)) => {
+            if replace {
+                s.clear();
+            }
+            s.push_str(task);
         }
         _ => {
             if let Some(obj) = last.as_object_mut() {

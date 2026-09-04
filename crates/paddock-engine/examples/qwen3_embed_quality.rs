@@ -11,6 +11,9 @@
 //!
 //! The gate: recall@10 unchanged vs the Q8_0 baseline (FP4 weights are lossy;
 //! the cos smoke test alone is far too blunt to catch retrieval regressions).
+// A development probe: it runs on a box its author is looking at, and a
+// failure should stop it where it happened rather than be reported.
+#![allow(clippy::unwrap_used)]
 
 use std::io::{Read, Write};
 use std::sync::Arc;

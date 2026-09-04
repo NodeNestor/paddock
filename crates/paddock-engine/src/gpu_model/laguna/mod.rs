@@ -82,6 +82,9 @@ pub(crate) struct MoeWeights {
 }
 
 /// Per-layer FFN: layer 0 is dense (ffn 8192), everything else is MoE.
+// one value per layer, matched by reference from load/forward/batch - boxing the
+// MoE arm would buy nothing and touch every site
+#[allow(clippy::large_enum_variant)]
 pub(crate) enum Ffn {
     Dense {
         gate: QuantW,

@@ -6,6 +6,9 @@
 //! `resident` is what the fit is judged on - the KV pool is elastic and sizes
 //! itself to what is left, so it never decides whether a model fits. That
 //! distinction is exactly what this dump exists to make visible.
+// A development probe: it runs on a box its author is looking at, and a
+// failure should stop it where it happened rather than be reported.
+#![allow(clippy::unwrap_used)]
 
 use paddock_estimator::{Device, Envelope, KvDtype, ModelKind, ModelShape, estimate};
 

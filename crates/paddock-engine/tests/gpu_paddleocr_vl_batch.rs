@@ -9,6 +9,8 @@
 //! the serial gate's class bounds (loosened where the pass shape changes the
 //! op order); greedy chains must match the oracle exactly, with the
 //! manifest's top-2 margins printed on failure for near-tie judgement.
+// Test code: a failed assumption stops the test where it happened.
+#![allow(clippy::unwrap_used)]
 
 mod common;
 
@@ -51,16 +53,20 @@ fn manifest(dir: &std::path::Path) -> serde_json::Value {
 fn read_f32(path: &std::path::Path) -> Vec<f32> {
     let bytes = std::fs::read(path).unwrap_or_else(|e| panic!("{}: {e}", path.display()));
     bytes
-        .chunks_exact(4)
-        .map(|c| f32::from_le_bytes(c.try_into().unwrap()))
+        .as_chunks::<4>()
+        .0
+        .iter()
+        .map(|c| f32::from_le_bytes(*c))
         .collect()
 }
 
 fn read_i32(path: &std::path::Path) -> Vec<i32> {
     let bytes = std::fs::read(path).unwrap_or_else(|e| panic!("{}: {e}", path.display()));
     bytes
-        .chunks_exact(4)
-        .map(|c| i32::from_le_bytes(c.try_into().unwrap()))
+        .as_chunks::<4>()
+        .0
+        .iter()
+        .map(|c| i32::from_le_bytes(*c))
         .collect()
 }
 
@@ -209,8 +215,7 @@ fn batched_text_prefill_matches_the_oracle() {
     // greedy through the batched decode step at the slot (text delta = 0)
     let mut greedy = Vec::new();
     let mut logits = logits;
-    let mut pos = p.ids.len() as u32;
-    for _ in 0..p.greedy.len() {
+    for pos in (p.ids.len() as u32..).take(p.greedy.len()) {
         let tok = argmax(&logits);
         greedy.push(tok);
         if tok == EOS {
@@ -220,7 +225,6 @@ fn batched_text_prefill_matches_the_oracle() {
             .batch_step_slots(&[tok], &[pos], &[2])
             .expect("decode step");
         logits = model.read_batch_logits(1).expect("logits");
-        pos += 1;
     }
     assert_eq!(
         greedy, p.greedy,
@@ -327,8 +331,7 @@ fn radix_resume_reproduces_the_cold_pass() {
     // decode the warm slot through the batched step directly
     let mut warm = Vec::new();
     let mut logits = warm_logits;
-    let mut pos = p.ids.len() as u32;
-    for _ in 0..p.greedy.len() {
+    for pos in (p.ids.len() as u32..).take(p.greedy.len()) {
         let tok = argmax(&logits);
         warm.push(tok);
         if tok == EOS {
@@ -338,7 +341,6 @@ fn radix_resume_reproduces_the_cold_pass() {
             .batch_step_slots(&[tok], &[pos], &[1])
             .expect("decode step");
         logits = model.read_batch_logits(1).expect("logits");
-        pos += 1;
     }
     assert_eq!(warm, cold, "resumed pass diverged from its own cold pass");
 }

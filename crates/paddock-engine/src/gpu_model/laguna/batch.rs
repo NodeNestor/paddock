@@ -209,11 +209,7 @@ const MAX_ATTN_SPLITS: usize = 16;
 /// partial+combine even at n_splits == 1, because the plain per-q-head
 /// kernel re-reads each K/V tile group(=6-8)x.
 fn attn_gqa_fused(n_heads: usize, n_kv_heads: usize, batch: usize) -> bool {
-    let group = if n_kv_heads > 0 {
-        n_heads / n_kv_heads
-    } else {
-        1
-    };
+    let group = n_heads.checked_div(n_kv_heads).unwrap_or(1);
     batch > 1
         && (2..=8).contains(&group)
         && n_kv_heads >= 2
@@ -3081,13 +3077,12 @@ impl GpuLaguna {
                     } // end sorted-vs-token-batched
                     // always-on ungated shared expert (r>1 reuses the xn quant;
                     // r==1 rides the exact GEMV class like the serial lane)
-                    if g8 && w.shexp_gateup.is_some() {
+                    if g8 && let Some(gu) = &w.shexp_gateup {
                         // W4A8 form: the gate_up GEMV reuses the MoE arm's xn
                         // quant (same input, staged above - the routed-down
                         // quantize writes moe_ssums, so xn's ssums survive);
                         // the down's sh_up input quantizes into its own tiny
                         // planes
-                        let gu = w.shexp_gateup.as_ref().expect("checked");
                         let needs = matches!(gu.ty, GgmlType::Q4K | GgmlType::Q5K | GgmlType::Q4_0);
                         exec.kquant_gemv_w4a8(
                             gu,
@@ -3113,10 +3108,9 @@ impl GpuLaguna {
                             &sc.sh_ssums,
                             &mut sc.sh_out,
                         )?;
-                    } else if r1 && w.shexp_gateup.is_some() {
+                    } else if r1 && let Some(gu) = &w.shexp_gateup {
                         // fused [gate|up] GEMV + the swiglu_fused epilogue:
                         // 3 launches instead of 4, and the GEMV is 2× wider
-                        let gu = w.shexp_gateup.as_ref().expect("checked");
                         exec.kquant_gemv(gu, &sc.xn, &mut sc.sh_gate)?;
                         exec.swiglu_fused(&sc.sh_gate, &mut sc.sh_up, m.shexp_ff, 1)?;
                         gemv_any(&exec, &w.shexp_down, &sc.sh_up, &mut sc.sh_out)?;

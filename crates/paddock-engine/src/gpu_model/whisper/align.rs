@@ -239,7 +239,7 @@ pub fn median_filter_rows(x: &mut [f32], rows: usize, cols: usize, width: usize)
     let mut out = vec![0.0f32; cols];
     for r in 0..rows {
         let row = &x[r * cols..(r + 1) * cols];
-        for c in 0..cols {
+        for (c, o) in out.iter_mut().enumerate() {
             win.clear();
             for off in -half..=half {
                 let mut i = c as isize + off;
@@ -252,7 +252,7 @@ pub fn median_filter_rows(x: &mut [f32], rows: usize, cols: usize, width: usize)
                 win.push(row[i as usize]);
             }
             win.sort_by(f32::total_cmp);
-            out[c] = win[win.len() / 2];
+            *o = win[win.len() / 2];
         }
         x[r * cols..(r + 1) * cols].copy_from_slice(&out);
     }
@@ -336,9 +336,7 @@ pub fn dtw_path(cost: &[f32], n_tok: usize, n_frame: usize) -> Vec<(usize, usize
     for i in 0..=n_tok {
         trace[i * w] = 1;
     }
-    for j in 0..=n_frame {
-        trace[j] = 2;
-    }
+    trace[..=n_frame].fill(2);
     for i in 1..=n_tok {
         for j in 1..=n_frame {
             let c0 = acc[(i - 1) * w + (j - 1)];

@@ -173,7 +173,7 @@ impl Analyzer for SpliceBoundaryDetector {
         let mut clusters = Self::cluster_positions(&positions_xy, w, h);
 
         if is_document {
-            clusters.sort_by(|a, b| b.count.cmp(&a.count));
+            clusters.sort_by_key(|c| std::cmp::Reverse(c.count));
             clusters.truncate(10);
         }
 
@@ -696,7 +696,7 @@ impl SpliceBoundaryDetector {
         }
 
         clusters.retain(|c| c.count >= 3);
-        clusters.sort_by(|a, b| b.count.cmp(&a.count));
+        clusters.sort_by_key(|c| std::cmp::Reverse(c.count));
         clusters
     }
 }

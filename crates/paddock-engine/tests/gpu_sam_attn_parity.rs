@@ -14,6 +14,8 @@
 //! Shapes are the family's real ones: side 14 (windowed blocks, batch = the
 //! 25 windows of a 1024px view), side 64 (global blocks at 1024px), side 40
 //! (global at a 640px crop), all at SAM ViT-B's 12 heads × hd 64.
+// Test code: a failed assumption stops the test where it happened.
+#![allow(clippy::unwrap_used)]
 
 mod common;
 

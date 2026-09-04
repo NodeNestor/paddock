@@ -3,6 +3,9 @@
 //! a greedy server runs, on gpt-oss-20b. Workloads: all-repeat (best case),
 //! mixed repeat/prose (realistic), all-prose (regression floor). Args:
 //! `<B>` (default 8) `<tokens per seq>` (default 128) `<K>` (default 3).
+// A development probe: it runs on a box its author is looking at, and a
+// failure should stop it where it happened rather than be reported.
+#![allow(clippy::unwrap_used)]
 
 use std::sync::Arc;
 
@@ -122,7 +125,7 @@ fn main() {
         let mut spec: Vec<Vec<u32>> = (0..b).map(|s| vec![pending[s]]).collect();
         // per-slot adaptive draft length (the G3 rule: double on full
         // accept, shrink to the observed run on a reject)
-        let mut k_now = vec![k_draft.min(2).max(1); b];
+        let mut k_now = vec![k_draft.clamp(1, 2); b];
         let t0 = std::time::Instant::now();
         let mut produced = b;
         let (mut rounds, mut rows_total, mut drafted, mut accepted) =

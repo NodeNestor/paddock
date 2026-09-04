@@ -5,6 +5,9 @@
 //! the harness prints the batched top-2 gap at the first divergence.
 //!
 //! Usage: GEMMA4_GGUF=... PADDOCK_PACK=... [N_GEN=24] [MAX_CTX=4096] gemma4_batch_check
+// A development probe: it runs on a box its author is looking at, and a
+// failure should stop it where it happened rather than be reported.
+#![allow(clippy::unwrap_used)]
 
 use std::sync::Arc;
 

@@ -80,6 +80,9 @@
 //!   ... PADDOCK_NORM_WIDE_NTH=auto cargo run --release --example gemma4_ppl
 //!
 //! Prints token count, mean NLL (nats), perplexity and self-top-1.
+// A development probe: it runs on a box its author is looking at, and a
+// failure should stop it where it happened rather than be reported.
+#![allow(clippy::unwrap_used)]
 
 use std::io::Write;
 use std::sync::Arc;

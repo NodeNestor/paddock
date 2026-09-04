@@ -45,7 +45,7 @@ impl GpuQwen35 {
         );
         self.ensure_scratch(r.max(1))?;
         self.ensure_spec()?;
-        let start = self.decode.as_ref().unwrap().pos;
+        let start = self.decode.as_ref().expect("decode").pos;
         assert!(start + r <= self.max_ctx, "chunk exceeds max_ctx");
         let exec = self.exec.clone();
         let drv = |e: cudarc::driver::DriverError| crate::gpu::from_driver(e);
@@ -166,7 +166,7 @@ impl GpuQwen35 {
                     )?;
                     exec.kv_append_batch(
                         &sc.d_kn,
-                        ds.kv_k[li].as_mut().unwrap(),
+                        ds.kv_k[li].as_mut().expect("full-attn layer KV"),
                         &d_pos,
                         Some(&d_slots),
                         kv_dim,
@@ -176,7 +176,7 @@ impl GpuQwen35 {
                     )?;
                     exec.kv_append_batch(
                         &sc.d_v,
-                        ds.kv_v[li].as_mut().unwrap(),
+                        ds.kv_v[li].as_mut().expect("full-attn layer KV"),
                         &d_pos,
                         Some(&d_slots),
                         kv_dim,
@@ -187,8 +187,8 @@ impl GpuQwen35 {
                     attn_decode_dispatch(
                         &exec,
                         &sc.d_qn,
-                        ds.kv_k[li].as_ref().unwrap(),
-                        ds.kv_v[li].as_ref().unwrap(),
+                        ds.kv_k[li].as_ref().expect("full-attn layer KV"),
+                        ds.kv_v[li].as_ref().expect("full-attn layer KV"),
                         sinks,
                         &mut sc.d_attn_o,
                         &mut sc.d_attn_ml,
@@ -234,9 +234,9 @@ impl GpuQwen35 {
                     )?;
                     // extended pre-conv rows: window prefix + this chunk's mixed rows.
                     {
-                        let ext = sp.conv_ext[li].as_mut().unwrap();
+                        let ext = sp.conv_ext[li].as_mut().expect("DeltaNet layer conv ext");
                         exec.copy_region(
-                            ds.conv_win[li].as_ref().unwrap(),
+                            ds.conv_win[li].as_ref().expect("DeltaNet layer conv"),
                             0,
                             ext,
                             0,
@@ -247,7 +247,7 @@ impl GpuQwen35 {
                     // conv over the extended rows; keep only the real tokens' outputs
                     // (rows km1..) - d_mixed is free again (its rows live in ext now).
                     exec.causal_conv1d_silu(
-                        sp.conv_ext[li].as_ref().unwrap(),
+                        sp.conv_ext[li].as_ref().expect("DeltaNet layer conv ext"),
                         &w.conv_w.buf,
                         &mut sc.d_conv,
                         km1 + r,
@@ -318,9 +318,9 @@ impl GpuQwen35 {
                         &sc.d_g,
                         &sc.d_beta,
                         None,
-                        ds.recur[li].as_mut().unwrap(),
+                        ds.recur[li].as_mut().expect("DeltaNet layer state"),
                         0,
-                        Some(sp.recur_snap[li].as_mut().unwrap()),
+                        Some(sp.recur_snap[li].as_mut().expect("DeltaNet layer snapshot")),
                         &mut sc.d_dattn,
                         1,
                         r,
@@ -592,16 +592,16 @@ impl GpuQwen35 {
                 exec.copy_region(
                     snap,
                     (committed - 1) * state_elems,
-                    ds.recur[li].as_mut().unwrap(),
+                    ds.recur[li].as_mut().expect("DeltaNet layer state"),
                     0,
                     state_elems,
                 )?;
             }
             // window after `committed` rows = ext rows [committed, committed+km1)
             exec.copy_region(
-                sp.conv_ext[li].as_ref().unwrap(),
+                sp.conv_ext[li].as_ref().expect("DeltaNet layer conv ext"),
                 committed * conv_dim,
-                ds.conv_win[li].as_mut().unwrap(),
+                ds.conv_win[li].as_mut().expect("DeltaNet layer conv"),
                 0,
                 km1 * conv_dim,
             )?;
@@ -686,7 +686,7 @@ impl GpuQwen35 {
         )?;
         exec.kv_append_batch(
             &sc.d_kn,
-            ds.mtp_kv_k.as_mut().unwrap(),
+            ds.mtp_kv_k.as_mut().expect("MTP block KV cache"),
             d_pos,
             Some(d_slots),
             kv_dim,
@@ -696,7 +696,7 @@ impl GpuQwen35 {
         )?;
         exec.kv_append_batch(
             &sc.d_v,
-            ds.mtp_kv_v.as_mut().unwrap(),
+            ds.mtp_kv_v.as_mut().expect("MTP block KV cache"),
             d_pos,
             Some(d_slots),
             kv_dim,
@@ -707,8 +707,8 @@ impl GpuQwen35 {
         attn_decode_dispatch(
             &exec,
             &sc.d_qn,
-            ds.mtp_kv_k.as_ref().unwrap(),
-            ds.mtp_kv_v.as_ref().unwrap(),
+            ds.mtp_kv_k.as_ref().expect("MTP block KV cache"),
+            ds.mtp_kv_v.as_ref().expect("MTP block KV cache"),
             sinks,
             &mut sc.d_attn_o,
             &mut sc.d_attn_ml,
@@ -985,7 +985,7 @@ impl GpuQwen35 {
                 )?;
             }
         }
-        let ids = exec.to_host_u32(&self.decode.as_ref().unwrap().d_out)?;
+        let ids = exec.to_host_u32(&self.decode.as_ref().expect("decode").d_out)?;
         Ok(ids[..k].to_vec())
     }
 
@@ -1025,8 +1025,8 @@ impl GpuQwen35 {
         let (mut t_draft, mut t_verify, mut t_post) = (0f64, 0f64, 0f64);
         let mut rounds = 0usize;
         while out.len() < max_new {
-            let id_last = *out.last().unwrap();
-            let p = self.decode.as_ref().unwrap().pos;
+            let id_last = *out.last().expect("non-empty: token0 pushed above");
+            let p = self.decode.as_ref().expect("decode").pos;
             // cap the chunk so we never verify past max_ctx
             let k = n_draft.min(self.max_ctx - p - 1);
             if k == 0 {
@@ -1043,7 +1043,7 @@ impl GpuQwen35 {
             chunk.push(id_last);
             chunk.extend_from_slice(&drafts);
             self.forward_chunk(&chunk)?;
-            let all = exec.to_host(&self.spec.as_ref().unwrap().d_logits_chunk)?;
+            let all = exec.to_host(&self.spec.as_ref().expect("spec").d_logits_chunk)?;
             if debug {
                 t_verify += t1.elapsed().as_secs_f64();
             }
@@ -1095,7 +1095,7 @@ impl GpuQwen35 {
     pub fn enable_spec_batch(&mut self, batch: usize, n_draft: usize) -> Result<(), GpuModelError> {
         assert!(self.mtp.is_some(), "model has no nextn/MTP block");
         assert!(self.batch.is_some(), "enable_batch first");
-        assert!(batch >= 1 && batch <= self.batch.as_ref().unwrap().max_batch);
+        assert!(batch >= 1 && batch <= self.batch.as_ref().expect("enable_batch first").max_batch);
         assert!(n_draft >= 1);
         let k1 = n_draft + 1;
         self.ensure_scratch(batch * k1)?;
@@ -1119,7 +1119,11 @@ impl GpuQwen35 {
             // ensure_batch_graph) - a regrow reallocates, so drop them and
             // let the next decode tick recapture (same rule as
             // pf_pass_graphs on prefill-buffer regrow)
-            self.batch.as_mut().unwrap().graphs.clear();
+            self.batch
+                .as_mut()
+                .expect("enable_batch first")
+                .graphs
+                .clear();
         }
         let e = &self.exec;
         let kv_dim = self.n_kv_heads * self.head_dim;
@@ -1818,18 +1822,18 @@ impl GpuQwen35 {
             if !self
                 .spec_batch
                 .as_ref()
-                .unwrap()
+                .expect("spec batch")
                 .graph_draft
                 .contains_key(&live)
             {
                 let g = self.capture_spec_graph(Self::record_spec_draft, "spec draft")?;
                 self.spec_batch
                     .as_mut()
-                    .unwrap()
+                    .expect("spec batch")
                     .graph_draft
                     .insert(live, g);
             }
-            self.spec_batch.as_ref().unwrap().graph_draft[&live]
+            self.spec_batch.as_ref().expect("spec batch").graph_draft[&live]
                 .0
                 .launch_on(&self.exec.stream)
                 .map_err(|e| GpuError::Driver(format!("spec draft graph launch: {e}")))?;
@@ -2017,7 +2021,7 @@ impl GpuQwen35 {
             let rs: Vec<u32> =
                 self.spec_batch.as_ref().expect("spec batch").round_slots[..b].to_vec();
             for &s in &rs {
-                let p = self.spec_batch.as_ref().unwrap().pos[s as usize];
+                let p = self.spec_batch.as_ref().expect("spec batch").pos[s as usize];
                 self.ensure_slot_blocks(s as usize, p + k1)?;
             }
         }
@@ -2108,24 +2112,24 @@ impl GpuQwen35 {
             return Ok(());
         }
         let live = {
-            let sb = self.spec_batch.as_ref().unwrap();
+            let sb = self.spec_batch.as_ref().expect("spec batch");
             (sb.batch, sb.round_k1)
         };
         if !self
             .spec_batch
             .as_ref()
-            .unwrap()
+            .expect("spec batch")
             .graph_verify
             .contains_key(&live)
         {
             let g = self.capture_spec_graph(Self::record_spec_verify, "spec verify")?;
             self.spec_batch
                 .as_mut()
-                .unwrap()
+                .expect("spec batch")
                 .graph_verify
                 .insert(live, g);
         }
-        self.spec_batch.as_ref().unwrap().graph_verify[&live]
+        self.spec_batch.as_ref().expect("spec batch").graph_verify[&live]
             .0
             .launch_on(&self.exec.stream)
             .map_err(|e| GpuError::Driver(format!("spec verify graph launch: {e}")))?;
@@ -2258,12 +2262,12 @@ impl GpuQwen35 {
                         exec.row_slice(&sb.d_fused_land, &mut sc.d_v, nt, nq + nk2, nv2, r)?;
                         f8t_wo = Some(wo_t);
                     } else if f8_qkv {
-                        let l8 = l8d.unwrap();
+                        let l8 = l8d.expect("f8_qkv checked l8d");
                         exec.quantize_e4m3(&sc.d_xn, &mut sc.d_pxq, &mut sc.d_exs, r * embd)?;
                         let (nq, nk2, nv2) = (w.wq.dims()[1], w.wk.dims()[1], w.wv.dims()[1]);
                         let nt = nq + nk2 + nv2;
                         exec.f8d_gemm_mma_ks(
-                            l8.wq.as_ref().unwrap(),
+                            l8.wq.as_ref().expect("f8_qkv checked wq"),
                             w.wq.dims()[0],
                             nt,
                             &sc.d_pxq,
@@ -2355,11 +2359,11 @@ impl GpuQwen35 {
                     // forward_chunk_b.
                     if bs.paged {
                         // round mirror, not the live table - see mtp_block_pass_b
-                        let bt = sb.d_spec_tables.as_ref().unwrap();
+                        let bt = sb.d_spec_tables.as_ref().expect("paged serve spec tables");
                         let bps = bs.blocks_per_slot;
                         exec.kv_append_batch_paged(
                             &sc.d_kn,
-                            bs.kv_k[li].as_mut().unwrap(),
+                            bs.kv_k[li].as_mut().expect("full-attn layer KV"),
                             &sb.d_pos_rows,
                             Some(&sb.d_slots_rows),
                             bt,
@@ -2370,7 +2374,7 @@ impl GpuQwen35 {
                         )?;
                         exec.kv_append_batch_paged(
                             &sc.d_v,
-                            bs.kv_v[li].as_mut().unwrap(),
+                            bs.kv_v[li].as_mut().expect("full-attn layer KV"),
                             &sb.d_pos_rows,
                             Some(&sb.d_slots_rows),
                             bt,
@@ -2382,7 +2386,7 @@ impl GpuQwen35 {
                     } else {
                         exec.kv_append_batch(
                             &sc.d_kn,
-                            bs.kv_k[li].as_mut().unwrap(),
+                            bs.kv_k[li].as_mut().expect("full-attn layer KV"),
                             &sb.d_pos_rows,
                             Some(&sb.d_slots_rows),
                             kv_dim,
@@ -2392,7 +2396,7 @@ impl GpuQwen35 {
                         )?;
                         exec.kv_append_batch(
                             &sc.d_v,
-                            bs.kv_v[li].as_mut().unwrap(),
+                            bs.kv_v[li].as_mut().expect("full-attn layer KV"),
                             &sb.d_pos_rows,
                             Some(&sb.d_slots_rows),
                             kv_dim,
@@ -2412,8 +2416,8 @@ impl GpuQwen35 {
                     let shared = super::ops::attn_verify_dispatch(
                         &exec,
                         &sc.d_qn,
-                        bs.kv_k[li].as_ref().unwrap(),
-                        bs.kv_v[li].as_ref().unwrap(),
+                        bs.kv_k[li].as_ref().expect("full-attn layer KV"),
+                        bs.kv_v[li].as_ref().expect("full-attn layer KV"),
                         sinks,
                         &mut sc.d_attn_o,
                         &mut sc.d_attn_ml,
@@ -2435,8 +2439,8 @@ impl GpuQwen35 {
                         attn_decode_dispatch(
                             &exec,
                             &sc.d_qn,
-                            bs.kv_k[li].as_ref().unwrap(),
-                            bs.kv_v[li].as_ref().unwrap(),
+                            bs.kv_k[li].as_ref().expect("full-attn layer KV"),
+                            bs.kv_v[li].as_ref().expect("full-attn layer KV"),
                             sinks,
                             &mut sc.d_attn_o,
                             &mut sc.d_attn_ml,
@@ -2581,14 +2585,14 @@ impl GpuQwen35 {
                         }
                         f8t_ow = Some(ow_t);
                     } else if f8_dn {
-                        let l8 = l8d.unwrap();
+                        let l8 = l8d.expect("f8_dn checked l8d");
                         exec.quantize_e4m3(&sc.d_xn, &mut sc.d_pxq, &mut sc.d_exs, r * embd)?;
                         let (nin, nc) = (w.in_qkv.dims()[0], w.in_qkv.dims()[1]);
                         let nz_ = w.gate_w.dims()[1];
                         // merged in_qkv|gate_w plane: one GEMM + slice, exactly
                         // the dense f8_dn arm (gate_w's own GEMM is skipped)
                         exec.f8d_gemm_mma_ks(
-                            l8.in_qkv.as_ref().unwrap(),
+                            l8.in_qkv.as_ref().expect("f8_dn checked in_qkv"),
                             nin,
                             nc + nz_,
                             &sc.d_pxq,
@@ -2620,17 +2624,17 @@ impl GpuQwen35 {
                     // per-slot extended rows: window(slot) ++ chunk mixed rows,
                     // then causal conv emitting only the real rows
                     exec.conv_ext_build_slots(
-                        bs.conv_win[li].as_ref().unwrap(),
+                        bs.conv_win[li].as_ref().expect("DeltaNet layer conv"),
                         &sb.d_round_slots,
                         &sc.d_mixed,
-                        sb.conv_ext[li].as_mut().unwrap(),
+                        sb.conv_ext[li].as_mut().expect("DeltaNet layer conv ext"),
                         b,
                         km1,
                         k1,
                         conv_dim,
                     )?;
                     exec.conv_chunk_ext(
-                        sb.conv_ext[li].as_ref().unwrap(),
+                        sb.conv_ext[li].as_ref().expect("DeltaNet layer conv ext"),
                         &w.conv_w.buf,
                         &mut sc.d_conv,
                         b,
@@ -2649,8 +2653,8 @@ impl GpuQwen35 {
                         exec.deltanet_split_gqa_norm(
                             &sc.d_conv,
                             &mut sc.d_dq,
-                            sb.vstash_k[li].as_mut().unwrap(),
-                            sb.vstash_v[li].as_mut().unwrap(),
+                            sb.vstash_k[li].as_mut().expect("snapshot-free verify"),
+                            sb.vstash_v[li].as_mut().expect("snapshot-free verify"),
                             r,
                             n_k_heads,
                             n_v_heads,
@@ -2682,8 +2686,8 @@ impl GpuQwen35 {
                                 &sc.d_b,
                                 &w.ssm_a.buf,
                                 &w.dt_bias.buf,
-                                sb.vstash_g[li].as_mut().unwrap(),
-                                sb.vstash_beta[li].as_mut().unwrap(),
+                                sb.vstash_g[li].as_mut().expect("snapshot-free verify"),
+                                sb.vstash_beta[li].as_mut().expect("snapshot-free verify"),
                                 r,
                                 n_v_heads,
                             )?;
@@ -2696,20 +2700,20 @@ impl GpuQwen35 {
                                 &mut sc.d_ab,
                                 &w.ssm_a.buf,
                                 &w.dt_bias.buf,
-                                sb.vstash_g[li].as_mut().unwrap(),
-                                sb.vstash_beta[li].as_mut().unwrap(),
+                                sb.vstash_g[li].as_mut().expect("snapshot-free verify"),
+                                sb.vstash_beta[li].as_mut().expect("snapshot-free verify"),
                                 r,
                                 n_v_heads,
                             )?;
                         }
                         exec.gated_delta_verify_hold(
                             &sc.d_dq,
-                            sb.vstash_k[li].as_ref().unwrap(),
-                            sb.vstash_v[li].as_ref().unwrap(),
-                            sb.vstash_g[li].as_ref().unwrap(),
-                            sb.vstash_beta[li].as_ref().unwrap(),
+                            sb.vstash_k[li].as_ref().expect("snapshot-free verify"),
+                            sb.vstash_v[li].as_ref().expect("snapshot-free verify"),
+                            sb.vstash_g[li].as_ref().expect("snapshot-free verify"),
+                            sb.vstash_beta[li].as_ref().expect("snapshot-free verify"),
                             Some(&sb.d_round_slots),
-                            bs.recur[li].as_ref().unwrap(),
+                            bs.recur[li].as_ref().expect("DeltaNet layer state"),
                             &mut sc.d_dattn,
                             b,
                             k1,
@@ -2780,9 +2784,9 @@ impl GpuQwen35 {
                             &sc.d_g,
                             &sc.d_beta,
                             Some(&sb.d_round_slots),
-                            bs.recur[li].as_mut().unwrap(),
+                            bs.recur[li].as_mut().expect("DeltaNet layer state"),
                             0,
-                            Some(sb.recur_snap[li].as_mut().unwrap()),
+                            Some(sb.recur_snap[li].as_mut().expect("snapshot-verify mode")),
                             &mut sc.d_dattn,
                             b,
                             k1,
@@ -3288,24 +3292,24 @@ impl GpuQwen35 {
             return Ok(());
         }
         let live = {
-            let sb = self.spec_batch.as_ref().unwrap();
+            let sb = self.spec_batch.as_ref().expect("spec batch");
             (sb.batch, sb.round_k1)
         };
         if !self
             .spec_batch
             .as_ref()
-            .unwrap()
+            .expect("spec batch")
             .graph_commit
             .contains_key(&live)
         {
             let g = self.capture_spec_graph(Self::record_spec_commit, "spec commit")?;
             self.spec_batch
                 .as_mut()
-                .unwrap()
+                .expect("spec batch")
                 .graph_commit
                 .insert(live, g);
         }
-        self.spec_batch.as_ref().unwrap().graph_commit[&live]
+        self.spec_batch.as_ref().expect("spec batch").graph_commit[&live]
             .0
             .launch_on(&self.exec.stream)
             .map_err(|e| GpuError::Driver(format!("spec commit graph launch: {e}")))?;
@@ -3336,13 +3340,13 @@ impl GpuQwen35 {
                 // walk, so the result is bit-exact vs the snapshot the old
                 // restore picked; committed[b] == 0 leaves the state alone.
                 exec.gated_delta_commit_walk(
-                    sb.vstash_k[li].as_ref().unwrap(),
-                    sb.vstash_v[li].as_ref().unwrap(),
-                    sb.vstash_g[li].as_ref().unwrap(),
-                    sb.vstash_beta[li].as_ref().unwrap(),
+                    sb.vstash_k[li].as_ref().expect("snapshot-free verify"),
+                    sb.vstash_v[li].as_ref().expect("snapshot-free verify"),
+                    sb.vstash_g[li].as_ref().expect("snapshot-free verify"),
+                    sb.vstash_beta[li].as_ref().expect("snapshot-free verify"),
                     Some(&sb.d_round_slots),
                     &sb.d_committed,
-                    bs.recur[li].as_mut().unwrap(),
+                    bs.recur[li].as_mut().expect("DeltaNet layer state"),
                     b,
                     k1,
                     n_v,
@@ -3350,7 +3354,7 @@ impl GpuQwen35 {
                 )?;
             } else if let Some(snap) = sb.recur_snap[li].as_ref() {
                 exec.state_restore_slots(
-                    bs.recur[li].as_mut().unwrap(),
+                    bs.recur[li].as_mut().expect("DeltaNet layer state"),
                     snap,
                     &sb.d_round_slots,
                     &sb.d_committed,
@@ -3363,8 +3367,8 @@ impl GpuQwen35 {
                 continue; // full-attention layer: no recurrent state
             }
             exec.conv_commit_slots(
-                sb.conv_ext[li].as_ref().unwrap(),
-                bs.conv_win[li].as_mut().unwrap(),
+                sb.conv_ext[li].as_ref().expect("DeltaNet layer conv ext"),
+                bs.conv_win[li].as_mut().expect("DeltaNet layer conv"),
                 &sb.d_round_slots,
                 &sb.d_committed,
                 b,
@@ -3420,8 +3424,8 @@ impl GpuQwen35 {
             // h inputs, shifted right within each block; pending_h is
             // TRUE-slot-strided, the chunk h/logits buffers are block-strided
             let mut row = 0usize;
-            for i in 0..b {
-                let c = committed[i] as usize;
+            for (i, &ci) in committed[..b].iter().enumerate() {
+                let c = ci as usize;
                 let s = sb.round_slots[i] as usize;
                 for j in 0..c {
                     if j == 0 {
@@ -3444,8 +3448,8 @@ impl GpuQwen35 {
         self.mtp_block_pass_b(rows, false)?;
         {
             let sb = self.spec_batch.as_mut().expect("spec batch");
-            for i in 0..b {
-                let c = committed[i] as usize;
+            for (i, &ci) in committed[..b].iter().enumerate() {
+                let c = ci as usize;
                 let s = sb.round_slots[i] as usize;
                 exec.copy_region(
                     &sb.d_h_chunk,
@@ -3504,7 +3508,7 @@ impl GpuQwen35 {
             assert!(!prompt.is_empty());
             let logits = self.forward_prefill_slot(slot, prompt)?;
             self.mtp_warm_slot(slot, prompt, 0, 0)?;
-            let sb = self.spec_batch.as_mut().unwrap();
+            let sb = self.spec_batch.as_mut().expect("spec batch");
             sb.pos[slot] = prompt.len();
             sb.mtp_warm[slot] = true;
             sb.mtp_toks[slot] = prompt.clone();
@@ -3525,13 +3529,16 @@ impl GpuQwen35 {
         while out.iter().any(|o| o.len() < max_new) {
             // stop cleanly if any slot is about to run out of context
             {
-                let sb = self.spec_batch.as_ref().unwrap();
+                let sb = self.spec_batch.as_ref().expect("spec batch");
                 if (0..b).any(|s| sb.pos[s] + k1 > self.max_ctx) {
                     break;
                 }
             }
             let t0 = std::time::Instant::now();
-            let last: Vec<u32> = out.iter().map(|o| *o.last().unwrap()).collect();
+            let last: Vec<u32> = out
+                .iter()
+                .map(|o| *o.last().expect("non-empty: seeded with the prefill pick"))
+                .collect();
             // the pooled drafter stripe appends at pos..pos+k during the draft
             // graph - back those rows with real blocks before it launches (the
             // verify's own ensure runs too late for the draft's writes)
@@ -3556,9 +3563,10 @@ impl GpuQwen35 {
                     chunk.push(drafts[i * b + slot]);
                 }
             }
-            let pos_before: Vec<usize> = self.spec_batch.as_ref().unwrap().pos.clone();
+            let pos_before: Vec<usize> = self.spec_batch.as_ref().expect("spec batch").pos.clone();
             self.forward_chunk_b(&chunk)?;
-            let row_toks = exec.to_host_u32(&self.spec_batch.as_ref().unwrap().d_row_tok)?;
+            let row_toks =
+                exec.to_host_u32(&self.spec_batch.as_ref().expect("spec batch").d_row_tok)?;
             if phase_time {
                 t_verify += t1.elapsed();
             }
@@ -3949,23 +3957,23 @@ impl GpuQwen35 {
             .is_none()
         {
             let buf = exec.alloc(per_layer * linear.len())?;
-            self.spec_batch.as_mut().unwrap().warm_stash = Some(buf);
+            self.spec_batch.as_mut().expect("spec batch").warm_stash = Some(buf);
         }
         {
             let bs = self.batch.as_ref().expect("batch");
             let sb = self.spec_batch.as_mut().expect("spec batch");
-            let stash = sb.warm_stash.as_mut().unwrap();
+            let stash = sb.warm_stash.as_mut().expect("warm stash allocated above");
             for (j, &li) in linear.iter().enumerate() {
                 let so = j * per_layer;
                 exec.copy_region(
-                    bs.recur[li].as_ref().unwrap(),
+                    bs.recur[li].as_ref().expect("DeltaNet layer state"),
                     slot * state_elems,
                     stash,
                     so,
                     state_elems,
                 )?;
                 exec.copy_region(
-                    bs.conv_win[li].as_ref().unwrap(),
+                    bs.conv_win[li].as_ref().expect("DeltaNet layer conv"),
                     slot * km1 * conv_dim,
                     stash,
                     so + state_elems,
@@ -3977,20 +3985,20 @@ impl GpuQwen35 {
         {
             let bs = self.batch.as_mut().expect("batch");
             let sb = self.spec_batch.as_ref().expect("spec batch");
-            let stash = sb.warm_stash.as_ref().unwrap();
+            let stash = sb.warm_stash.as_ref().expect("warm stash allocated above");
             for (j, &li) in linear.iter().enumerate() {
                 let so = j * per_layer;
                 exec.copy_region(
                     stash,
                     so,
-                    bs.recur[li].as_mut().unwrap(),
+                    bs.recur[li].as_mut().expect("DeltaNet layer state"),
                     slot * state_elems,
                     state_elems,
                 )?;
                 exec.copy_region(
                     stash,
                     so + state_elems,
-                    bs.conv_win[li].as_mut().unwrap(),
+                    bs.conv_win[li].as_mut().expect("DeltaNet layer conv"),
                     slot * km1 * conv_dim,
                     km1 * conv_dim,
                 )?;
@@ -4092,9 +4100,9 @@ impl GpuQwen35 {
                 }
             }
         }
-        let k_use = k.min(self.spec_batch.as_ref().unwrap().n_draft);
+        let k_use = k.min(self.spec_batch.as_ref().expect("spec batch").n_draft);
         self.spec_set_live(n);
-        self.spec_batch.as_mut().unwrap().round_slots[..n]
+        self.spec_batch.as_mut().expect("spec batch").round_slots[..n]
             .copy_from_slice(&pendings.iter().map(|&(s, _)| s as u32).collect::<Vec<_>>());
         let last: Vec<u32> = pendings.iter().map(|&(_, t)| t).collect();
         let td = std::time::Instant::now();
@@ -4213,7 +4221,7 @@ impl GpuQwen35 {
         // CURRENT live count and round slots.
         self.spec_set_live(n);
         let slots: Vec<u32> = pendings.iter().map(|&(s, _)| s as u32).collect();
-        self.spec_batch.as_mut().unwrap().round_slots[..n].copy_from_slice(&slots);
+        self.spec_batch.as_mut().expect("spec batch").round_slots[..n].copy_from_slice(&slots);
         if !self.dflash_draft_launch(&reqs, rows)? {
             return Ok(None);
         }
@@ -4269,10 +4277,10 @@ impl GpuQwen35 {
                 }
             }
         }
-        let k_use = k.min(self.spec_batch.as_ref().unwrap().n_draft);
+        let k_use = k.min(self.spec_batch.as_ref().expect("spec batch").n_draft);
         self.spec_set_live(n);
         let slots: Vec<u32> = pendings.iter().map(|&(s, _)| s as u32).collect();
-        self.spec_batch.as_mut().unwrap().round_slots[..n].copy_from_slice(&slots);
+        self.spec_batch.as_mut().expect("spec batch").round_slots[..n].copy_from_slice(&slots);
         // block the drafter stripe's pool writes before the graph launches
         {
             let sbk = self.spec_batch.as_ref().expect("spec batch");
@@ -4336,7 +4344,7 @@ impl GpuQwen35 {
             // sync sb.pos to the service's cursor - the verify machinery
             // (pos_rows, ensure_slot_blocks, the commit advance) reads it.
             if dfl {
-                let sb = self.spec_batch.as_ref().unwrap();
+                let sb = self.spec_batch.as_ref().expect("spec batch");
                 if *slot >= sb.alloc_batch
                     || chunk.is_empty()
                     || chunk.len() > k1
@@ -4352,10 +4360,10 @@ impl GpuQwen35 {
                     }
                     return false;
                 }
-                self.spec_batch.as_mut().unwrap().pos[*slot] = *start;
+                self.spec_batch.as_mut().expect("spec batch").pos[*slot] = *start;
                 continue;
             }
-            let sb = self.spec_batch.as_ref().unwrap();
+            let sb = self.spec_batch.as_ref().expect("spec batch");
             if *slot >= sb.alloc_batch
                 || chunk.is_empty()
                 || chunk.len() > k1
@@ -4382,7 +4390,7 @@ impl GpuQwen35 {
                         sb.pos[*slot]
                     );
                 }
-                self.spec_batch.as_mut().unwrap().mtp_warm[*slot] = false;
+                self.spec_batch.as_mut().expect("spec batch").mtp_warm[*slot] = false;
                 return false;
             }
         }
@@ -4489,7 +4497,7 @@ impl GpuQwen35 {
         // in-round ensures are no-ops (commit/catchup never write past
         // pos + k1).
         for (slot, _, _) in reqs {
-            let p = self.spec_batch.as_ref().unwrap().pos[*slot];
+            let p = self.spec_batch.as_ref().expect("spec batch").pos[*slot];
             self.ensure_slot_blocks(*slot, p + k1)?;
         }
         let ev_pre = self.exec.record_event()?;
@@ -4597,7 +4605,7 @@ impl GpuQwen35 {
         let dfl = self.spec_round_dflash && self.dflash_armed();
         // ragged slot sets accepted - see spec_draft_batch_mtp
         for (slot, start, chunk) in reqs.iter() {
-            let sb = self.spec_batch.as_ref().unwrap();
+            let sb = self.spec_batch.as_ref().expect("spec batch");
             if *slot >= sb.alloc_batch
                 || chunk.is_empty()
                 || chunk.len() > k1
@@ -4611,13 +4619,13 @@ impl GpuQwen35 {
             if dfl {
                 // ring end == start proven above; sync the verify cursor
                 // (pos_rows / ensure_slot_blocks / the commit advance read it)
-                self.spec_batch.as_mut().unwrap().pos[*slot] = *start;
+                self.spec_batch.as_mut().expect("spec batch").pos[*slot] = *start;
                 continue;
             }
             if sb.pos[*slot] != *start {
                 // dense ticks advanced this slot without MTP catchup: its
                 // draft KV is stale for good - cold until the next prefill
-                self.spec_batch.as_mut().unwrap().mtp_warm[*slot] = false;
+                self.spec_batch.as_mut().expect("spec batch").mtp_warm[*slot] = false;
                 eligible = false;
                 break;
             }
@@ -4628,21 +4636,21 @@ impl GpuQwen35 {
         // RAGGED k: this round's k1 = its widest chunk (min 2 so the
         // kernels keep their >=1-draft shapes; <= alloc, checked above)
         let k1 = reqs.iter().map(|r| r.2.len()).max().unwrap_or(2).max(2);
-        self.spec_batch.as_mut().unwrap().round_k1 = k1;
+        self.spec_batch.as_mut().expect("spec batch").round_k1 = k1;
         self.spec_set_live(n);
-        self.spec_batch.as_mut().unwrap().round_slots[..n]
+        self.spec_batch.as_mut().expect("spec batch").round_slots[..n]
             .copy_from_slice(&reqs.iter().map(|r| r.0 as u32).collect::<Vec<_>>());
         // block-major rows padded to k1 (repeat the last token; acceptance is
         // capped at the real chunk length so pad rows never commit)
         let mut padded: Vec<u32> = Vec::with_capacity(n * k1);
         for (_, _, chunk) in reqs {
             padded.extend_from_slice(chunk);
-            let t = *chunk.last().unwrap();
+            let t = *chunk.last().expect("non-empty chunk checked above");
             padded.extend(std::iter::repeat_n(t, k1 - chunk.len()));
         }
         // per-BLOCK positions (block i = reqs[i], true slot reqs[i].0)
         let pos_before: Vec<usize> = {
-            let sb = self.spec_batch.as_ref().unwrap();
+            let sb = self.spec_batch.as_ref().expect("spec batch");
             reqs.iter().map(|r| sb.pos[r.0]).collect()
         };
         if paddock_models::dev_var_os!("PADDOCK_SPEC_TRACE").is_some() {
@@ -4679,7 +4687,7 @@ impl GpuQwen35 {
         self.forward_chunk_b(&padded)?;
         let picks_all = self
             .exec
-            .to_host_u32(&self.spec_batch.as_ref().unwrap().d_row_tok)?;
+            .to_host_u32(&self.spec_batch.as_ref().expect("spec batch").d_row_tok)?;
         self.spec_chain_rebuild(&mut padded, reqs, k1)?;
         let t_verify = tv.elapsed().as_micros();
         // acceptance identical to the service rule, over the real chunk only
@@ -4796,9 +4804,9 @@ impl GpuQwen35 {
         // RAGGED k: this round's k1 = its widest chunk (min 2 so the
         // kernels keep their >=1-draft shapes; <= alloc, checked above)
         let k1 = reqs.iter().map(|r| r.2.len()).max().unwrap_or(2).max(2);
-        self.spec_batch.as_mut().unwrap().round_k1 = k1;
+        self.spec_batch.as_mut().expect("spec batch").round_k1 = k1;
         self.spec_set_live(n);
-        self.spec_batch.as_mut().unwrap().round_slots[..n]
+        self.spec_batch.as_mut().expect("spec batch").round_slots[..n]
             .copy_from_slice(&reqs.iter().map(|r| r.0 as u32).collect::<Vec<_>>());
         let mut padded: Vec<u32> = Vec::with_capacity(n * k1);
         // per padded row: sampler params for sample_rows (mode 1 greedy pads)
@@ -4881,12 +4889,12 @@ impl GpuQwen35 {
             }
             flat += chunk.len();
             padded.extend_from_slice(chunk);
-            let t = *chunk.last().unwrap();
+            let t = *chunk.last().expect("non-empty chunk checked above");
             padded.extend(std::iter::repeat_n(t, k1 - chunk.len()));
         }
         // per-BLOCK positions (block i = reqs[i], true slot reqs[i].0)
         let pos_before: Vec<usize> = {
-            let sb = self.spec_batch.as_ref().unwrap();
+            let sb = self.spec_batch.as_ref().expect("spec batch");
             reqs.iter().map(|r| sb.pos[r.0]).collect()
         };
         self.spec_chain_stage_lens(reqs);
@@ -4978,7 +4986,13 @@ impl GpuQwen35 {
                 vocab,
             )?;
         }
-        let picks_all = exec.to_host_u32(&self.spec_batch.as_ref().unwrap().d_samp_out_chunk)?;
+        let picks_all = exec.to_host_u32(
+            &self
+                .spec_batch
+                .as_ref()
+                .expect("spec batch")
+                .d_samp_out_chunk,
+        )?;
         self.spec_chain_rebuild(&mut padded, reqs, k1)?;
         let mut committed: Vec<u32> = Vec::with_capacity(n);
         let mut picks_out: Vec<u32> = Vec::new();
@@ -5049,7 +5063,7 @@ impl GpuQwen35 {
         let mut eligible = true;
         // ragged slot sets accepted - see spec_draft_batch_mtp
         for (slot, start, chunk) in reqs.iter() {
-            let sb = self.spec_batch.as_ref().unwrap();
+            let sb = self.spec_batch.as_ref().expect("spec batch");
             if *slot >= sb.alloc_batch
                 || chunk.is_empty()
                 || chunk.len() > k1
@@ -5060,7 +5074,7 @@ impl GpuQwen35 {
                 break;
             }
             if sb.pos[*slot] != *start {
-                self.spec_batch.as_mut().unwrap().mtp_warm[*slot] = false;
+                self.spec_batch.as_mut().expect("spec batch").mtp_warm[*slot] = false;
                 eligible = false;
                 break;
             }
@@ -5071,25 +5085,25 @@ impl GpuQwen35 {
         // RAGGED k: this round's k1 = its widest chunk (min 2 so the
         // kernels keep their >=1-draft shapes; <= alloc, checked above)
         let k1 = reqs.iter().map(|r| r.2.len()).max().unwrap_or(2).max(2);
-        self.spec_batch.as_mut().unwrap().round_k1 = k1;
+        self.spec_batch.as_mut().expect("spec batch").round_k1 = k1;
         self.spec_set_live(n);
         let slots: Vec<u32> = reqs.iter().map(|r| r.0 as u32).collect();
-        self.spec_batch.as_mut().unwrap().round_slots[..n].copy_from_slice(&slots);
+        self.spec_batch.as_mut().expect("spec batch").round_slots[..n].copy_from_slice(&slots);
         let mut padded: Vec<u32> = Vec::with_capacity(n * k1);
         for (_, _, chunk) in reqs {
             padded.extend_from_slice(chunk);
-            let t = *chunk.last().unwrap();
+            let t = *chunk.last().expect("non-empty chunk checked above");
             padded.extend(std::iter::repeat_n(t, k1 - chunk.len()));
         }
         // per-BLOCK positions (block i = reqs[i], true slot reqs[i].0)
         let pos_before: Vec<usize> = {
-            let sb = self.spec_batch.as_ref().unwrap();
+            let sb = self.spec_batch.as_ref().expect("spec batch");
             reqs.iter().map(|r| sb.pos[r.0]).collect()
         };
         self.spec_chain_stage_lens(reqs);
         self.forward_chunk_b(&padded)?;
         let all = self.exec.to_host_len(
-            &self.spec_batch.as_ref().unwrap().d_logits_chunk,
+            &self.spec_batch.as_ref().expect("spec batch").d_logits_chunk,
             n * k1 * vocab,
         )?;
         self.spec_chain_rebuild(&mut padded, reqs, k1)?;

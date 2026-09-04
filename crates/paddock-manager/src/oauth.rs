@@ -335,9 +335,15 @@ pub async fn start(
             },
         );
     }
-    let mut url = reqwest::Url::parse(&d.authorization_endpoint)
-        .map_err(|e| e.to_string())
-        .unwrap();
+    let mut url = match reqwest::Url::parse(&d.authorization_endpoint) {
+        Ok(u) => u,
+        Err(e) => {
+            return err(
+                StatusCode::BAD_GATEWAY,
+                format!("authorization_endpoint: {e}"),
+            );
+        }
+    };
     url.query_pairs_mut()
         .append_pair("response_type", "code")
         .append_pair("client_id", &client_id)

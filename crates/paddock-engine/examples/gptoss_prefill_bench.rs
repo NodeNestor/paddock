@@ -6,6 +6,9 @@
 //! same thermal window.
 //!
 //! Usage: gptoss_prefill_bench [len,len,...]   (default 128,512)
+// A development probe: it runs on a box its author is looking at, and a
+// failure should stop it where it happened rather than be reported.
+#![allow(clippy::unwrap_used)]
 
 use std::sync::Arc;
 

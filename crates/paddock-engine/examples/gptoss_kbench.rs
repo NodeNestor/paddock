@@ -3,6 +3,9 @@
 //! us/call + effective GB/s. Sums a per-token estimate to compare against
 //! gptoss_decode_bench - the gap is whatever this list doesn't cover.
 //! Usage: gptoss_kbench   (PADDOCK_MODEL/PADDOCK_PACK override paths)
+// A development probe: it runs on a box its author is looking at, and a
+// failure should stop it where it happened rather than be reported.
+#![allow(clippy::unwrap_used)]
 
 use std::sync::Arc;
 
@@ -505,9 +508,8 @@ fn main() {
         .chunks(n_experts)
         .flat_map(|row| {
             let mut v = vec![-1e30f32; n_experts];
-            for e in 0..4.min(n_experts) {
-                v[e] = row[e];
-            }
+            let keep = 4.min(n_experts);
+            v[..keep].copy_from_slice(&row[..keep]);
             v
         })
         .collect();

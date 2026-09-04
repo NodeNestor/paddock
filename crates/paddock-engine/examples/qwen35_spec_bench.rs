@@ -8,6 +8,9 @@
 //!   Args: `<B>` (default 1) `<tokens per seq>` (default 256) `<K drafts>` (2).
 //!   Env: QWEN35_GGUF / PADDOCK_PACK as usual; PADDOCK_SPEC_PHASE_TIME=1 for
 //!   the per-phase wall breakdown.
+// A development probe: it runs on a box its author is looking at, and a
+// failure should stop it where it happened rather than be reported.
+#![allow(clippy::unwrap_used)]
 
 use std::sync::Arc;
 

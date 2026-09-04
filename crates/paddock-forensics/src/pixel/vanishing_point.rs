@@ -208,7 +208,7 @@ impl VanishingPointAnalyzer {
             }
         }
 
-        peaks.sort_by(|a, b| b.votes.cmp(&a.votes));
+        peaks.sort_by_key(|p| std::cmp::Reverse(p.votes));
         peaks.truncate(40);
         peaks
     }

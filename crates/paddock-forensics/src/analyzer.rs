@@ -140,43 +140,6 @@ pub struct Report {
     pub findings: Vec<Finding>,
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    struct Boom;
-    impl Analyzer for Boom {
-        fn name(&self) -> &'static str {
-            "boom"
-        }
-        fn cpu(&self, _ctx: &Context) -> Vec<Finding> {
-            panic!("analyzer blew up");
-        }
-        #[cfg(feature = "cuda")]
-        fn gpu(
-            &self,
-            _gpu: &ForensicGpu,
-            ctx: &Context,
-        ) -> Result<Vec<Finding>, crate::gpu::GpuError> {
-            Ok(self.cpu(ctx))
-        }
-    }
-
-    #[test]
-    fn analyzer_panic_is_isolated() {
-        // Any decodable ctx; the analyzer panics regardless.
-        let ctx = Context::from_bytes(b"%PDF-1.4\ntrailer<<>>\n%%EOF".to_vec()).unwrap();
-        let prev = std::panic::take_hook();
-        std::panic::set_hook(Box::new(|_| {})); // keep test output quiet
-        let out = run_analyzer(&Boom, &ctx, None);
-        std::panic::set_hook(prev);
-        assert!(
-            out.is_empty(),
-            "a panicking analyzer must yield no findings, not abort"
-        );
-    }
-}
-
 impl Report {
     /// Score + dedup these findings into a [`crate::risk::RiskReport`]
     /// (risk_score, verdict, deduplicated key findings). See [`crate::risk`].
@@ -222,4 +185,41 @@ pub fn run(ctx: &Context, gpu: Option<&ForensicGpu>) -> Report {
         findings.extend(run_analyzer(analyzer.as_ref(), ctx, gpu));
     }
     Report { findings }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    struct Boom;
+    impl Analyzer for Boom {
+        fn name(&self) -> &'static str {
+            "boom"
+        }
+        fn cpu(&self, _ctx: &Context) -> Vec<Finding> {
+            panic!("analyzer blew up");
+        }
+        #[cfg(feature = "cuda")]
+        fn gpu(
+            &self,
+            _gpu: &ForensicGpu,
+            ctx: &Context,
+        ) -> Result<Vec<Finding>, crate::gpu::GpuError> {
+            Ok(self.cpu(ctx))
+        }
+    }
+
+    #[test]
+    fn analyzer_panic_is_isolated() {
+        // Any decodable ctx; the analyzer panics regardless.
+        let ctx = Context::from_bytes(b"%PDF-1.4\ntrailer<<>>\n%%EOF".to_vec()).unwrap();
+        let prev = std::panic::take_hook();
+        std::panic::set_hook(Box::new(|_| {})); // keep test output quiet
+        let out = run_analyzer(&Boom, &ctx, None);
+        std::panic::set_hook(prev);
+        assert!(
+            out.is_empty(),
+            "a panicking analyzer must yield no findings, not abort"
+        );
+    }
 }

@@ -745,16 +745,15 @@ mod tests {
                 "Ik test de transcriptie en kijk hoe die in de praktijk werkt.",
             ),
         ] {
-            match identify_text(text, Some(asked), &[]) {
-                Some(found) => assert!(
+            // an abstention is never a mismatch - that is the whole point
+            // of returning None rather than a low-confidence guess
+            if let Some(found) = identify_text(text, Some(asked), &[]) {
+                assert!(
                     same_language(asked, &found.code),
                     "{asked} transcript read as {} ({})",
                     found.code,
                     found.confidence
-                ),
-                // an abstention is never a mismatch - that is the whole point
-                // of returning None rather than a low-confidence guess
-                None => {}
+                );
             }
         }
     }

@@ -40,9 +40,7 @@ fn setup() -> Option<(GpuQwen35, GgufTokenizer)> {
         ));
         return None;
     };
-    let Some(exec) = common::gpu_arc() else {
-        return None;
-    };
+    let exec = common::gpu_arc()?;
     let map = MappedGguf::open(&model_path).expect("open gguf");
     let tok = GgufTokenizer::from_gguf(map.gguf()).expect("tokenizer");
     let mut m = GpuQwen35::load(exec, &map, 4096).expect("load 27B");
@@ -275,13 +273,11 @@ fn two_images_slot_matches_single_path_and_cache_serves_both() {
         "slot prefill must reuse both cached images"
     );
     let mut got0 = vec![amax(&l0)];
-    let mut p0 = rows0 as u32;
-    for _ in 1..n_new {
+    for (p0, _) in (rows0 as u32..).zip(1..n_new) {
         let l = m
             .forward_batch(&[*got0.last().unwrap()], &[p0])
             .expect("batch step");
         got0.push(amax(&l[..vocab]));
-        p0 += 1;
     }
     eprintln!("two-image slot: {:?}", tok.decode(&got0, false));
     assert_eq!(

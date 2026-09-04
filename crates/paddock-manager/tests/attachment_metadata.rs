@@ -5,6 +5,8 @@
 //! runner's `/api/extract`, so a photo's capture time was unavailable whenever
 //! nothing was loaded - and on a cloud-model chat, by design, always. Nothing
 //! about EXIF depends on which model is up, so nothing here starts one.
+// Test code: a failed assumption stops the test where it happened.
+#![allow(clippy::unwrap_used)]
 
 use std::sync::Arc;
 

@@ -13,6 +13,8 @@
 //! of part order - the reference template iterates image parts first.
 //!
 //! Skips cleanly when the model or fixtures are absent.
+// Test code: a failed assumption stops the test where it happened.
+#![allow(clippy::unwrap_used)]
 
 use paddock_runner::chat_template;
 use serde_json::json;

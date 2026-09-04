@@ -1474,10 +1474,10 @@ fn kq_row_dot(bytes: &[u8], ty: GgmlType, src_b: usize, row: usize, xq: &[i8], x
             acc += (dj[g16] * xs[k0 / 32]) as f64 * dot as f64;
         }
         if matches!(ty, GgmlType::Q4K | GgmlType::Q5K) {
-            for g in 0..8 {
+            for (g, &mu_g) in mu.iter().enumerate() {
                 let k0 = sblk * 256 + g * 32;
                 let s32: i32 = (0..32).map(|k| xq[k0 + k] as i32).sum();
-                acc += (mu[g] * xs[k0 / 32]) as f64 * s32 as f64;
+                acc += (mu_g * xs[k0 / 32]) as f64 * s32 as f64;
             }
         }
     }
@@ -2227,8 +2227,7 @@ fn kq_moe_sorted_pair_matches_quantized_reference() {
     let mut live_gpu = Vec::new();
     let mut live_ref = Vec::new();
     let mut live_rows = 0usize;
-    for blk in 0..max_blocks {
-        let e = bexp_h[blk];
+    for (blk, &e) in bexp_h.iter().enumerate() {
         if e == u32::MAX {
             continue;
         }
@@ -2290,8 +2289,7 @@ fn kq_moe_sorted_pair_matches_quantized_reference() {
 
     let fs_h = &fs_gpu;
     let mut part_ref = vec![0f32; batch * n_active * embd];
-    for blk in 0..max_blocks {
-        let e = bexp_h[blk];
+    for (blk, &e) in bexp_h.iter().enumerate() {
         if e == u32::MAX {
             continue;
         }

@@ -3,6 +3,9 @@
 //! gate is end-to-end token parity vs llama-mtmd-cli once the splice lands.
 //!
 //! Usage: gemma4_vision_smoke <mmproj.gguf> <image> [pack.so]
+// A development probe: it runs on a box its author is looking at, and a
+// failure should stop it where it happened rather than be reported.
+#![allow(clippy::unwrap_used)]
 
 use std::sync::Arc;
 

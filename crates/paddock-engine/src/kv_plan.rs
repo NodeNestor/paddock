@@ -342,11 +342,7 @@ impl Demand {
             self.affordable(grant, n)
                 .is_some_and(|b| b >= self.floor(n))
         });
-        let fit_ctx = if asked > 0 {
-            (got as usize / asked) * BLOCK_TOKENS
-        } else {
-            0
-        };
+        let fit_ctx = (got as usize).checked_div(asked).unwrap_or(0) * BLOCK_TOKENS;
         if fit_ctx >= BLOCK_TOKENS && fit_ctx < self.max_ctx {
             fixes.push(format!("lower max_ctx to <={fit_ctx}"));
         }

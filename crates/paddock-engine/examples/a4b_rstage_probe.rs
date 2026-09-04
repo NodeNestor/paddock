@@ -1,6 +1,10 @@
 //! B3-1 probe: chain (matvec_f32_raw + topk_scaled) vs the cooperative
 //! router stage. Logit math is claimed VERBATIM => idx must be identical,
 //! w bit-identical. Plus timing at r=64/128.
+// A development probe: it runs on a box its author is looking at, and a
+// failure should stop it where it happened rather than be reported.
+#![allow(clippy::unwrap_used)]
+
 use std::sync::Arc;
 
 use paddock_engine::gpu::GpuExecutor;

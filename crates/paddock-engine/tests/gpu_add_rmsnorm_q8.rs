@@ -16,6 +16,8 @@
 //!
 //! Shapes cover granite-30b's real decode widths (n_embd 4096, n_ff 32768) plus
 //! a batch>1 row and the no-residual (entry norm) form. Light - no model load.
+// Test code: a failed assumption stops the test where it happened.
+#![allow(clippy::unwrap_used)]
 
 mod common;
 

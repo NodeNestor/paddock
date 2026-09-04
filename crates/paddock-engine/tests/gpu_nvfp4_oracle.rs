@@ -110,7 +110,7 @@ fn nvf4_gemv_matches_f64_reference() {
         exec.nvf4_gemv(&plane, &d_x, &mut d_y, None).expect("gemv");
         let y = exec.to_host(&d_y).expect("host");
         let mut max_rel = 0f64;
-        for row in 0..v.n {
+        for (row, &y_row) in y.iter().enumerate() {
             let host = v.dequant_row_f32(row);
             let (mut want, mut mag) = (0f64, 0f64);
             for (&w, &xi) in host.iter().zip(&x) {
@@ -118,7 +118,7 @@ fn nvf4_gemv_matches_f64_reference() {
                 want += t;
                 mag += t.abs();
             }
-            let got = y[row] as f64;
+            let got = y_row as f64;
             // Gate against the dot's CONDITION (sum of |terms|), not |result|:
             // a near-cancelling row has |result| << mag and f32 accumulation
             // error scales with mag. Format bugs (nibble order, scale

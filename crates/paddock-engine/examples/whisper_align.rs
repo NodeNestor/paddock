@@ -21,6 +21,9 @@
 //! table against the clip for that. Known bias, measured, see
 //! whisper's BPE keeps the leading
 //! space inside the word token, so starts lean early into the preceding pause.
+// A development probe: it runs on a box its author is looking at, and a
+// failure should stop it where it happened rather than be reported.
+#![allow(clippy::unwrap_used)]
 
 use std::sync::Arc;
 

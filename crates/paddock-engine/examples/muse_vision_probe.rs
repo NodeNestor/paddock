@@ -20,6 +20,9 @@
 //!   PADDOCK_PACK=packs/cuda/build/pd-cuda-sm120.so \
 //!   PADDOCK_MUSE_VIS_DUMP=1 \
 //!   cargo run --release --example muse_vision_probe -- gray 896
+// A development probe: it runs on a box its author is looking at, and a
+// failure should stop it where it happened rather than be reported.
+#![allow(clippy::unwrap_used)]
 
 use std::sync::Arc;
 

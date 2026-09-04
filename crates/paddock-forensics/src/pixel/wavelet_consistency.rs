@@ -355,10 +355,12 @@ impl WaveletConsistencyAnalyzer {
         let max_z = anomalous.iter().fold(0.0_f64, |m, &(_, z)| m.max(z));
         let bs = self.block_size;
 
-        let strongest = anomalous
+        let Some(strongest) = anomalous
             .iter()
             .max_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal))
-            .unwrap();
+        else {
+            return;
+        };
         let sx = (strongest.0 % blocks_x) * bs;
         let sy = (strongest.0 / blocks_x) * bs;
 

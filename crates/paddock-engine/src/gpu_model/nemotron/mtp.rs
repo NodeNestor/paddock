@@ -226,7 +226,13 @@ impl GpuNemotron {
         // h tap: the trunk's post-final-norm rows for this pass
         {
             let bs = self.batch.as_ref().expect("batch enabled");
-            let st = self.mtp.as_mut().unwrap().state.as_mut().unwrap();
+            let st = self
+                .mtp
+                .as_mut()
+                .expect("mtp weights")
+                .state
+                .as_mut()
+                .expect("mtp state");
             exec.rmsnorm_batch(&bs.sc.d_x, &final_norm, &mut st.d_h, embd, eps, r)?;
             // shifted h inputs: row 0 of each run pairs with the slot's
             // pending_h, row i with the run's own h row i-1
@@ -630,7 +636,7 @@ impl GpuNemotron {
                 let st = self
                     .mtp
                     .as_mut()
-                    .unwrap()
+                    .expect("mtp weights")
                     .state
                     .as_mut()
                     .expect("mtp state");
@@ -650,7 +656,13 @@ impl GpuNemotron {
                         ));
                     }
                 };
-                let st = self.mtp.as_mut().unwrap().state.as_mut().unwrap();
+                let st = self
+                    .mtp
+                    .as_mut()
+                    .expect("mtp weights")
+                    .state
+                    .as_mut()
+                    .expect("mtp state");
                 let bs = self.batch.as_mut().expect("batch enabled");
                 let sc = &mut bs.sc;
                 gemv_any(&exec, head, &st.d_hd, &mut sc.head_logits)?;

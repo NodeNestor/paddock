@@ -431,7 +431,7 @@ impl VisionModel {
         let (tw, th) = (gw * self.patch, gh * self.patch);
         let resized = resize_rgb8(rgb, w, h, tw, th, Filter::Lanczos3);
         let mut img = vec![0f32; tw * th * 3];
-        for (i, px) in resized.chunks_exact(3).enumerate() {
+        for (i, px) in resized.as_chunks::<3>().0.iter().enumerate() {
             for c in 0..3 {
                 img[i * 3 + c] = (px[c] as f32 / 255.0 - self.image_mean[c]) / self.image_std[c];
             }

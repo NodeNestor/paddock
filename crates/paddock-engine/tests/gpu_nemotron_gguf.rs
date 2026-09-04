@@ -6,6 +6,8 @@
 //! INDEPENDENT correctness reference for this lane is llama.cpp consuming
 //! the identical file (greedy parity over a fixed prompt set) - this test is
 //! the internal-consistency gate that runs without a server.
+// Test code: a failed assumption stops the test where it happened.
+#![allow(clippy::unwrap_used)]
 
 mod common;
 
@@ -614,9 +616,7 @@ fn gguf_spec_serve_cadence_matches_greedy() {
         while a + 1 < chunk.len() && chunk[a + 1] == picks[a] {
             a += 1;
         }
-        for i in 0..=a {
-            committed.push(chunk[i]);
-        }
+        committed.extend_from_slice(&chunk[..=a]);
         assert_eq!(
             &committed[..],
             &b[..committed.len()],
@@ -733,9 +733,7 @@ fn gguf_mtp_drafts_accept() {
         }
         drafted += K;
         accepted += a;
-        for i in 0..=a {
-            committed.push(chunk[i]);
-        }
+        committed.extend_from_slice(&chunk[..=a]);
         assert_eq!(
             &committed[..],
             &b[..committed.len()],

@@ -138,8 +138,8 @@ impl JpegForensicsAnalyzer {
                     row_buf.copy_from_slice(&block[row * 8..(row + 1) * 8]);
                     dct.process_dct2(&mut row_buf);
                     row_buf[0] *= (1.0 / 8.0_f64).sqrt();
-                    for k in 1..8 {
-                        row_buf[k] *= (2.0 / 8.0_f64).sqrt();
+                    for v in row_buf[1..].iter_mut() {
+                        *v *= (2.0 / 8.0_f64).sqrt();
                     }
                     block[row * 8..(row + 1) * 8].copy_from_slice(&row_buf);
                 }
@@ -151,8 +151,8 @@ impl JpegForensicsAnalyzer {
                     }
                     dct.process_dct2(&mut col_buf);
                     col_buf[0] *= (1.0 / 8.0_f64).sqrt();
-                    for k in 1..8 {
-                        col_buf[k] *= (2.0 / 8.0_f64).sqrt();
+                    for v in col_buf[1..].iter_mut() {
+                        *v *= (2.0 / 8.0_f64).sqrt();
                     }
                     for row in 0..8 {
                         block[row * 8 + col] = col_buf[row];
@@ -423,18 +423,18 @@ impl JpegForensicsAnalyzer {
                     let precision = (data[tpos] >> 4) & 0x0F;
                     tpos += 1;
                     let mut table = [0u16; 64];
-                    for i in 0..64 {
+                    for entry in table.iter_mut() {
                         if precision == 0 {
                             if tpos >= data.len() {
                                 break;
                             }
-                            table[i] = data[tpos] as u16;
+                            *entry = data[tpos] as u16;
                             tpos += 1;
                         } else {
                             if tpos + 1 >= data.len() {
                                 break;
                             }
-                            table[i] = u16::from_be_bytes([data[tpos], data[tpos + 1]]);
+                            *entry = u16::from_be_bytes([data[tpos], data[tpos + 1]]);
                             tpos += 2;
                         }
                     }

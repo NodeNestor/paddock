@@ -264,7 +264,7 @@ fn static_env_u64(name: &'static str, default: u64) -> u64 {
     static CACHE: OnceLock<std::sync::Mutex<std::collections::HashMap<&'static str, u64>>> =
         OnceLock::new();
     let m = CACHE.get_or_init(|| std::sync::Mutex::new(std::collections::HashMap::new()));
-    let mut g = m.lock().unwrap();
+    let mut g = m.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
     *g.entry(name).or_insert_with(|| {
         std::env::var(name)
             .ok()

@@ -659,7 +659,10 @@ impl GpuExecutor {
         self.side_armed
             .store(false, std::sync::atomic::Ordering::Relaxed);
         let ev = self.side_stream.record_event(None).map_err(drv)?;
-        *self.side_pending.lock().unwrap() = Some(ev);
+        *self
+            .side_pending
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(ev);
         Ok(())
     }
 
@@ -667,7 +670,12 @@ impl GpuExecutor {
     /// No-op when nothing is pending - call unconditionally before any
     /// consumer of both branches.
     pub fn side_join(&self) -> Result<(), GpuError> {
-        if let Some(ev) = self.side_pending.lock().unwrap().take() {
+        if let Some(ev) = self
+            .side_pending
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .take()
+        {
             self.stream.wait(&ev).map_err(drv)?;
         }
         Ok(())

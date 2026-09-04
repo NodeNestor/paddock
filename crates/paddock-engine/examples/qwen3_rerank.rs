@@ -4,6 +4,9 @@
 //! judge; score = P(yes) at the final position).
 //!
 //! Usage: qwen3_rerank [gguf]   (env QWEN3_RERANK_GGUF overrides)
+// A development probe: it runs on a box its author is looking at, and a
+// failure should stop it where it happened rather than be reported.
+#![allow(clippy::unwrap_used)]
 
 use std::sync::Arc;
 

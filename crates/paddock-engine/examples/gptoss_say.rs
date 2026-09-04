@@ -1,6 +1,9 @@
 //! Greedy text sanity: load a gpt-oss GGUF, decode N tokens, print the text.
 //! The bring-up coherence gate - a broken kernel writes word salad, not English.
 //! Usage: gptoss_say [prompt] [n_tokens]   (PADDOCK_MODEL/PADDOCK_PACK override paths)
+// A development probe: it runs on a box its author is looking at, and a
+// failure should stop it where it happened rather than be reported.
+#![allow(clippy::unwrap_used)]
 
 use std::sync::Arc;
 

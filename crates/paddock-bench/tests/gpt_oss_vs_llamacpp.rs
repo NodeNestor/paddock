@@ -7,6 +7,8 @@
 //!
 //! Heavy + CUDA-gated: launches llama-server (~11 GB) then Paddock (~11 GB).
 //! Run with `--test-threads=1`.
+// Test code: a failed assumption stops the test where it happened.
+#![allow(clippy::unwrap_used)]
 
 use std::io::Read;
 use std::path::PathBuf;

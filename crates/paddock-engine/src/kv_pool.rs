@@ -60,11 +60,7 @@ impl KvPool {
     /// kv_dim × kv_bytes`). This is the vLLM `--gpu-memory-utilization` knob: KV
     /// capacity follows the budget, not `max_ctx × max_batch`.
     pub fn with_budget(budget_bytes: u64, block_bytes: u64) -> Self {
-        let n = if block_bytes == 0 {
-            0
-        } else {
-            (budget_bytes / block_bytes) as u32
-        };
+        let n = budget_bytes.checked_div(block_bytes).unwrap_or(0) as u32;
         Self::with_blocks(n)
     }
 

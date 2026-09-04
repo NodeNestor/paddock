@@ -21,6 +21,9 @@
 //! (GRANITE_PROMPT, not PROMPT: cmd.exe exports PROMPT="$P$G" and the
 //! inherited env silently replaces the default - the laguna bring-up lost an
 //! hour to exactly that.)
+// A development probe: it runs on a box its author is looking at, and a
+// failure should stop it where it happened rather than be reported.
+#![allow(clippy::unwrap_used)]
 
 use std::sync::Arc;
 

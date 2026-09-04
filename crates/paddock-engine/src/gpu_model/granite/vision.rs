@@ -352,7 +352,9 @@ impl VisionModel {
         }
         // stored (height, width) per HF; we work in geometric (width, height)
         let grid_pinpoints: Vec<(usize, usize)> = pins
-            .chunks_exact(2)
+            .as_chunks::<2>()
+            .0
+            .iter()
             .map(|c| (c[1] as usize, c[0] as usize))
             .collect();
 

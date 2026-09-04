@@ -10,6 +10,9 @@
 //!        LAGUNA_DFLASH=<path to the DFlash drafter dir>
 //!        PADDOCK_PACK=packs\cuda\build\pd-cuda-sm86.dll
 //!        cargo run --release --example laguna_dflash
+// A development probe: it runs on a box its author is looking at, and a
+// failure should stop it where it happened rather than be reported.
+#![allow(clippy::unwrap_used)]
 
 use std::sync::Arc;
 

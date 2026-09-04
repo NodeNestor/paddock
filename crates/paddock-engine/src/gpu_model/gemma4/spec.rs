@@ -346,8 +346,7 @@ impl MtpDrafter {
             Ok(exec.upload(map, &name)?.buf)
         };
         let mut layers = Vec::with_capacity(n_layer);
-        for i in 0..n_layer {
-            let swa = is_swa[i];
+        for (i, &swa) in is_swa.iter().enumerate() {
             let out_scale = match map.tensor_bytes(&format!("blk.{i}.layer_output_scale.weight")) {
                 Ok((_, bytes)) => f32::from_le_bytes(bytes[..4].try_into().expect("f32 scalar")),
                 Err(_) => 1.0,
@@ -1437,7 +1436,7 @@ impl GpuGemma4 {
                 }
                 return Ok(None);
             }
-            let last = *chunk.last().unwrap();
+            let last = *chunk.last().expect("non-empty chunk checked above");
             for i in 0..clen {
                 tokens.push(chunk.get(i).copied().unwrap_or(last));
                 positions.push((start + i) as u32);
@@ -1456,8 +1455,7 @@ impl GpuGemma4 {
         // have batch_upload skip its host token copy. Positions/slots/plans
         // are value-independent and stay host-built. The pad rule matches
         // the host loop above exactly (repeat the last real token).
-        if self.spec_async.is_some() {
-            let plan = self.spec_async.as_ref().expect("checked");
+        if let Some(plan) = self.spec_async.as_ref() {
             let exec = self.exec.clone();
             if n > 128 {
                 return Err(GpuError::Driver(

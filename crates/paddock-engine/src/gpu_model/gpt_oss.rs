@@ -247,11 +247,7 @@ pub fn set_moe_bs(on: bool) {
 /// per-q-head kernel re-reads each K/V tile group(=8)x (the 128-key SWA
 /// layers spent 106 us/launch there vs ~30 through the fused walk).
 fn attn_gqa_fused(n_heads: usize, n_kv_heads: usize, batch: usize) -> bool {
-    let group = if n_kv_heads > 0 {
-        n_heads / n_kv_heads
-    } else {
-        1
-    };
+    let group = n_heads.checked_div(n_kv_heads).unwrap_or(1);
     batch > 1
         && (2..=8).contains(&group)
         && n_kv_heads >= 4
@@ -1406,7 +1402,7 @@ impl GpuGptOss {
             let pos = positions[i] as usize;
             let before = bs.tables[s].blocks().len();
             {
-                let pool = bs.pool.as_mut().unwrap();
+                let pool = bs.pool.as_mut().expect("pool checked above");
                 bs.tables[s]
                     .ensure(pos, pool)
                     .map_err(|_| GpuModelError::PoolExhausted)?;
@@ -1426,7 +1422,7 @@ impl GpuGptOss {
                 .memcpy_htod(&bs.block_table_host, dst)
                 .map_err(|e| GpuError::Driver(e.to_string()))?;
             if paddock_models::dev_var_os!("PADDOCK_POOL_STATS").is_some() {
-                let pool = bs.pool.as_ref().unwrap();
+                let pool = bs.pool.as_ref().expect("pool checked above");
                 tracing::info!(
                     "pool: {} / {} blocks free",
                     pool.free_blocks(),
@@ -1665,7 +1661,9 @@ impl GpuGptOss {
                         &mut bs.k_cache[li],
                         d_pos,
                         slots,
-                        bs.d_bt[layer.is_swa as usize].as_ref().unwrap(),
+                        bs.d_bt[layer.is_swa as usize]
+                            .as_ref()
+                            .expect("paged block tables built"),
                         bps,
                         kv_dim,
                         b,
@@ -1698,7 +1696,9 @@ impl GpuGptOss {
                         &mut bs.v_cache[li],
                         d_pos,
                         slots,
-                        bs.d_bt[layer.is_swa as usize].as_ref().unwrap(),
+                        bs.d_bt[layer.is_swa as usize]
+                            .as_ref()
+                            .expect("paged block tables built"),
                         bps,
                         kv_dim,
                         b,
@@ -1799,7 +1799,9 @@ impl GpuGptOss {
                             head_dim,
                             yarn,
                             b,
-                            bs.d_bt[layer.is_swa as usize].as_ref().unwrap(),
+                            bs.d_bt[layer.is_swa as usize]
+                                .as_ref()
+                                .expect("paged block tables built"),
                             bps,
                             kv_dtype,
                         )?;
@@ -1851,7 +1853,9 @@ impl GpuGptOss {
                             head_dim,
                             yarn,
                             b,
-                            bs.d_bt[layer.is_swa as usize].as_ref().unwrap(),
+                            bs.d_bt[layer.is_swa as usize]
+                                .as_ref()
+                                .expect("paged block tables built"),
                             bps,
                             kv_dtype,
                         )?;
@@ -1939,7 +1943,9 @@ impl GpuGptOss {
                                     &mut bs.d_attn_ml,
                                     d_pos,
                                     Some(sl),
-                                    bs.d_bt[layer.is_swa as usize].as_ref().unwrap(),
+                                    bs.d_bt[layer.is_swa as usize]
+                                        .as_ref()
+                                        .expect("paged block tables built"),
                                     bps,
                                     n_heads,
                                     n_kv_heads,
@@ -1996,7 +2002,9 @@ impl GpuGptOss {
                                 &mut bs.d_attn,
                                 d_pos,
                                 sl,
-                                bs.d_bt[layer.is_swa as usize].as_ref().unwrap(),
+                                bs.d_bt[layer.is_swa as usize]
+                                    .as_ref()
+                                    .expect("paged block tables built"),
                                 bps,
                                 n_heads,
                                 n_kv_heads,
@@ -2039,7 +2047,9 @@ impl GpuGptOss {
                             &mut bs.d_attn,
                             d_pos,
                             Some(sl),
-                            bs.d_bt[layer.is_swa as usize].as_ref().unwrap(),
+                            bs.d_bt[layer.is_swa as usize]
+                                .as_ref()
+                                .expect("paged block tables built"),
                             bps,
                             n_heads,
                             n_kv_heads,
@@ -2085,7 +2095,9 @@ impl GpuGptOss {
                         &mut bs.d_attn,
                         d_pos,
                         sl,
-                        bs.d_bt[layer.is_swa as usize].as_ref().unwrap(),
+                        bs.d_bt[layer.is_swa as usize]
+                            .as_ref()
+                            .expect("paged block tables built"),
                         bps,
                         n_heads,
                         n_kv_heads,
@@ -2127,7 +2139,9 @@ impl GpuGptOss {
                         &mut bs.d_attn_ml,
                         d_pos,
                         slots,
-                        bs.d_bt[layer.is_swa as usize].as_ref().unwrap(),
+                        bs.d_bt[layer.is_swa as usize]
+                            .as_ref()
+                            .expect("paged block tables built"),
                         bps,
                         n_heads,
                         n_kv_heads,
@@ -2180,7 +2194,9 @@ impl GpuGptOss {
                     &mut bs.d_attn,
                     d_pos,
                     slots,
-                    bs.d_bt[layer.is_swa as usize].as_ref().unwrap(),
+                    bs.d_bt[layer.is_swa as usize]
+                        .as_ref()
+                        .expect("paged block tables built"),
                     bps,
                     n_heads,
                     n_kv_heads,
@@ -2544,9 +2560,17 @@ impl GpuGptOss {
         // step inputs land in the fixed buffers, outside any graph - only
         // their contents change between replays
         {
-            let mut v = self.d_pf_tok.as_mut().unwrap().slice_mut(0..b);
+            let mut v = self
+                .d_pf_tok
+                .as_mut()
+                .expect("pf inputs ensured")
+                .slice_mut(0..b);
             exec.stream.memcpy_htod(tokens, &mut v).map_err(drv)?;
-            let mut v = self.d_pf_pos.as_mut().unwrap().slice_mut(0..b);
+            let mut v = self
+                .d_pf_pos
+                .as_mut()
+                .expect("pf inputs ensured")
+                .slice_mut(0..b);
             exec.stream.memcpy_htod(positions, &mut v).map_err(drv)?;
         }
         // G4a: grow the pool for each decode row (the batch step maps row i ->
@@ -2563,10 +2587,16 @@ impl GpuGptOss {
         if eager {
             self.record_batch_step(b)?;
         } else {
-            if !self.batch.as_ref().unwrap().step_graphs.contains_key(&b) {
+            if !self
+                .batch
+                .as_ref()
+                .expect("batch enabled")
+                .step_graphs
+                .contains_key(&b)
+            {
                 self.capture_batch_step(b)?;
             }
-            self.batch.as_ref().unwrap().step_graphs[&b]
+            self.batch.as_ref().expect("batch enabled").step_graphs[&b]
                 .0
                 .launch()
                 .map_err(|e| GpuError::Driver(format!("step graph launch: {e}")))?;
@@ -2643,7 +2673,7 @@ impl GpuGptOss {
         }
         let drv = |e: cudarc::driver::DriverError| crate::gpu::from_driver(e);
         {
-            let bs = self.batch.as_mut().unwrap();
+            let bs = self.batch.as_mut().expect("batch enabled");
             let mut v = bs.d_samp_par.slice_mut(0..b * 4);
             exec.stream.memcpy_htod(&par, &mut v).map_err(drv)?;
             if any_trunc {
@@ -2789,14 +2819,28 @@ impl GpuGptOss {
         }
         assert!(self.pipe.is_none(), "decode pipe already active");
         self.ensure_pf_inputs()?;
-        if !self.batch.as_ref().unwrap().step_graphs.contains_key(&b) {
+        if !self
+            .batch
+            .as_ref()
+            .expect("batch enabled")
+            .step_graphs
+            .contains_key(&b)
+        {
             self.capture_batch_step(b)?;
         }
         let drv = |e: cudarc::driver::DriverError| crate::gpu::from_driver(e);
         {
-            let mut v = self.d_pf_tok.as_mut().unwrap().slice_mut(0..b);
+            let mut v = self
+                .d_pf_tok
+                .as_mut()
+                .expect("pf inputs ensured")
+                .slice_mut(0..b);
             exec.stream.memcpy_htod(tokens, &mut v).map_err(drv)?;
-            let mut v = self.d_pf_pos.as_mut().unwrap().slice_mut(0..b);
+            let mut v = self
+                .d_pf_pos
+                .as_mut()
+                .expect("pf inputs ensured")
+                .slice_mut(0..b);
             exec.stream.memcpy_htod(positions, &mut v).map_err(drv)?;
         }
         self.pipe = Some(PipeState {
@@ -2827,7 +2871,7 @@ impl GpuGptOss {
             (p.b, p.tick)
         };
         assert_eq!(plans.len(), b, "one plan per row");
-        self.pipe.as_mut().unwrap().tick = j + 1;
+        self.pipe.as_mut().expect("pipe checked above").tick = j + 1;
         if let Err(e) = self.pipe_launch_tick(plans, true) {
             self.pipe_abort();
             return Err(e);
@@ -2835,7 +2879,7 @@ impl GpuGptOss {
         let ring = (j % 2) as usize;
         let r = {
             let bs = self.batch.as_ref().ok_or(GpuModelError::BatchDisabled)?;
-            let ev = self.pipe.as_ref().unwrap().ev[ring]
+            let ev = self.pipe.as_ref().expect("pipe checked above").ev[ring]
                 .as_ref()
                 .expect("in-flight tick event");
             exec.to_host_u32_after(ev, &bs.d_pipe_out, ring * bs.max_batch, b)
@@ -2889,9 +2933,9 @@ impl GpuGptOss {
         let ring = (tick % 2) as usize;
         let (par, tpar) = Self::pack_samp_par(plans);
         let drv = |e: cudarc::driver::DriverError| crate::gpu::from_driver(e);
-        let max_batch = self.batch.as_ref().unwrap().max_batch;
+        let max_batch = self.batch.as_ref().expect("batch enabled").max_batch;
         {
-            let bs = self.batch.as_mut().unwrap();
+            let bs = self.batch.as_mut().expect("batch enabled");
             let off = ring * max_batch * 4;
             let mut v = bs.d_pipe_par.slice_mut(off..off + b * 4);
             exec.stream.memcpy_htod(&par, &mut v).map_err(drv)?;
@@ -2906,19 +2950,19 @@ impl GpuGptOss {
             let mut d_tok = self.d_pf_tok.take().expect("pf buffers");
             let mut d_pos = self.d_pf_pos.take().expect("pf buffers");
             let r = {
-                let bs = self.batch.as_ref().unwrap();
+                let bs = self.batch.as_ref().expect("batch enabled");
                 exec.pipe_advance(&bs.d_pipe_out, prev * max_batch, &mut d_tok, &mut d_pos, b)
             };
             self.d_pf_tok = Some(d_tok);
             self.d_pf_pos = Some(d_pos);
             r?;
         }
-        self.batch.as_ref().unwrap().step_graphs[&b]
+        self.batch.as_ref().expect("batch enabled").step_graphs[&b]
             .0
             .launch()
             .map_err(|e| GpuError::Driver(format!("pipe step graph launch: {e}")))?;
         {
-            let bs = self.batch.as_mut().unwrap();
+            let bs = self.batch.as_mut().expect("batch enabled");
             // scoped: d_logits immut + d_pipe_out mut are disjoint fields
             let (logits, par_buf, out) = (&bs.d_logits, &bs.d_pipe_par, &mut bs.d_pipe_out);
             exec.sample_rows_at(
@@ -2958,7 +3002,7 @@ impl GpuGptOss {
             }
         }
         let ev = exec.record_event()?;
-        self.pipe.as_mut().unwrap().ev[ring] = Some(ev);
+        self.pipe.as_mut().expect("pipe active").ev[ring] = Some(ev);
         Ok(())
     }
 
@@ -3287,11 +3331,23 @@ impl GpuGptOss {
         self.ensure_pf_inputs()?;
         let drv = |e: cudarc::driver::DriverError| crate::gpu::from_driver(e);
         {
-            let mut v = self.d_pf_tok.as_mut().unwrap().slice_mut(0..r);
+            let mut v = self
+                .d_pf_tok
+                .as_mut()
+                .expect("pf inputs ensured")
+                .slice_mut(0..r);
             exec.stream.memcpy_htod(&tokens, &mut v).map_err(drv)?;
-            let mut v = self.d_pf_pos.as_mut().unwrap().slice_mut(0..r);
+            let mut v = self
+                .d_pf_pos
+                .as_mut()
+                .expect("pf inputs ensured")
+                .slice_mut(0..r);
             exec.stream.memcpy_htod(&positions, &mut v).map_err(drv)?;
-            let mut v = self.d_pf_slots.as_mut().unwrap().slice_mut(0..r);
+            let mut v = self
+                .d_pf_slots
+                .as_mut()
+                .expect("pf inputs ensured")
+                .slice_mut(0..r);
             exec.stream.memcpy_htod(&slots, &mut v).map_err(drv)?;
         }
         // Numerics pins force eager (P6m lesson). Graphs key by TOTAL row
@@ -3302,10 +3358,16 @@ impl GpuGptOss {
         if eager {
             self.record_verify_rows(r)?;
         } else {
-            if !self.batch.as_ref().unwrap().spec_graphs.contains_key(&r) {
+            if !self
+                .batch
+                .as_ref()
+                .expect("batch enabled")
+                .spec_graphs
+                .contains_key(&r)
+            {
                 self.capture_verify_rows(r)?;
             }
-            self.batch.as_ref().unwrap().spec_graphs[&r]
+            self.batch.as_ref().expect("batch enabled").spec_graphs[&r]
                 .0
                 .launch()
                 .map_err(|e| GpuError::Driver(format!("verify graph launch: {e}")))?;
@@ -3408,7 +3470,7 @@ impl GpuGptOss {
         let mut k_now = n_draft.min(4);
         let mut burst_len = 2usize;
         while out.len() < max_new && pos < self.max_ctx {
-            let id_last = *out.last().unwrap();
+            let id_last = *out.last().expect("out seeded with the first token");
             // rows write KV at pos..pos+r-1 -> keep the chunk inside max_ctx
             let k_cap = k_now.min(self.max_ctx - pos - 1);
             let drafts = if k_cap == 0 {
@@ -3433,20 +3495,32 @@ impl GpuGptOss {
                     exec.stream
                         .memcpy_htod(&[0u32], &mut bs.d_g_step)
                         .map_err(drv)?;
-                    let d_pos = self.d_g_pos.as_mut().unwrap();
+                    let d_pos = self.d_g_pos.as_mut().expect("d_g_pos allocated above");
                     exec.stream.memcpy_htod(&[pos as u32], d_pos).map_err(drv)?;
                 }
-                if self.batch.as_ref().unwrap().gen_graph.is_none() {
+                if self
+                    .batch
+                    .as_ref()
+                    .expect("batch enabled")
+                    .gen_graph
+                    .is_none()
+                {
                     self.capture_gen_graph()?;
                 }
                 {
-                    let g = self.batch.as_ref().unwrap().gen_graph.as_ref().unwrap();
+                    let g = self
+                        .batch
+                        .as_ref()
+                        .expect("batch enabled")
+                        .gen_graph
+                        .as_ref()
+                        .expect("gen graph captured above");
                     for _ in 0..burst {
                         g.0.launch()
                             .map_err(|x| GpuError::Driver(format!("gen launch: {x}")))?;
                     }
                 }
-                let ids = exec.to_host_u32(&self.batch.as_ref().unwrap().d_g_out)?;
+                let ids = exec.to_host_u32(&self.batch.as_ref().expect("batch enabled").d_g_out)?;
                 for &t in ids.iter().take(burst) {
                     out.push(t);
                     dr.push(t);
@@ -4155,22 +4229,40 @@ impl GpuGptOss {
             // per-chunk inputs land in the fixed buffers, outside any graph -
             // only their contents change between replays
             {
-                let mut v = self.d_pf_tok.as_mut().unwrap().slice_mut(0..cs);
+                let mut v = self
+                    .d_pf_tok
+                    .as_mut()
+                    .expect("pf inputs ensured")
+                    .slice_mut(0..cs);
                 exec.stream
                     .memcpy_htod(&tokens[start..start + cs], &mut v)
                     .map_err(drv)?;
-                let mut v = self.d_pf_pos.as_mut().unwrap().slice_mut(0..cs);
+                let mut v = self
+                    .d_pf_pos
+                    .as_mut()
+                    .expect("pf inputs ensured")
+                    .slice_mut(0..cs);
                 exec.stream.memcpy_htod(&positions, &mut v).map_err(drv)?;
-                let mut v = self.d_pf_slots.as_mut().unwrap().slice_mut(0..cs);
+                let mut v = self
+                    .d_pf_slots
+                    .as_mut()
+                    .expect("pf inputs ensured")
+                    .slice_mut(0..cs);
                 exec.stream.memcpy_htod(&slots_v, &mut v).map_err(drv)?;
             }
             if eager {
                 self.record_prefill_chunk(cs)?;
             } else {
-                if !self.batch.as_ref().unwrap().pf_graphs.contains_key(&cs) {
+                if !self
+                    .batch
+                    .as_ref()
+                    .expect("batch enabled")
+                    .pf_graphs
+                    .contains_key(&cs)
+                {
                     self.capture_prefill_chunk(cs)?;
                 }
-                self.batch.as_ref().unwrap().pf_graphs[&cs]
+                self.batch.as_ref().expect("batch enabled").pf_graphs[&cs]
                     .0
                     .launch()
                     .map_err(|e| GpuError::Driver(format!("prefill graph launch: {e}")))?;
@@ -4268,11 +4360,15 @@ impl GpuGptOss {
         let kv_dim = self.n_kv_heads * self.head_dim;
         let kv_bytes = self.kv_dtype.bytes();
         let blk_bytes = (16 * kv_dim * kv_bytes) as u64;
-        let bs = self.batch.as_ref().unwrap();
+        let bs = self.batch.as_ref().expect("batch enabled");
         let swa_ring = bs.swa_ring_blocks;
         let win_blocks = self.swa_window / 16;
         let first_jb = pos / 16 - win_blocks; // pos is block-aligned, pos>=swa_window
-        let (cp, _g) = bs.d_swa_ckpt.as_ref().unwrap().device_ptr(&exec.stream);
+        let (cp, _g) = bs
+            .d_swa_ckpt
+            .as_ref()
+            .expect("paged prefix cache built")
+            .device_ptr(&exec.stream);
         let ckpt_base = cp + idx as u64 * bs.swa_ckpt_bytes as u64;
         let mut descs: Vec<u64> = Vec::new();
         let mut sl = 0usize; // sequential SWA-layer index
@@ -4361,9 +4457,9 @@ impl GpuGptOss {
         }
         let nb = pos / 16;
         {
-            let bs = self.batch.as_mut().unwrap();
+            let bs = self.batch.as_mut().expect("batch enabled");
             let bps = bs.blocks_per_slot;
-            let pool = bs.pool.as_mut().unwrap();
+            let pool = bs.pool.as_mut().expect("prefix requires the pool");
             bs.tables[slot].clear(pool); // release the slot's previous sequence
             bs.tables[slot].share_prefix(&m.blocks[..nb], pool); // adopt, zero copy
             // mirror the shared prefix into the host table so the suffix's first
@@ -4403,12 +4499,12 @@ impl GpuGptOss {
         let last = (tokens.len() / 16) * 16; // last full block boundary
         // insert the full-attn blocks (retained in the pool) so they can be shared.
         {
-            let bs = self.batch.as_mut().unwrap();
+            let bs = self.batch.as_mut().expect("batch enabled");
             let blocks = bs.tables[slot].blocks().to_vec();
-            let pool = bs.pool.as_mut().unwrap();
+            let pool = bs.pool.as_mut().expect("prefix requires the pool");
             bs.paged_prefix
                 .as_mut()
-                .unwrap()
+                .expect("paged prefix checked above")
                 .insert(tokens, &blocks, pool);
         }
         // Checkpoint the SWA window at a cadence of `swa_window`-token boundaries
@@ -4422,15 +4518,18 @@ impl GpuGptOss {
         // window is still resident (no-op for prompts ≤ ring capacity; for very
         // long prompts it limits reuse to the recent prefix - a documented
         // follow-up would snapshot per-tick as boundaries are crossed).
-        let ring_positions = self.batch.as_ref().unwrap().swa_ring_blocks * 16;
+        let ring_positions = self.batch.as_ref().expect("batch enabled").swa_ring_blocks * 16;
         let min_pos = (tokens.len() + swa_window).saturating_sub(ring_positions);
         let cadence = swa_window.max(16);
         let mut pos = swa_window.max(min_pos.div_ceil(cadence) * cadence); // ≥ window, cadence-aligned
         let mut n_ckpt = 0;
         while pos <= last {
             let idx = {
-                let bs = self.batch.as_mut().unwrap();
-                bs.paged_prefix.as_mut().unwrap().attach_state(tokens, pos)
+                let bs = self.batch.as_mut().expect("batch enabled");
+                bs.paged_prefix
+                    .as_mut()
+                    .expect("paged prefix checked above")
+                    .attach_state(tokens, pos)
             };
             if let Some(cidx) = idx {
                 self.swa_window_copy(slot, cidx, pos, true)?; // snapshot ring -> ckpt
@@ -4512,7 +4611,7 @@ impl GpuGptOss {
         rec?; // surface a record failure only after capture is cleanly ended
         let graph =
             graph?.ok_or_else(|| GpuError::Driver("gen capture produced no graph".into()))?;
-        self.batch.as_mut().unwrap().gen_graph = Some(SendGraph(graph));
+        self.batch.as_mut().expect("batch enabled").gen_graph = Some(SendGraph(graph));
         Ok(())
     }
 
@@ -4575,10 +4674,16 @@ impl GpuGptOss {
             exec.stream
                 .memcpy_htod(&[token0], &mut bs.d_g_token)
                 .map_err(drv)?;
-            let d_pos = self.d_g_pos.as_mut().unwrap();
+            let d_pos = self.d_g_pos.as_mut().expect("d_g_pos allocated above");
             exec.stream.memcpy_htod(&[p as u32], d_pos).map_err(drv)?;
         }
-        if self.batch.as_ref().unwrap().gen_graph.is_none() {
+        if self
+            .batch
+            .as_ref()
+            .expect("batch enabled")
+            .gen_graph
+            .is_none()
+        {
             self.capture_gen_graph()?;
         }
 
@@ -4587,17 +4692,17 @@ impl GpuGptOss {
         while produced < target {
             let k = (target - produced).min(GEN_CHUNK);
             {
-                let bs = self.batch.as_mut().unwrap();
+                let bs = self.batch.as_mut().expect("batch enabled");
                 exec.stream
                     .memcpy_htod(&[0u32], &mut bs.d_g_step)
                     .map_err(drv)?;
-                let g = bs.gen_graph.as_ref().unwrap();
+                let g = bs.gen_graph.as_ref().expect("gen graph captured above");
                 for _ in 0..k {
                     g.0.launch()
                         .map_err(|x| GpuError::Driver(format!("gen launch: {x}")))?;
                 }
             }
-            let ids = exec.to_host_u32(&self.batch.as_ref().unwrap().d_g_out)?;
+            let ids = exec.to_host_u32(&self.batch.as_ref().expect("batch enabled").d_g_out)?;
             for &id in ids.iter().take(k) {
                 out.push(id);
                 produced += 1;

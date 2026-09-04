@@ -825,14 +825,16 @@ impl GpuGemma4 {
             // ── FFN half: parallel GEGLU
             exec.rmsnorm(&sc.x, &lw.ffn_norm, &mut sc.normed, hp.n_embd, hp.eps)?;
             let n_ff = lw.ffn_gate.dims[1];
-            if lw.f8_gu.is_some() && lw.ffn_gate.data.len() <= 48 {
+            if let Some(f8_gu) = &lw.f8_gu
+                && lw.ffn_gate.data.len() <= 48
+            {
                 // F8R fused gate|up plane (verify-GEMM dedup): one gemv
                 // lands the concatenated [gate|up] row, geglu_pair folds it
                 // in place - same values as the split gemvs (same kernel,
                 // concatenated weights; geglu_pair == geglu formula)
                 if super::batch::fp4_on() {
                     exec.fp4_gemv_at_off(
-                        lw.f8_gu.as_ref().unwrap(),
+                        f8_gu,
                         0,
                         &sc.normed,
                         &mut sc.pf_gate,
@@ -842,7 +844,7 @@ impl GpuGemma4 {
                     )?;
                     exec.glu_pair(&mut sc.pf_gate, n_ff, 1, hp.glu_act())?;
                     exec.fp4_gemv_at_off(
-                        lw.f8_down.as_ref().unwrap(),
+                        lw.f8_down.as_ref().expect("f8 FFN planes built as a set"),
                         0,
                         &sc.pf_gate,
                         &mut sc.proj,
@@ -850,14 +852,14 @@ impl GpuGemma4 {
                         n_ff,
                         hp.n_embd,
                     )?;
-                } else if lw.f8_gu.as_ref().unwrap().is_lin() {
+                } else if f8_gu.is_lin() {
                     // lin trio (all-or-nothing with down): the batched mma_ks
                     // band's exact chain at r=1 - quantize, fused [gate|up]
                     // GEMM, fused geglu+quant, down GEMM. gu_il = the plane
                     // rows are interleaved -> pair-addressed geglu twin
                     exec.quantize_e4m3(&sc.normed, &mut sc.pf_e4q, &mut sc.pf_e4s, hp.n_embd)?;
                     exec.f8_gemm_lin(
-                        lw.f8_gu.as_ref().unwrap(),
+                        f8_gu,
                         0,
                         hp.n_embd,
                         2 * n_ff,
@@ -887,7 +889,7 @@ impl GpuGemma4 {
                         )?;
                     }
                     exec.f8_gemm_lin(
-                        lw.f8_down.as_ref().unwrap(),
+                        lw.f8_down.as_ref().expect("f8 FFN planes built as a set"),
                         0,
                         n_ff,
                         hp.n_embd,
@@ -898,17 +900,10 @@ impl GpuGemma4 {
                         1,
                     )?;
                 } else {
-                    exec.f8_gemv_at(
-                        lw.f8_gu.as_ref().unwrap(),
-                        &sc.normed,
-                        &mut sc.pf_gate,
-                        0,
-                        hp.n_embd,
-                        2 * n_ff,
-                    )?;
+                    exec.f8_gemv_at(f8_gu, &sc.normed, &mut sc.pf_gate, 0, hp.n_embd, 2 * n_ff)?;
                     exec.glu_pair(&mut sc.pf_gate, n_ff, 1, hp.glu_act())?;
                     exec.f8_gemv_at(
-                        lw.f8_down.as_ref().unwrap(),
+                        lw.f8_down.as_ref().expect("f8 FFN planes built as a set"),
                         &sc.pf_gate,
                         &mut sc.proj,
                         0,
@@ -916,18 +911,13 @@ impl GpuGemma4 {
                         hp.n_embd,
                     )?;
                 }
-            } else if lw.f8_gate.is_some() && lw.ffn_gate.data.len() <= 48 {
+            } else if let Some(gate8) = &lw.f8_gate
+                && lw.ffn_gate.data.len() <= 48
+            {
                 // F8R: e4m3 gemvs (f32 x, bandwidth-floor parity with q8)
+                exec.f8_gemv_at(gate8, &sc.normed, &mut sc.gate, 0, hp.n_embd, n_ff)?;
                 exec.f8_gemv_at(
-                    lw.f8_gate.as_ref().unwrap(),
-                    &sc.normed,
-                    &mut sc.gate,
-                    0,
-                    hp.n_embd,
-                    n_ff,
-                )?;
-                exec.f8_gemv_at(
-                    lw.f8_up.as_ref().unwrap(),
+                    lw.f8_up.as_ref().expect("f8 FFN planes built as a set"),
                     &sc.normed,
                     &mut sc.up,
                     0,
@@ -936,19 +926,21 @@ impl GpuGemma4 {
                 )?;
                 exec.glu(&mut sc.gate, &sc.up, n_ff, hp.glu_act())?;
                 exec.f8_gemv_at(
-                    lw.f8_down.as_ref().unwrap(),
+                    lw.f8_down.as_ref().expect("f8 FFN planes built as a set"),
                     &sc.gate,
                     &mut sc.proj,
                     0,
                     n_ff,
                     hp.n_embd,
                 )?;
-            } else if lw.f8t_gu.is_some() && lw.ffn_gate.data.len() <= 48 {
+            } else if let Some(f8t_gu) = &lw.f8t_gu
+                && lw.ffn_gate.data.len() <= 48
+            {
                 // unified planes: the f8t fused chain at r=1 -
                 // same [gate|up] -> geglu2-quant -> down as the batched arm
                 exec.quantize_e4m3_row(&sc.normed, &mut sc.pf_e4q, &mut sc.pf_e4rs, hp.n_embd, 1)?;
                 exec.f8t_gemm(
-                    lw.f8t_gu.as_ref().unwrap(),
+                    f8t_gu,
                     &sc.pf_e4q,
                     &sc.pf_e4rs,
                     &mut sc.pf_skfix,
@@ -966,7 +958,7 @@ impl GpuGemma4 {
                     hp.glu_act(),
                 )?;
                 exec.f8t_gemm(
-                    lw.f8t_down.as_ref().unwrap(),
+                    lw.f8t_down.as_ref().expect("f8t FFN planes built as a set"),
                     &sc.pf_e4q,
                     &sc.pf_e4rs,
                     &mut sc.pf_skfix,
@@ -1357,7 +1349,7 @@ impl GpuGemma4 {
                 "spans must be contiguous"
             );
             let mut offs: Vec<u32> = spans.iter().map(|s| s.0 as u32).collect();
-            let last = spans.last().unwrap();
+            let last = spans.last().expect("spans non-empty (pf_runs_batched)");
             offs.push((last.0 + last.1) as u32);
             let sc = &mut self.scratch;
             let mut v = sc
@@ -1368,7 +1360,11 @@ impl GpuGemma4 {
                 .stream
                 .memcpy_htod(&offs, &mut v)
                 .map_err(|e| GpuError::Driver(e.to_string()))?;
-            let maxn = spans.iter().map(|s| s.1).max().unwrap() as u32;
+            let maxn = spans
+                .iter()
+                .map(|s| s.1)
+                .max()
+                .expect("spans non-empty (pf_runs_batched)") as u32;
             self.exec
                 .pf_runs_register(Some((&sc.pf_runs, spans.len() as u32, maxn)))?;
         }
@@ -1595,7 +1591,7 @@ impl GpuGemma4 {
             // lin gu planes pull r==1 into the twin band too (the gemv arm
             // below reads f32 activations and can't take lin boxes; the
             // twin wrapper dispatches them onto pd_f8_gemm_lin).
-            let gu_lin = has_gu && lw.f8_gu.as_ref().unwrap().is_lin();
+            let gu_lin = has_gu && lw.f8_gu.as_ref().expect("f8_gu present (has_gu)").is_lin();
             let f8ks =
                 f8r && ((2..=31).contains(&r) || (r == 1 && gu_lin)) && exec.has_f8_gemm_mma_ks();
             let f8 = (has_gu || lw.f8_gate.is_some())
@@ -1771,7 +1767,7 @@ impl GpuGemma4 {
                 //  b16 slice 2 (gate hoisted next to a16)
                 if qkv_b16 {
                     exec.f8cut_gemm_b16(
-                        lw.f8t_qkv.as_ref().unwrap(),
+                        lw.f8t_qkv.as_ref().expect("f8t_qkv checked (f8t_att)"),
                         0,
                         &sc.pf_e4q,
                         &sc.pf_e4rs,
@@ -1782,7 +1778,7 @@ impl GpuGemma4 {
                     )?;
                 } else {
                     exec.f8t_gemm_off(
-                        lw.f8t_qkv.as_ref().unwrap(),
+                        lw.f8t_qkv.as_ref().expect("f8t_qkv checked (f8t_att)"),
                         0,
                         &sc.pf_e4q,
                         &sc.pf_e4rs,
@@ -1823,7 +1819,7 @@ impl GpuGemma4 {
                         w8,
                         &sc.pf_e4q,
                         &sc.pf_e4rs,
-                        lw.qkv_ws.as_ref().unwrap(),
+                        lw.qkv_ws.as_ref().expect("qkv_ws checked (pc_qkv)"),
                         &mut sc.pf_q,
                         &mut sc.pf_k,
                         &mut sc.pf_v,
@@ -1836,7 +1832,7 @@ impl GpuGemma4 {
                         w8,
                         &sc.pf_e4q,
                         &sc.pf_e4rs,
-                        lw.qkv_ws.as_ref().unwrap(),
+                        lw.qkv_ws.as_ref().expect("qkv_ws checked (pc_qkv)"),
                         &mut sc.pf_q,
                         &mut sc.pf_k,
                         &mut sc.pf_v,
@@ -1850,7 +1846,7 @@ impl GpuGemma4 {
                         0,
                         &sc.pf_e4q,
                         &sc.pf_e4rs,
-                        lw.qkv_ws.as_ref().unwrap(),
+                        lw.qkv_ws.as_ref().expect("qkv_ws checked (pc_qkv)"),
                         0,
                         &mut sc.pf_q,
                         hp.n_embd,
@@ -1878,7 +1874,9 @@ impl GpuGemma4 {
                         r,
                     )?,
                     None => exec.f8_gemm_w8(
-                        lw.f8a_wq.as_ref().unwrap(),
+                        lw.f8a_wq
+                            .as_ref()
+                            .expect("f8a_pf without f8a_wqkv: f8a_wq present"),
                         0,
                         &sc.pf_e4q,
                         &sc.pf_e4s,
@@ -1901,7 +1899,7 @@ impl GpuGemma4 {
                     )?;
                 }
                 exec.f8_gemm_w8(
-                    lw.f8w_wq.as_ref().unwrap(),
+                    lw.f8w_wq.as_ref().expect("f8w_wq checked (f8w_pf)"),
                     0,
                     &sc.pf_e4q,
                     &sc.pf_e4s,
@@ -1919,7 +1917,7 @@ impl GpuGemma4 {
                     r,
                 )?;
                 exec.f8row_gemm(
-                    lw.f8_wq.as_ref().unwrap(),
+                    lw.f8_wq.as_ref().expect("f8_wq checked (f8row_pf)"),
                     &sc.pf_e4q,
                     &sc.pf_e4rs,
                     &mut sc.pf_q,
@@ -1961,7 +1959,7 @@ impl GpuGemma4 {
             if f8t_att {
                 if qkv_b16 {
                     exec.f8cut_gemm_b16(
-                        lw.f8t_qkv.as_ref().unwrap(),
+                        lw.f8t_qkv.as_ref().expect("f8t_qkv checked (f8t_att)"),
                         hp.n_head * hd / 128,
                         &sc.pf_e4q,
                         &sc.pf_e4rs,
@@ -1972,7 +1970,7 @@ impl GpuGemma4 {
                     )?;
                 } else {
                     exec.f8t_gemm_off(
-                        lw.f8t_qkv.as_ref().unwrap(),
+                        lw.f8t_qkv.as_ref().expect("f8t_qkv checked (f8t_att)"),
                         hp.n_head * hd / 128,
                         &sc.pf_e4q,
                         &sc.pf_e4rs,
@@ -1993,7 +1991,7 @@ impl GpuGemma4 {
                             hp.n_head * hd,
                             &sc.pf_e4q,
                             &sc.pf_e4rs,
-                            lw.qkv_ws.as_ref().unwrap(),
+                            lw.qkv_ws.as_ref().expect("qkv_ws checked (pc_qkv)"),
                             hp.n_head * hd,
                             &mut sc.pf_k,
                             hp.n_embd,
@@ -2024,7 +2022,9 @@ impl GpuGemma4 {
                         r,
                     )?,
                     None => exec.f8_gemm_w8(
-                        lw.f8a_wk.as_ref().unwrap(),
+                        lw.f8a_wk
+                            .as_ref()
+                            .expect("k_f8a without f8a_wqkv: f8a_wk present"),
                         0,
                         &sc.pf_e4q,
                         &sc.pf_e4s,
@@ -2036,7 +2036,7 @@ impl GpuGemma4 {
                 }
             } else if k_f8w {
                 exec.f8_gemm_w8(
-                    lw.f8w_wk.as_ref().unwrap(),
+                    lw.f8w_wk.as_ref().expect("f8w_wk checked (k_f8w)"),
                     0,
                     &sc.pf_e4q,
                     &sc.pf_e4s,
@@ -2047,7 +2047,7 @@ impl GpuGemma4 {
                 )?;
             } else if k_f8row {
                 exec.f8row_gemm(
-                    lw.f8_wk.as_ref().unwrap(),
+                    lw.f8_wk.as_ref().expect("f8_wk checked (k_f8row)"),
                     &sc.pf_e4q,
                     &sc.pf_e4rs,
                     &mut sc.pf_k,
@@ -2065,7 +2065,7 @@ impl GpuGemma4 {
                 // fused single launch already wrote pf_v
                 Some(_) if qkv_fused1 => {}
                 Some(_) if f8t_att && qkv_b16 => exec.f8cut_gemm_b16(
-                    lw.f8t_qkv.as_ref().unwrap(),
+                    lw.f8t_qkv.as_ref().expect("f8t_qkv checked (f8t_att)"),
                     (hp.n_head * hd + kv_dim) / 128,
                     &sc.pf_e4q,
                     &sc.pf_e4rs,
@@ -2075,7 +2075,7 @@ impl GpuGemma4 {
                     r,
                 )?,
                 Some(_) if f8t_att => exec.f8t_gemm_off(
-                    lw.f8t_qkv.as_ref().unwrap(),
+                    lw.f8t_qkv.as_ref().expect("f8t_qkv checked (f8t_att)"),
                     (hp.n_head * hd + kv_dim) / 128,
                     &sc.pf_e4q,
                     &sc.pf_e4rs,
@@ -2087,7 +2087,7 @@ impl GpuGemma4 {
                 )?,
                 Some(_) if v_f8a && qkv8.is_some() && super::batch::fp4_on() => exec
                     .mxfp4_gemm_bs_off(
-                        qkv8.unwrap(),
+                        qkv8.expect("qkv8 checked in the guard"),
                         hp.n_head * hd + kv_dim,
                         &sc.pf_e4q,
                         &sc.pf_e4s,
@@ -2098,11 +2098,11 @@ impl GpuGemma4 {
                     )?,
                 Some(_) if v_f8a && pc_qkv => {
                     if !kvx.f8_gemm_w8_pc(
-                        qkv8.unwrap(),
+                        qkv8.expect("f8a_wqkv checked (pc_qkv)"),
                         hp.n_head * hd + kv_dim,
                         &sc.pf_e4q,
                         &sc.pf_e4rs,
-                        lw.qkv_ws.as_ref().unwrap(),
+                        lw.qkv_ws.as_ref().expect("qkv_ws checked (pc_qkv)"),
                         hp.n_head * hd + kv_dim,
                         &mut sc.pf_v,
                         hp.n_embd,
@@ -2113,7 +2113,7 @@ impl GpuGemma4 {
                     }
                 }
                 Some(_) if v_f8a && qkv8.is_some() => kvx.f8_gemm_w8_off(
-                    qkv8.unwrap(),
+                    qkv8.expect("qkv8 checked in the guard"),
                     hp.n_head * hd + kv_dim,
                     &sc.pf_e4q,
                     &sc.pf_e4s,
@@ -2123,7 +2123,9 @@ impl GpuGemma4 {
                     r,
                 )?,
                 Some(_) if v_f8a => exec.f8_gemm_w8(
-                    lw.f8a_wv.as_ref().unwrap(),
+                    lw.f8a_wv
+                        .as_ref()
+                        .expect("v_f8a without f8a_wqkv: f8a_wv present"),
                     0,
                     &sc.pf_e4q,
                     &sc.pf_e4s,
@@ -2133,7 +2135,7 @@ impl GpuGemma4 {
                     r,
                 )?,
                 Some(_) if v_f8w => exec.f8_gemm_w8(
-                    lw.f8w_wv.as_ref().unwrap(),
+                    lw.f8w_wv.as_ref().expect("f8w_wv checked (v_f8w)"),
                     0,
                     &sc.pf_e4q,
                     &sc.pf_e4s,
@@ -2143,7 +2145,7 @@ impl GpuGemma4 {
                     r,
                 )?,
                 Some(_) if v_f8row => exec.f8row_gemm(
-                    lw.f8_wv.as_ref().unwrap(),
+                    lw.f8_wv.as_ref().expect("f8_wv checked (v_f8row)"),
                     &sc.pf_e4q,
                     &sc.pf_e4rs,
                     &mut sc.pf_v,
@@ -2269,14 +2271,15 @@ impl GpuGemma4 {
             // on the side lane; the wo quantize (reads all pf_attn rows)
             // waits on it after the chunk-row attention
             let mut attn_join: Option<cudarc::driver::CudaEvent> = None;
-            if lw.is_swa && self.paging.is_some() {
+            if lw.is_swa
+                && let Some(pg) = &self.paging
+            {
                 // SWA under the WindowRing: append+attend advance one
                 // sub-span at a time, so the ring only ever holds a span +
                 // the window behind it (the ring-shrink contract - a whole-
                 // chunk append would alias the window away mid-chunk).
                 // WMMA f16 attention (bit-exact vs dense per pack contract);
                 // spans never cross run (slot) boundaries.
-                let pg = self.paging.as_ref().expect("checked");
                 if decode_rows > 0 {
                     // unified tick: the leading decode rows append into their
                     // own slots' rings and attend via the DECODE kernels
@@ -3365,11 +3368,11 @@ impl GpuGemma4 {
                         )?;
                     }
                     if !exec.f8_gemm_w8_pc_o16(
-                        lw.f8a_wo.as_ref().unwrap(),
+                        lw.f8a_wo.as_ref().expect("f8a attn planes built as a set"),
                         0,
                         &sc.pf_e4q,
                         &sc.pf_e4rs,
-                        lw.wo_ws.as_ref().unwrap(),
+                        lw.wo_ws.as_ref().expect("wo_ws checked (pc_wo)"),
                         0,
                         &mut sc.pf_proj,
                         hp.n_head * hd,
@@ -3390,11 +3393,11 @@ impl GpuGemma4 {
                         r,
                     )?;
                     if !exec.f8_gemm_w8_pc(
-                        lw.f8a_wo.as_ref().unwrap(),
+                        lw.f8a_wo.as_ref().expect("f8a attn planes built as a set"),
                         0,
                         &sc.pf_e4q,
                         &sc.pf_e4rs,
-                        lw.wo_ws.as_ref().unwrap(),
+                        lw.wo_ws.as_ref().expect("wo_ws checked (pc_wo)"),
                         0,
                         &mut sc.pf_proj,
                         hp.n_head * hd,
@@ -3421,7 +3424,7 @@ impl GpuGemma4 {
                     }
                     if super::batch::fp4_on() {
                         exec.mxfp4_gemm_bs(
-                            lw.f8a_wo.as_ref().unwrap(),
+                            lw.f8a_wo.as_ref().expect("f8a attn planes built as a set"),
                             &sc.pf_e4q,
                             &sc.pf_e4s,
                             &mut sc.pf_proj,
@@ -3431,7 +3434,7 @@ impl GpuGemma4 {
                         )?;
                     } else {
                         exec.f8_gemm_w8(
-                            lw.f8a_wo.as_ref().unwrap(),
+                            lw.f8a_wo.as_ref().expect("f8a attn planes built as a set"),
                             0,
                             &sc.pf_e4q,
                             &sc.pf_e4s,
@@ -3454,9 +3457,16 @@ impl GpuGemma4 {
                     hp.n_head * hd,
                     r,
                 )?;
-                if qkv_b16 && lw.f8t_wo.as_ref().unwrap().flat.is_some() {
+                if qkv_b16
+                    && lw
+                        .f8t_wo
+                        .as_ref()
+                        .expect("f8t_wo checked above")
+                        .flat
+                        .is_some()
+                {
                     exec.f8cut_gemm_b16(
-                        lw.f8t_wo.as_ref().unwrap(),
+                        lw.f8t_wo.as_ref().expect("f8t_wo checked above"),
                         0,
                         &sc.pf_e4q,
                         &sc.pf_e4rs,
@@ -3467,7 +3477,7 @@ impl GpuGemma4 {
                     )?;
                 } else {
                     exec.f8t_gemm(
-                        lw.f8t_wo.as_ref().unwrap(),
+                        lw.f8t_wo.as_ref().expect("f8t_wo checked above"),
                         &sc.pf_e4q,
                         &sc.pf_e4rs,
                         &mut sc.pf_skfix,
@@ -3485,7 +3495,7 @@ impl GpuGemma4 {
                     r * hp.n_head * hd,
                 )?;
                 exec.f8_gemm_w8(
-                    lw.f8w_wo.as_ref().unwrap(),
+                    lw.f8w_wo.as_ref().expect("f8w attn planes built as a set"),
                     0,
                     &sc.pf_e4q,
                     &sc.pf_e4s,
@@ -3503,7 +3513,7 @@ impl GpuGemma4 {
                     r,
                 )?;
                 exec.f8row_gemm(
-                    lw.f8_wo.as_ref().unwrap(),
+                    lw.f8_wo.as_ref().expect("f8row attn planes built as a set"),
                     &sc.pf_e4q,
                     &sc.pf_e4rs,
                     &mut sc.pf_proj,
@@ -3650,17 +3660,30 @@ impl GpuGemma4 {
                 // pass (gu D is 4700x43008). f32 pair otherwise.
                 let b16 = crate::envset::env_on("PADDOCK_PF_B16")
                     && r >= pf_b16_minr()
-                    && lw.f8t_gu.as_ref().unwrap().flat.is_some()
-                    && !lw.f8t_gu.as_ref().unwrap().flat_gui
+                    && lw
+                        .f8t_gu
+                        .as_ref()
+                        .expect("f8t_gu checked (f8t_pf2)")
+                        .flat
+                        .is_some()
+                    && !lw
+                        .f8t_gu
+                        .as_ref()
+                        .expect("f8t_gu checked (f8t_pf2)")
+                        .flat_gui
                     && exec.has_glu2_b16();
                 // P62 gluq: same fused-epilogue chain as the batch site -
                 // under the flag the flat is interleaved and the b16 arm is
                 // gated off, so the burst pass rides gluq at r >= 16 and
                 // classic tc5 below/on decline.
-                let gluq_done = lw.f8t_gu.as_ref().unwrap().flat_gui
+                let gluq_done = lw
+                    .f8t_gu
+                    .as_ref()
+                    .expect("f8t_gu checked (f8t_pf2)")
+                    .flat_gui
                     && r >= 16
                     && exec.f8cut_gemm_gluq(
-                        lw.f8t_gu.as_ref().unwrap(),
+                        lw.f8t_gu.as_ref().expect("f8t_gu checked (f8t_pf2)"),
                         &mut sc.pf_e4q,
                         &mut sc.pf_e4rs,
                         &mut sc.pf_gate,
@@ -3675,7 +3698,7 @@ impl GpuGemma4 {
                 if gluq_done {
                 } else if b16 {
                     exec.f8cut_gemm_b16(
-                        lw.f8t_gu.as_ref().unwrap(),
+                        lw.f8t_gu.as_ref().expect("f8t_gu checked (f8t_pf2)"),
                         0,
                         &sc.pf_e4q,
                         &sc.pf_e4rs,
@@ -3694,7 +3717,7 @@ impl GpuGemma4 {
                     )?;
                 } else {
                     exec.f8t_gemm(
-                        lw.f8t_gu.as_ref().unwrap(),
+                        lw.f8t_gu.as_ref().expect("f8t_gu checked (f8t_pf2)"),
                         &sc.pf_e4q,
                         &sc.pf_e4rs,
                         &mut sc.pf_skfix,
@@ -3712,9 +3735,16 @@ impl GpuGemma4 {
                         hp.glu_act(),
                     )?;
                 }
-                if qkv_b16 && lw.f8t_down.as_ref().unwrap().flat.is_some() {
+                if qkv_b16
+                    && lw
+                        .f8t_down
+                        .as_ref()
+                        .expect("f8t_down checked (f8t_pf2)")
+                        .flat
+                        .is_some()
+                {
                     exec.f8cut_gemm_b16(
-                        lw.f8t_down.as_ref().unwrap(),
+                        lw.f8t_down.as_ref().expect("f8t_down checked (f8t_pf2)"),
                         0,
                         &sc.pf_e4q,
                         &sc.pf_e4rs,
@@ -3725,7 +3755,7 @@ impl GpuGemma4 {
                     )?;
                 } else {
                     exec.f8t_gemm(
-                        lw.f8t_down.as_ref().unwrap(),
+                        lw.f8t_down.as_ref().expect("f8t_down checked (f8t_pf2)"),
                         &sc.pf_e4q,
                         &sc.pf_e4rs,
                         &mut sc.pf_skfix,
@@ -3748,7 +3778,7 @@ impl GpuGemma4 {
                     if has_gu && super::batch::fp4_on() {
                         gu_pf_il = lw.gu_il;
                         exec.fp4_gemm_mma_ks(
-                            lw.f8_gu.as_ref().unwrap(),
+                            lw.f8_gu.as_ref().expect("f8_gu present (has_gu)"),
                             &sc.pf_e4q,
                             &sc.pf_e4s,
                             &mut sc.pf_skfix,
@@ -3760,7 +3790,7 @@ impl GpuGemma4 {
                     } else if has_gu {
                         gu_pf_il = lw.gu_il;
                         exec.f8_gemm_mma_ks(
-                            lw.f8_gu.as_ref().unwrap(),
+                            lw.f8_gu.as_ref().expect("f8_gu present (has_gu)"),
                             &sc.pf_e4q,
                             &sc.pf_e4s,
                             &mut sc.pf_skfix,
@@ -3771,7 +3801,9 @@ impl GpuGemma4 {
                         )?;
                     } else {
                         exec.f8_gemm_mma_ks(
-                            lw.f8_gate.as_ref().unwrap(),
+                            lw.f8_gate
+                                .as_ref()
+                                .expect("f8 lane without gu: f8_gate present"),
                             &sc.pf_e4q,
                             &sc.pf_e4s,
                             &mut sc.pf_skfix,
@@ -3781,7 +3813,7 @@ impl GpuGemma4 {
                             r,
                         )?;
                         exec.f8_gemm_mma_ks(
-                            lw.f8_up.as_ref().unwrap(),
+                            lw.f8_up.as_ref().expect("f8 FFN planes built as a set"),
                             &sc.pf_e4q,
                             &sc.pf_e4s,
                             &mut sc.pf_skfix,
@@ -3806,7 +3838,7 @@ impl GpuGemma4 {
                 } else if has_gu && super::batch::fp4_on() {
                     gu_pf_il = lw.gu_il;
                     exec.mxfp4_gemm_bs(
-                        lw.f8_gu.as_ref().unwrap(),
+                        lw.f8_gu.as_ref().expect("f8_gu present (has_gu)"),
                         &sc.pf_e4q,
                         &sc.pf_e4s,
                         &mut sc.pf_gate,
@@ -3828,10 +3860,10 @@ impl GpuGemma4 {
                         gu_fused = if pc_gu {
                             // producer already emitted row-scaled pf_e4q
                             exec.f8_gemm_lin_gu_pc(
-                                lw.f8_gu.as_ref().unwrap(),
+                                lw.f8_gu.as_ref().expect("f8_gu present (has_gu)"),
                                 &sc.pf_e4q,
                                 &sc.pf_e4rs,
-                                lw.gu_ws.as_ref().unwrap(),
+                                lw.gu_ws.as_ref().expect("gu_ws checked (pc_gu)"),
                                 &mut sc.pf_ffq,
                                 &mut sc.pf_ffs,
                                 hp.n_embd,
@@ -3841,7 +3873,7 @@ impl GpuGemma4 {
                             )?
                         } else {
                             exec.f8_gemm_lin_gu(
-                                lw.f8_gu.as_ref().unwrap(),
+                                lw.f8_gu.as_ref().expect("f8_gu present (has_gu)"),
                                 &sc.pf_e4q,
                                 &sc.pf_e4s,
                                 &mut sc.pf_ffq,
@@ -3855,7 +3887,7 @@ impl GpuGemma4 {
                     }
                     if !gu_fused {
                         exec.f8_gemm_w8(
-                            lw.f8_gu.as_ref().unwrap(),
+                            lw.f8_gu.as_ref().expect("f8_gu present (has_gu)"),
                             0,
                             &sc.pf_e4q,
                             &sc.pf_e4s,
@@ -3867,7 +3899,9 @@ impl GpuGemma4 {
                     }
                 } else {
                     exec.f8_gemm_w8(
-                        lw.f8_gate.as_ref().unwrap(),
+                        lw.f8_gate
+                            .as_ref()
+                            .expect("f8 lane without gu: f8_gate present"),
                         0,
                         &sc.pf_e4q,
                         &sc.pf_e4s,
@@ -3877,7 +3911,7 @@ impl GpuGemma4 {
                         r,
                     )?;
                     exec.f8_gemm_w8(
-                        lw.f8_up.as_ref().unwrap(),
+                        lw.f8_up.as_ref().expect("f8 FFN planes built as a set"),
                         0,
                         &sc.pf_e4q,
                         &sc.pf_e4s,
@@ -3892,7 +3926,7 @@ impl GpuGemma4 {
                 // live (gufuse requires the twin, which owns 2..31)
                 if has_gu {
                     exec.f8_gemv_batch(
-                        lw.f8_gu.as_ref().unwrap(),
+                        lw.f8_gu.as_ref().expect("f8_gu present (has_gu)"),
                         &sc.pf_normed,
                         &mut sc.pf_gate,
                         hp.n_embd,
@@ -3901,7 +3935,9 @@ impl GpuGemma4 {
                     )?;
                 } else {
                     exec.f8_gemv_batch(
-                        lw.f8_gate.as_ref().unwrap(),
+                        lw.f8_gate
+                            .as_ref()
+                            .expect("f8 lane without gu: f8_gate present"),
                         &sc.pf_normed,
                         &mut sc.pf_gate,
                         hp.n_embd,
@@ -3909,7 +3945,7 @@ impl GpuGemma4 {
                         r,
                     )?;
                     exec.f8_gemv_batch(
-                        lw.f8_up.as_ref().unwrap(),
+                        lw.f8_up.as_ref().expect("f8 FFN planes built as a set"),
                         &sc.pf_normed,
                         &mut sc.pf_up,
                         hp.n_embd,
@@ -3927,7 +3963,7 @@ impl GpuGemma4 {
                     )?;
                 }
                 exec.f8_gemm_w8(
-                    lw.f8_gate.as_ref().unwrap(),
+                    lw.f8_gate.as_ref().expect("f8_gate checked above"),
                     0,
                     &sc.pf_e4q,
                     &sc.pf_e4s,
@@ -3937,7 +3973,7 @@ impl GpuGemma4 {
                     r,
                 )?;
                 exec.f8_gemm_w8(
-                    lw.f8_up.as_ref().unwrap(),
+                    lw.f8_up.as_ref().expect("f8 FFN planes built as a set"),
                     0,
                     &sc.pf_e4q,
                     &sc.pf_e4s,
@@ -3946,7 +3982,7 @@ impl GpuGemma4 {
                     n_ff,
                     r,
                 )?;
-            } else if f8row_pf && lw.f8r_gate.is_some() {
+            } else if f8row_pf && let Some(f8r_gate) = &lw.f8r_gate {
                 exec.quantize_e4m3_row(
                     &sc.pf_normed,
                     &mut sc.pf_e4q,
@@ -3955,7 +3991,7 @@ impl GpuGemma4 {
                     r,
                 )?;
                 exec.f8row_gemm(
-                    lw.f8r_gate.as_ref().unwrap(),
+                    f8r_gate,
                     &sc.pf_e4q,
                     &sc.pf_e4rs,
                     &mut sc.pf_gate,
@@ -3964,7 +4000,7 @@ impl GpuGemma4 {
                     r,
                 )?;
                 exec.f8row_gemm(
-                    lw.f8r_up.as_ref().unwrap(),
+                    lw.f8r_up.as_ref().expect("f8row FFN planes built as a set"),
                     &sc.pf_e4q,
                     &sc.pf_e4rs,
                     &mut sc.pf_up,
@@ -4033,7 +4069,7 @@ impl GpuGemma4 {
                 if f8ks || (r <= 64 && exec.has_f8_gemm_mma_ks()) {
                     if super::batch::fp4_on() {
                         exec.fp4_gemm_mma_ks(
-                            lw.f8_down.as_ref().unwrap(),
+                            lw.f8_down.as_ref().expect("f8 FFN planes built as a set"),
                             dq,
                             ds,
                             &mut sc.pf_skfix,
@@ -4044,7 +4080,7 @@ impl GpuGemma4 {
                         )?;
                     } else {
                         exec.f8_gemm_mma_ks(
-                            lw.f8_down.as_ref().unwrap(),
+                            lw.f8_down.as_ref().expect("f8 FFN planes built as a set"),
                             dq,
                             ds,
                             &mut sc.pf_skfix,
@@ -4056,7 +4092,7 @@ impl GpuGemma4 {
                     }
                 } else if super::batch::fp4_on() {
                     exec.mxfp4_gemm_bs(
-                        lw.f8_down.as_ref().unwrap(),
+                        lw.f8_down.as_ref().expect("f8 FFN planes built as a set"),
                         dq,
                         ds,
                         &mut sc.pf_proj,
@@ -4064,16 +4100,16 @@ impl GpuGemma4 {
                         hp.n_embd,
                         r,
                     )?;
-                } else if lw.down_ws.is_some()
+                } else if let Some(down_ws) = &lw.down_ws
                     && r >= super::batch::pc_floor()
                     && exec.has_f8_gemm_w8_pcd()
                     && c16
                 {
                     if !exec.f8_gemm_w8_pcd_o16(
-                        lw.f8_down.as_ref().unwrap(),
+                        lw.f8_down.as_ref().expect("f8 FFN planes built as a set"),
                         dq,
                         ds,
-                        lw.down_ws.as_ref().unwrap(),
+                        down_ws,
                         &mut sc.pf_proj,
                         n_ff,
                         hp.n_embd,
@@ -4083,7 +4119,7 @@ impl GpuGemma4 {
                             "pc down o16 route refused".into(),
                         ));
                     }
-                } else if lw.down_ws.is_some()
+                } else if let Some(down_ws) = &lw.down_ws
                     && r >= super::batch::pc_floor()
                     && exec.has_f8_gemm_w8_pcd()
                 {
@@ -4091,10 +4127,10 @@ impl GpuGemma4 {
                     // scales (ds = the fused gu epilogue's own output), only
                     // the weight-scale machinery leaves the loop
                     if !exec.f8_gemm_w8_pcd(
-                        lw.f8_down.as_ref().unwrap(),
+                        lw.f8_down.as_ref().expect("f8 FFN planes built as a set"),
                         dq,
                         ds,
-                        lw.down_ws.as_ref().unwrap(),
+                        down_ws,
                         &mut sc.pf_proj,
                         n_ff,
                         hp.n_embd,
@@ -4104,7 +4140,7 @@ impl GpuGemma4 {
                     }
                 } else {
                     exec.f8_gemm_w8(
-                        lw.f8_down.as_ref().unwrap(),
+                        lw.f8_down.as_ref().expect("f8 FFN planes built as a set"),
                         0,
                         dq,
                         ds,
@@ -4123,17 +4159,17 @@ impl GpuGemma4 {
                     exec.glu(&mut sc.pf_gate, &sc.pf_up, r * n_ff, hp.glu_act())?;
                 }
                 exec.f8_gemv_batch(
-                    lw.f8_down.as_ref().unwrap(),
+                    lw.f8_down.as_ref().expect("f8 FFN planes built as a set"),
                     &sc.pf_gate,
                     &mut sc.pf_proj,
                     n_ff,
                     hp.n_embd,
                     r,
                 )?;
-            } else if f8w_pf && lw.f8_down.is_some() {
+            } else if f8w_pf && let Some(f8_down) = &lw.f8_down {
                 g4_e4m3_glu(exec, sc, r * n_ff, hp.glu_act())?;
                 exec.f8_gemm_w8(
-                    lw.f8_down.as_ref().unwrap(),
+                    f8_down,
                     0,
                     &sc.pf_e4q,
                     &sc.pf_e4s,
@@ -4142,11 +4178,11 @@ impl GpuGemma4 {
                     hp.n_embd,
                     r,
                 )?;
-            } else if f8row_pf && lw.f8r_down.is_some() {
+            } else if f8row_pf && let Some(f8r_down) = &lw.f8r_down {
                 exec.glu(&mut sc.pf_gate, &sc.pf_up, r * n_ff, hp.glu_act())?;
                 exec.quantize_e4m3_row(&sc.pf_gate, &mut sc.pf_e4q, &mut sc.pf_e4rs, n_ff, r)?;
                 exec.f8row_gemm(
-                    lw.f8r_down.as_ref().unwrap(),
+                    f8r_down,
                     &sc.pf_e4q,
                     &sc.pf_e4rs,
                     &mut sc.pf_proj,

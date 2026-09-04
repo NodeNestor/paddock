@@ -19,8 +19,10 @@ use crate::gpu_model::gpt_oss::GpuModelError;
 /// shift, never a rounding.
 pub(crate) fn bf16_to_f32(bytes: &[u8]) -> Vec<f32> {
     bytes
-        .chunks_exact(2)
-        .map(|c| f32::from_bits((u16::from_le_bytes([c[0], c[1]]) as u32) << 16))
+        .as_chunks::<2>()
+        .0
+        .iter()
+        .map(|c| f32::from_bits((u16::from_le_bytes(*c) as u32) << 16))
         .collect()
 }
 
@@ -62,8 +64,10 @@ pub(crate) fn f32_tensor(
     let v = match t.dtype {
         StDtype::Bf16 => bf16_to_f32(bytes),
         StDtype::F32 => bytes
-            .chunks_exact(4)
-            .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .map(|c| f32::from_le_bytes(*c))
             .collect(),
         other => {
             return Err(GpuModelError::Unsupported(format!(

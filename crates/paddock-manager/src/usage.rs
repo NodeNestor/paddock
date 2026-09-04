@@ -1067,10 +1067,12 @@ process_start_time_seconds 1755000000
     }
 
     fn counters(requests: u64, input: u64, output: u64) -> SeriesCounters {
-        let mut c = SeriesCounters::default();
-        c.requests = requests;
-        c.input_tokens = input;
-        c.output_tokens = output;
+        let mut c = SeriesCounters {
+            requests,
+            input_tokens: input,
+            output_tokens: output,
+            ..Default::default()
+        };
         c.e2e[14] = requests; // +Inf == count keeps the arrays plausible
         c
     }
@@ -1303,10 +1305,12 @@ process_start_time_seconds 1755000000
     fn delta_decumulates_and_refuses_a_fallen_counter() {
         // Cumulative arrays as the exposition really prints them: every `le`
         // carries forward, +Inf (index 14) is the count.
-        let mut prev = SeriesCounters::default();
-        prev.requests = 4;
-        prev.input_tokens = 100;
-        prev.e2e = [1, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 4];
+        let prev = SeriesCounters {
+            requests: 4,
+            input_tokens: 100,
+            e2e: [1, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 4],
+            ..Default::default()
+        };
         let mut cur = prev.clone();
         cur.requests = 10;
         cur.input_tokens = 400;

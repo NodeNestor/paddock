@@ -102,8 +102,9 @@ pub fn fix_timestamps(raw: &[f64]) -> Vec<i64> {
         let right = (end..n).find(|&i| normal[i]).map(|i| result[i]);
         let count = end - start;
         if count <= 2 {
-            for pos in start..end {
-                result[pos] = match (left, right) {
+            for (i, slot) in result[start..end].iter_mut().enumerate() {
+                let pos = start + i;
+                *slot = match (left, right) {
                     (None, Some(r)) => r,
                     (Some(l), None) => l,
                     (Some(l), Some(r)) => {
@@ -115,26 +116,22 @@ pub fn fix_timestamps(raw: &[f64]) -> Vec<i64> {
                             r
                         }
                     }
-                    (None, None) => result[pos],
+                    (None, None) => *slot,
                 };
             }
         } else {
             match (left, right) {
                 (Some(l), Some(r)) => {
                     let step = (r - l) / (count + 1) as f64;
-                    for pos in start..end {
-                        result[pos] = l + step * (pos - start + 1) as f64;
+                    for (i, slot) in result[start..end].iter_mut().enumerate() {
+                        *slot = l + step * (i + 1) as f64;
                     }
                 }
                 (Some(l), None) => {
-                    for pos in start..end {
-                        result[pos] = l;
-                    }
+                    result[start..end].fill(l);
                 }
                 (None, Some(r)) => {
-                    for pos in start..end {
-                        result[pos] = r;
-                    }
+                    result[start..end].fill(r);
                 }
                 (None, None) => {}
             }

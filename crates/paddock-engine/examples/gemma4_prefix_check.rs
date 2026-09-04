@@ -5,6 +5,9 @@
 //! token count and the prefill-time drop.
 //!
 //! Usage: GEMMA4_GGUF=... PADDOCK_PACK=... [MAX_CTX=8192] gemma4_prefix_check
+// A development probe: it runs on a box its author is looking at, and a
+// failure should stop it where it happened rather than be reported.
+#![allow(clippy::unwrap_used)]
 
 use std::sync::Arc;
 

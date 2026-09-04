@@ -9,6 +9,9 @@
 //! resident cost of turning forensics on (per-image scratch is transient and not
 //! measured here). Other GPU processes add noise; the step is hundreds of MiB,
 //! well above it.
+// A development probe: it runs on a box its author is looking at, and a
+// failure should stop it where it happened rather than be reported.
+#![allow(clippy::unwrap_used)]
 
 #[cfg(feature = "cuda")]
 fn free_mib(dev: usize) -> i64 {

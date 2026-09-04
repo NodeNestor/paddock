@@ -21,6 +21,9 @@
 //!
 //! Set `PADDOCK_KV_CACHE_DTYPE=f16|fp8_e4m3` to compare KV widths on the same
 //! clip; the default is whatever the loader elects.
+// A development probe: it runs on a box its author is looking at, and a
+// failure should stop it where it happened rather than be reported.
+#![allow(clippy::unwrap_used)]
 
 use std::sync::Arc;
 

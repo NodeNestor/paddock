@@ -302,7 +302,7 @@ impl CopyMoveDetector {
             .into_iter()
             .map(|((dx, dy), group)| ((dx as f64, dy as f64), group.len(), group))
             .collect();
-        clusters.sort_by(|a, b| b.1.cmp(&a.1));
+        clusters.sort_by_key(|c| std::cmp::Reverse(c.1));
 
         let mut merged: Vec<((f64, f64), usize, Vec<&'a Match>)> = Vec::new();
         for cluster in clusters {

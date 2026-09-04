@@ -41,8 +41,10 @@ impl GpuExecutor {
         let buf = match info.ggml_type {
             GgmlType::F32 => {
                 let host: Vec<f32> = bytes
-                    .chunks_exact(4)
-                    .map(|c| f32::from_le_bytes(c.try_into().expect("4 bytes")))
+                    .as_chunks::<4>()
+                    .0
+                    .iter()
+                    .map(|c| f32::from_le_bytes(*c))
                     .collect();
                 self.stream.clone_htod(&host).map_err(drv)?
             }
@@ -51,8 +53,10 @@ impl GpuExecutor {
             // backbone's are f32)
             GgmlType::Bf16 => {
                 let host: Vec<f32> = bytes
-                    .chunks_exact(2)
-                    .map(|c| f32::from_bits((u16::from_le_bytes([c[0], c[1]]) as u32) << 16))
+                    .as_chunks::<2>()
+                    .0
+                    .iter()
+                    .map(|c| f32::from_bits((u16::from_le_bytes(*c) as u32) << 16))
                     .collect();
                 self.stream.clone_htod(&host).map_err(drv)?
             }
@@ -60,8 +64,10 @@ impl GpuExecutor {
             // projections (qwen35 ssm_alpha/ssm_beta, [embd, 32]) as F16.
             GgmlType::F16 => {
                 let host: Vec<f32> = bytes
-                    .chunks_exact(2)
-                    .map(|c| half::f16::from_le_bytes([c[0], c[1]]).to_f32())
+                    .as_chunks::<2>()
+                    .0
+                    .iter()
+                    .map(|c| half::f16::from_le_bytes(*c).to_f32())
                     .collect();
                 self.stream.clone_htod(&host).map_err(drv)?
             }
@@ -132,23 +138,29 @@ impl GpuExecutor {
         let dims: Vec<usize> = info.dims.iter().map(|&d| d as usize).collect();
         let host: Vec<f16> = match info.ggml_type {
             GgmlType::F16 => bytes
-                .chunks_exact(2)
-                .map(|c| f16::from_le_bytes([c[0], c[1]]))
+                .as_chunks::<2>()
+                .0
+                .iter()
+                .map(|c| f16::from_le_bytes(*c))
                 .collect(),
             // F32/BF16 sources go through the checked narrow: both carry f32's
             // exponent range, so an out-of-range weight would land as `inf`
             // here and poison every row it touches.
             GgmlType::F32 => {
                 let f32s: Vec<f32> = bytes
-                    .chunks_exact(4)
-                    .map(|c| f32::from_le_bytes(c.try_into().expect("4 bytes")))
+                    .as_chunks::<4>()
+                    .0
+                    .iter()
+                    .map(|c| f32::from_le_bytes(*c))
                     .collect();
                 narrow_to_f16(&f32s, name)?
             }
             GgmlType::Bf16 => {
                 let f32s: Vec<f32> = bytes
-                    .chunks_exact(2)
-                    .map(|c| f32::from_bits((u16::from_le_bytes([c[0], c[1]]) as u32) << 16))
+                    .as_chunks::<2>()
+                    .0
+                    .iter()
+                    .map(|c| f32::from_bits((u16::from_le_bytes(*c) as u32) << 16))
                     .collect();
                 narrow_to_f16(&f32s, name)?
             }

@@ -565,6 +565,7 @@ async fn download_ranged(
         let f = std::fs::OpenOptions::new()
             .create(true)
             .write(true)
+            .truncate(false)
             .open(part)?;
         f.set_len(size)?;
     }
@@ -592,6 +593,7 @@ async fn download_ranged(
         let sf = std::fs::OpenOptions::new()
             .create(true)
             .write(true)
+            .truncate(false)
             .open(&statep2);
         if let Ok(sf) = sf {
             // full length up front so an out-of-order completion never leaves the
@@ -743,13 +745,17 @@ impl PullJob {
             "downloaded": self.downloaded.load(Ordering::Relaxed),
             "total": self.total,
             "created_ms": self.created_ms,
-            "status": &*self.status.lock().unwrap(),
+            "status": &*self.status.lock().unwrap_or_else(std::sync::PoisonError::into_inner),
         });
-        if let Some(f) = &*self.follow.lock().unwrap() {
+        if let Some(f) = &*self
+            .follow
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+        {
             v["start"] = serde_json::json!({
                 "port": f.get("spec").and_then(|s| s.get("port")),
                 "action": f.get("action"),
-                "state": &*self.follow_state.lock().unwrap(),
+                "state": &*self.follow_state.lock().unwrap_or_else(std::sync::PoisonError::into_inner),
             });
         }
         v
@@ -1262,13 +1268,23 @@ impl Registry {
     }
 
     pub fn job(&self, id: &str) -> Option<Arc<PullJob>> {
-        self.jobs.lock().unwrap().get(id).cloned()
+        self.jobs
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .get(id)
+            .cloned()
     }
 
     /// Every pull job this manager has run since boot, oldest first - the
     /// downloads surface (the Studio's header indicator + list).
     pub fn jobs(&self) -> Vec<Arc<PullJob>> {
-        let mut v: Vec<Arc<PullJob>> = self.jobs.lock().unwrap().values().cloned().collect();
+        let mut v: Vec<Arc<PullJob>> = self
+            .jobs
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .values()
+            .cloned()
+            .collect();
         v.sort_by_key(|j| j.created_ms);
         v
     }
@@ -1280,7 +1296,13 @@ impl Registry {
         let Some(job) = self.job(id) else {
             return false;
         };
-        let running = matches!(&*job.status.lock().unwrap(), PullStatus::Running);
+        let running = matches!(
+            &*job
+                .status
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner),
+            PullStatus::Running
+        );
         if running {
             job.cancel.store(true, Ordering::Relaxed);
         }
@@ -1297,14 +1319,23 @@ impl Registry {
             .job(id)
             .ok_or_else(|| DlError::Http(format!("unknown pull job {id}")))?;
         if matches!(
-            &*old.status.lock().unwrap(),
+            &*old
+                .status
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner),
             PullStatus::Running | PullStatus::Done
         ) {
             return Err(DlError::Http("job is still running or already done".into()));
         }
         let new_id = self.start_pull(&old.model_id, old.artifacts.as_deref())?;
         if let Some(new) = self.job(&new_id) {
-            *new.follow.lock().unwrap() = old.follow.lock().unwrap().clone();
+            *new.follow
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner) = old
+                .follow
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .clone();
         }
         Ok(new_id)
     }
@@ -1386,7 +1417,7 @@ impl Registry {
         });
         self.jobs
             .lock()
-            .unwrap()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .insert(job.id.clone(), job.clone());
 
         let client = self.client.clone();
@@ -1420,7 +1451,10 @@ impl Registry {
                     break;
                 }
             }
-            *job2.status.lock().unwrap() = match outcome {
+            *job2
+                .status
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner) = match outcome {
                 Ok(()) => PullStatus::Done,
                 Err(DlError::Cancelled) => PullStatus::Cancelled,
                 Err(e) => PullStatus::Error {
@@ -1823,7 +1857,13 @@ mod tests {
         // poll to completion
         let mut done = false;
         for _ in 0..300 {
-            let st = reg.job(&jid).unwrap().status.lock().unwrap().clone();
+            let st = reg
+                .job(&jid)
+                .unwrap()
+                .status
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .clone();
             match st {
                 PullStatus::Done => {
                     done = true;

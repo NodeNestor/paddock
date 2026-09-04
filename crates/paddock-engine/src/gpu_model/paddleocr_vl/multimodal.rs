@@ -70,8 +70,8 @@ fn content_hash(rgb: &[u8], w: usize, h: usize) -> u64 {
         0x9ce484222325cbf2,
         0x25cbf29ce4842223,
     ];
-    let mut it = rgb.chunks_exact(32);
-    for c in it.by_ref() {
+    let (words, tail) = rgb.as_chunks::<32>();
+    for c in words {
         for (i, l) in lane.iter_mut().enumerate() {
             let word = u64::from_le_bytes(c[i * 8..i * 8 + 8].try_into().expect("8-byte word"));
             *l = (*l ^ word).wrapping_mul(P);
@@ -81,7 +81,7 @@ fn content_hash(rgb: &[u8], w: usize, h: usize) -> u64 {
     for &l in &lane[1..] {
         hash = (hash ^ l).wrapping_mul(P);
     }
-    for &b in it.remainder() {
+    for &b in tail {
         hash ^= b as u64;
         hash = hash.wrapping_mul(P);
     }
@@ -422,11 +422,10 @@ impl GpuPaddleOcrVl {
         for (wi, (_, planned)) in plans.iter().enumerate() {
             let Ok(plan) = planned else { continue };
             let probe = self.prefix_probe(&plan.keys);
-            for k in 0..imgs[wi].len() {
+            for (k, &(rgb, w, h)) in imgs[wi].iter().enumerate() {
                 if plan.img_start[k] + plan.img_tokens[k] <= probe {
                     continue; // expected fully resumed: nothing to preprocess
                 }
-                let (rgb, w, h) = imgs[wi][k];
                 jobs.push((rgb, w, h, plan.budget));
                 job_of.insert((wi, k), jobs.len() - 1);
             }
@@ -477,12 +476,11 @@ impl GpuPaddleOcrVl {
                     // towers, lazily: an image encodes only if the recomputed
                     // tail [start, n) reads any of its rows
                     let mut planes: Vec<Option<CudaSlice<f32>>> = Vec::new();
-                    for k in 0..imgs[wi].len() {
+                    for (k, &(rgb, w, h)) in imgs[wi].iter().enumerate() {
                         if plan.img_start[k] + plan.img_tokens[k] <= start {
                             planes.push(None); // fully resumed: no tower at all
                             continue;
                         }
-                        let (rgb, w, h) = imgs[wi][k];
                         let prepped = match job_of
                             .get(&(wi, k))
                             .and_then(|&j| wait_job(&rx, &mut got, j))

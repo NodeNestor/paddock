@@ -9,6 +9,9 @@
 //! `--gen N` greedily continues for N tokens. `--split K` prefills only the
 //! first K ids and steps the rest, which is how the prefill/decode equality
 //! gets exercised by hand.
+// A development probe: it runs on a box its author is looking at, and a
+// failure should stop it where it happened rather than be reported.
+#![allow(clippy::unwrap_used)]
 
 use std::sync::Arc;
 

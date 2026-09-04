@@ -923,6 +923,8 @@ impl GpuExecutor {
         })
     }
 
+    // A kernel launcher: the parameter list is the kernel's.
+    #[allow(clippy::too_many_arguments)]
     pub fn gated_delta_recurrent_v2(
         &self,
         q: &CudaSlice<f32>,

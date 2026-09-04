@@ -5,6 +5,9 @@
 //!
 //! Spawns `npx -y @modelcontextprotocol/server-everything` (downloads on first
 //! run), so it needs node + network.
+// A development probe: it runs on a box its author is looking at, and a
+// failure should stop it where it happened rather than be reported.
+#![allow(clippy::unwrap_used)]
 
 use std::collections::HashMap;
 use std::time::Duration;

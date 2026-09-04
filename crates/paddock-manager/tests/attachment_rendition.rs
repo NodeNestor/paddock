@@ -15,6 +15,9 @@
 //! Fixtures are the ones paddock-heif tests with, reached across the crate
 //! boundary rather than copied: duplicating them would let the two suites
 //! drift onto different files while claiming to test the same decode.
+// Test code: a failed assumption stops the test where it happened.
+#![allow(clippy::unwrap_used)]
+
 use std::sync::Arc;
 
 use axum::body::Body;

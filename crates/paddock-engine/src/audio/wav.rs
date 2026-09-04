@@ -38,13 +38,13 @@ pub fn decode_wav(bytes: &[u8]) -> Result<WavAudio, String> {
                 if sz < 16 {
                     return Err("fmt chunk too short".into());
                 }
-                let mut format = rd_u16(body, 0).unwrap();
-                let channels = rd_u16(body, 2).unwrap();
-                let rate = rd_u32(body, 4).unwrap();
-                let bits = rd_u16(body, 14).unwrap();
+                let mut format = rd_u16(body, 0).expect("fmt chunk is at least 16 bytes");
+                let channels = rd_u16(body, 2).expect("fmt chunk is at least 16 bytes");
+                let rate = rd_u32(body, 4).expect("fmt chunk is at least 16 bytes");
+                let bits = rd_u16(body, 14).expect("fmt chunk is at least 16 bytes");
                 // WAVE_FORMAT_EXTENSIBLE: real format lives in the GUID
                 if format == 0xFFFE && sz >= 40 {
-                    format = rd_u16(body, 24).unwrap();
+                    format = rd_u16(body, 24).expect("extensible fmt chunk is at least 40 bytes");
                 }
                 fmt = Some((format, channels, rate, bits));
             }

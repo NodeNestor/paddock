@@ -2,6 +2,10 @@
 //! three-launch chain vs pd_moe_head_router on identical synthetic inputs.
 //! The serve-side burst gate is unsound for bitwise claims (admission timing
 //! legitimately changes batched temp-0 outputs) - this is the sound one.
+// A development probe: it runs on a box its author is looking at, and a
+// failure should stop it where it happened rather than be reported.
+#![allow(clippy::unwrap_used)]
+
 use std::sync::Arc;
 
 use paddock_engine::gpu::GpuExecutor;

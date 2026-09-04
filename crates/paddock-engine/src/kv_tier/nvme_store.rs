@@ -144,11 +144,11 @@ impl CommitRec {
         payload_checksum.copy_from_slice(&b[62..94]);
         Self {
             key,
-            generation: u64::from_le_bytes(b[32..40].try_into().unwrap()),
-            schema_version: u16::from_le_bytes(b[40..42].try_into().unwrap()),
-            segment: u32::from_le_bytes(b[42..46].try_into().unwrap()),
-            offset: u64::from_le_bytes(b[46..54].try_into().unwrap()),
-            len: u64::from_le_bytes(b[54..62].try_into().unwrap()),
+            generation: u64::from_le_bytes(b[32..40].try_into().expect("8 bytes")),
+            schema_version: u16::from_le_bytes(b[40..42].try_into().expect("2 bytes")),
+            segment: u32::from_le_bytes(b[42..46].try_into().expect("4 bytes")),
+            offset: u64::from_le_bytes(b[46..54].try_into().expect("8 bytes")),
+            len: u64::from_le_bytes(b[54..62].try_into().expect("8 bytes")),
             payload_checksum,
         }
     }
@@ -156,7 +156,7 @@ impl CommitRec {
 
 fn tag8(bytes: &[u8]) -> [u8; 8] {
     let h = blake3::hash(bytes);
-    h.as_bytes()[..8].try_into().unwrap()
+    h.as_bytes()[..8].try_into().expect("8 bytes")
 }
 
 fn record(kind: u16, body: &[u8]) -> Vec<u8> {
@@ -180,16 +180,16 @@ fn parse_record(b: &[u8]) -> Result<Option<(u16, &[u8], usize)>, ()> {
     if b.len() < REC_HEADER {
         return Err(());
     }
-    if u32::from_le_bytes(b[0..4].try_into().unwrap()) != MAGIC {
+    if u32::from_le_bytes(b[0..4].try_into().expect("4 bytes")) != MAGIC {
         return Err(());
     }
-    let version = u16::from_le_bytes(b[4..6].try_into().unwrap());
+    let version = u16::from_le_bytes(b[4..6].try_into().expect("2 bytes"));
     if version > FORMAT_VERSION {
         // an individual newer record inside an accepted store: treat as torn
         // (the superblock gate below refuses whole-store skew loudly)
         return Err(());
     }
-    let kind = u16::from_le_bytes(b[6..8].try_into().unwrap());
+    let kind = u16::from_le_bytes(b[6..8].try_into().expect("2 bytes"));
     let body_len = match kind {
         KIND_COMMIT => COMMIT_BODY,
         KIND_TOMBSTONE => 32 + 8,
@@ -199,7 +199,7 @@ fn parse_record(b: &[u8]) -> Result<Option<(u16, &[u8], usize)>, ()> {
     if b.len() < total {
         return Err(());
     }
-    let expect: [u8; 8] = b[total - REC_TAG..total].try_into().unwrap();
+    let expect: [u8; 8] = b[total - REC_TAG..total].try_into().expect("8 bytes");
     if tag8(&b[..total - REC_TAG]) != expect {
         return Err(());
     }
@@ -429,6 +429,7 @@ impl NvmeStore {
             .read(true)
             .write(true)
             .create(true)
+            .truncate(false)
             .open(&meta_path)?;
         let mut meta_bytes = vec![0u8; (SUPER_SLOT * 2) as usize];
         let n = meta.read(&mut meta_bytes)?;
@@ -436,10 +437,10 @@ impl NvmeStore {
         let parse_slot = |b: &[u8]| -> Option<(u64, u16, u64, u64)> {
             // {header, epoch u64, format u16, ckpt_len u64, wal_off u64,
             //  align u32, flags u32, tag8}
-            if u32::from_le_bytes(b[0..4].try_into().unwrap()) != MAGIC {
+            if u32::from_le_bytes(b[0..4].try_into().expect("4 bytes")) != MAGIC {
                 return None;
             }
-            if u16::from_le_bytes(b[6..8].try_into().unwrap()) != KIND_SUPER {
+            if u16::from_le_bytes(b[6..8].try_into().expect("2 bytes")) != KIND_SUPER {
                 return None;
             }
             let body_end = REC_HEADER + 8 + 2 + 8 + 8 + 4 + 4;
@@ -447,10 +448,10 @@ impl NvmeStore {
             if tag8(&b[..body_end]) != expect {
                 return None;
             }
-            let epoch = u64::from_le_bytes(b[8..16].try_into().unwrap());
-            let format = u16::from_le_bytes(b[16..18].try_into().unwrap());
-            let ckpt_len = u64::from_le_bytes(b[18..26].try_into().unwrap());
-            let wal_off = u64::from_le_bytes(b[26..34].try_into().unwrap());
+            let epoch = u64::from_le_bytes(b[8..16].try_into().expect("8 bytes"));
+            let format = u16::from_le_bytes(b[16..18].try_into().expect("2 bytes"));
+            let ckpt_len = u64::from_le_bytes(b[18..26].try_into().expect("8 bytes"));
+            let wal_off = u64::from_le_bytes(b[26..34].try_into().expect("8 bytes"));
             Some((epoch, format, ckpt_len, wal_off))
         };
         let a = parse_slot(&meta_bytes[..SUPER_SLOT as usize]);
@@ -503,8 +504,8 @@ impl NvmeStore {
                 if bytes.len() < REC_HEADER + 8 + REC_TAG {
                     return None;
                 }
-                if u32::from_le_bytes(bytes[0..4].try_into().unwrap()) != MAGIC
-                    || u16::from_le_bytes(bytes[6..8].try_into().unwrap()) != KIND_CKPT
+                if u32::from_le_bytes(bytes[0..4].try_into().expect("4 bytes")) != MAGIC
+                    || u16::from_le_bytes(bytes[6..8].try_into().expect("2 bytes")) != KIND_CKPT
                 {
                     return None;
                 }
@@ -513,8 +514,11 @@ impl NvmeStore {
                 if tag8(&bytes[..tag_at]) != expect {
                     return None;
                 }
-                let count =
-                    u64::from_le_bytes(bytes[REC_HEADER..REC_HEADER + 8].try_into().unwrap());
+                let count = u64::from_le_bytes(
+                    bytes[REC_HEADER..REC_HEADER + 8]
+                        .try_into()
+                        .expect("8 bytes"),
+                );
                 let mut at = REC_HEADER + 8;
                 for _ in 0..count {
                     if at + COMMIT_BODY > tag_at {
@@ -575,6 +579,7 @@ impl NvmeStore {
             .read(true)
             .write(true)
             .create(true)
+            .truncate(false)
             .open(&wal_path)?;
         if wal_bytes.len() > wal_valid_end {
             wal.set_len(wal_valid_end as u64)?;
@@ -944,6 +949,7 @@ impl NvmeStore {
             .read(true)
             .write(true)
             .create(true)
+            .truncate(false)
             .open(self.dir.join("store.meta"))?;
         if self.kill == Some(Kill::MidSuperblock) {
             meta.seek(SeekFrom::Start(slot))?;
@@ -1073,8 +1079,7 @@ impl NvmeStore {
             .filter(|r| r.segment == victim)
             .copied()
             .collect();
-        let mut moved = 0usize;
-        for rec in movers {
+        for (moved, rec) in movers.into_iter().enumerate() {
             if self.kill == Some(Kill::MidCompaction) && moved > 0 {
                 // row 7: died with some extents re-committed and some not -
                 // the old segment's commits still stand for the unmoved
@@ -1084,7 +1089,6 @@ impl NvmeStore {
             }
             let (_g, payload) = self.read(&rec.key)?;
             self.store(rec.key, rec.generation, rec.schema_version, &payload)?;
-            moved += 1;
         }
         self.check_kill(Kill::BeforeSegDelete)?; // row 8: delete retried at boot
         self.segments.remove(&victim);

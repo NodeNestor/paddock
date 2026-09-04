@@ -8,6 +8,9 @@
 //!        PADDOCK_PACK=packs/cuda/build/pd-cuda-sm120.so
 //!        [PROJGEMM_NCU=1 to run one kernel/shape/batch for ncu]
 //!        cargo run --release --example qwen35_projgemm_bench
+// A development probe: it runs on a box its author is looking at, and a
+// failure should stop it where it happened rather than be reported.
+#![allow(clippy::unwrap_used)]
 
 use std::sync::Arc;
 

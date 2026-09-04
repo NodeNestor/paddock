@@ -5,6 +5,9 @@
 //! Usage: LAGUNA_GGUF=<path>\Laguna-XS-2.1-Q4_K_M.gguf
 //!        PADDOCK_PACK=packs\cuda\build\pd-cuda-sm86.dll
 //!        cargo run --release --example laguna_load
+// A development probe: it runs on a box its author is looking at, and a
+// failure should stop it where it happened rather than be reported.
+#![allow(clippy::unwrap_used)]
 
 use std::sync::Arc;
 

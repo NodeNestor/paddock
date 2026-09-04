@@ -94,7 +94,7 @@ impl SafetensorsFile {
                 "file shorter than the length prefix".into(),
             ));
         }
-        let hlen = u64::from_le_bytes(map[0..8].try_into().unwrap()) as usize;
+        let hlen = u64::from_le_bytes(map[0..8].try_into().expect("length checked above")) as usize;
         let data_off = 8usize
             .checked_add(hlen)
             .filter(|&o| o <= map.len())

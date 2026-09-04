@@ -3,6 +3,9 @@
 //! turn) and greedy-decode - the continuation diffs against the oracle's.
 //!
 //! Usage: gemma4_mm_greedy <model.gguf> <mmproj.gguf> <image> [prompt] [n]
+// A development probe: it runs on a box its author is looking at, and a
+// failure should stop it where it happened rather than be reported.
+#![allow(clippy::unwrap_used)]
 
 use std::sync::Arc;
 

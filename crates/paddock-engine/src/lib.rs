@@ -10,7 +10,6 @@
 //! The first cut ships the skeleton: the backend trait and placeholder types,
 //! so the server and harness can compile against stable seams while the
 //! implementations fill in behind them.
-
 pub mod align;
 pub mod audio;
 pub mod backend;

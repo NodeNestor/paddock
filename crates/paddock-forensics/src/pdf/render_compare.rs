@@ -233,7 +233,7 @@ fn find_diff_regions(diff_map: &[bool], w: u32, h: u32) -> Vec<DiffRegion> {
             }
         }
     }
-    regions.sort_by(|a, b| b.pixel_count.cmp(&a.pixel_count));
+    regions.sort_by_key(|r| std::cmp::Reverse(r.pixel_count));
     regions
 }
 

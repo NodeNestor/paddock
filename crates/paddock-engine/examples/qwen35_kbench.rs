@@ -7,6 +7,9 @@
 //! r>=128 dispatch boundary was tuned on an 84-SM A6000 and this family has
 //! never seen a 188-SM die.
 //! Usage: qwen35_kbench   (QWEN35_GGUF/PADDOCK_PACK override paths)
+// A development probe: it runs on a box its author is looking at, and a
+// failure should stop it where it happened rather than be reported.
+#![allow(clippy::unwrap_used)]
 
 use std::sync::Arc;
 

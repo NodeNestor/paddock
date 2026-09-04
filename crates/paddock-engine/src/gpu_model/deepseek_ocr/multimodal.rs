@@ -77,8 +77,8 @@ fn content_hash(rgb: &[u8], w: usize, h: usize) -> u64 {
         0x9ce484222325cbf2,
         0x25cbf29ce4842223,
     ];
-    let mut it = rgb.chunks_exact(32);
-    for c in it.by_ref() {
+    let (words, rest) = rgb.as_chunks::<32>();
+    for c in words {
         for (i, l) in lane.iter_mut().enumerate() {
             let word = u64::from_le_bytes(c[i * 8..i * 8 + 8].try_into().expect("8-byte word"));
             *l = (*l ^ word).wrapping_mul(P);
@@ -88,7 +88,7 @@ fn content_hash(rgb: &[u8], w: usize, h: usize) -> u64 {
     for &l in &lane[1..] {
         hash = (hash ^ l).wrapping_mul(P);
     }
-    for &b in it.remainder() {
+    for &b in rest {
         hash ^= b as u64;
         hash = hash.wrapping_mul(P);
     }
@@ -186,7 +186,7 @@ pub(super) fn mm_plan(chunks: &[MmChunk], max_tiles: usize) -> Result<MmPlan, Gp
     }
     let layout = Layout::plan(&sizes, max_tiles, force_base);
     let img_blocks: Vec<std::ops::Range<usize>> = match layout.mode {
-        Mode::Gundam { .. } => vec![0..layout.blocks.len()],
+        Mode::Gundam { .. } => std::iter::once(0..layout.blocks.len()).collect(),
         Mode::Base { .. } => (0..sizes.len()).map(|k| 2 * k..2 * k + 2).collect(),
     };
     debug_assert_eq!(img_blocks.len(), sizes.len());
@@ -469,14 +469,13 @@ impl GpuDeepseekOcr {
             let Ok(plan) = planned else { continue };
             let probe = self.prefix_probe(&plan.keys);
             let spec = self.prep_spec(plan.layout.mode, plan.layout.grid);
-            for k in 0..imgs[wi].len() {
+            for (k, &(rgb, w, h)) in imgs[wi].iter().enumerate() {
                 if plan.img_start[k] + plan.img_tokens[k] <= probe {
                     continue; // expected fully resumed: nothing to preprocess
                 }
                 let need_from = probe.saturating_sub(plan.img_start[k]);
                 let blocks = &plan.layout.blocks[plan.img_blocks[k].clone()];
                 let (need_crops, need_global) = prep_need(blocks, plan.layout.grid, need_from);
-                let (rgb, w, h) = imgs[wi][k];
                 let jc = need_crops.then(|| {
                     jobs.push((
                         rgb,
@@ -556,7 +555,7 @@ impl GpuDeepseekOcr {
                     // towers, lazily: an image runs only the encodes whose
                     // rows the recomputed tail [start, n) actually reads
                     let mut planes: Vec<Option<CudaSlice<f32>>> = Vec::new();
-                    for k in 0..imgs[wi].len() {
+                    for (k, &(rgb, w, h)) in imgs[wi].iter().enumerate() {
                         if plan.img_start[k] + plan.img_tokens[k] <= start {
                             planes.push(None); // fully resumed: no tower at all
                             continue;
@@ -574,7 +573,6 @@ impl GpuDeepseekOcr {
                                 .and_then(|p| p.global)
                         };
                         let need_from = start.saturating_sub(plan.img_start[k]);
-                        let (rgb, w, h) = imgs[wi][k];
                         planes.push(Some(self.assemble_image_plane(
                             rgb,
                             w,

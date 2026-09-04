@@ -51,6 +51,8 @@ fn host_owner_walk(n: usize, u_times_total: f32, mass: impl Fn(usize) -> f32) ->
         })
         .collect();
     let total: f32 = csum.iter().sum();
+    // a NaN total must bail too, which `total <= 0.0` would not do
+    #[allow(clippy::neg_cmp_op_on_partial_ord)]
     if !(total > 0.0) {
         return None;
     }
@@ -174,8 +176,8 @@ fn draft_categorical_draw_matches_own_store() {
             .map(|t| {
                 let (lo, hi) = (t * chunk, ((t + 1) * chunk).min(n));
                 let mut s = 0.0f32;
-                for i in lo..hi {
-                    s += f16_to_f32(qrow[i]);
+                for &q in &qrow[lo..hi] {
+                    s += f16_to_f32(q);
                 }
                 s
             })
@@ -261,8 +263,8 @@ fn resolve_accept_reject_and_residual() {
             let (lo, hi) = (t * chunk, ((t + 1) * chunk).min(n));
             let mut s = 0.0f32;
             let m = 2.0f32; // max logit row 0
-            for i in lo..hi {
-                s += ((logits[i] - m) * inv_t).exp();
+            for &l in &logits[lo..hi] {
+                s += ((l - m) * inv_t).exp();
             }
             s
         })

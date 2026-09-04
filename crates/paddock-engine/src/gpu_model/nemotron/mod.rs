@@ -169,6 +169,9 @@ pub(crate) struct MoeWeights {
 /// dp4a - the GGUF lane; up/down are the flat [e*ff + o] expert streams,
 /// sh_* the 1-expert shared planes the relu2 kernels address with a zero
 /// idx).
+// one instance per MoE layer, resident for the model's life - the variant size
+// gap is noise next to the device planes it names
+#[allow(clippy::large_enum_variant)]
 pub(crate) enum MoePlanes {
     Nvf4 {
         up: Nvf4MoePlane,
@@ -228,6 +231,8 @@ pub(crate) fn head_nvf4_batch(
     }
 }
 
+// one per layer; the Mamba/Attn/Moe weight bundles differ in size by design
+#[allow(clippy::large_enum_variant)]
 pub(crate) enum Mixer {
     Mamba(MambaWeights),
     Attn(AttnWeights),

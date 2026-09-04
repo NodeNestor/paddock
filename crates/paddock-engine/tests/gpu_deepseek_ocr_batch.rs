@@ -12,6 +12,8 @@
 //! The final leg decodes both slots in one r=2 tick with one deep in ring
 //! steady state and the other in warmup - the mixed-phase case a per-slot
 //! ring must not cross-contaminate.
+// Test code: a failed assumption stops the test where it happened.
+#![allow(clippy::unwrap_used)]
 
 mod common;
 
@@ -41,8 +43,10 @@ fn model_path() -> Option<std::path::PathBuf> {
 fn read_u32s(p: &std::path::Path) -> Vec<u32> {
     std::fs::read(p)
         .unwrap_or_else(|e| panic!("{}: {e}", p.display()))
-        .chunks_exact(4)
-        .map(|c| u32::from_le_bytes(c.try_into().unwrap()))
+        .as_chunks::<4>()
+        .0
+        .iter()
+        .map(|c| u32::from_le_bytes(*c))
         .collect()
 }
 

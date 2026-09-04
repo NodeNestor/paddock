@@ -58,6 +58,8 @@ impl Analyzer for PrnuCrossRegionAnalyzer {
         let num_regions = self.grid_x * self.grid_y;
         let mut correlations: Vec<Vec<f64>> = vec![vec![0.0; num_regions]; num_regions];
 
+        // the index pair writes both halves of the symmetric matrix at once
+        #[allow(clippy::needless_range_loop)]
         for i in 0..num_regions {
             let (ix, iy) = (i % self.grid_x, i / self.grid_x);
             let i_x0 = ix * region_w;
@@ -177,14 +179,14 @@ impl PrnuCrossRegionAnalyzer {
 
         // Each region's mean correlation with all others.
         let mut region_mean_corr: Vec<f64> = Vec::new();
-        for i in 0..num_regions {
+        for (i, row) in correlations.iter().enumerate().take(num_regions) {
             let mut sum = 0.0_f64;
             let mut count = 0;
-            for j in 0..num_regions {
+            for (j, &corr) in row.iter().enumerate().take(num_regions) {
                 if i == j {
                     continue;
                 }
-                sum += correlations[i][j];
+                sum += corr;
                 count += 1;
             }
             region_mean_corr.push(if count > 0 { sum / count as f64 } else { 0.0 });

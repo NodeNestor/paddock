@@ -2370,7 +2370,6 @@ pub(crate) mod tests {
                 enc.write_image::<tiff::encoder::colortype::Gray8>(2, 2, &[9u8; 4])
                     .expect("page");
             }
-            drop(enc);
             out.into_inner()
         };
         let t = extract_preview(&tiff, Some("scan.tif"), None, true, 8192, false).expect("tiff");

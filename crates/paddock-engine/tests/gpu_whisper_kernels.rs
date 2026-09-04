@@ -9,6 +9,8 @@
 //!
 //! Needs a CUDA device and `PADDOCK_PACK`; skips cleanly without them, the
 //! same contract as the other gpu_* tests.
+// Test code: a failed assumption stops the test where it happened.
+#![allow(clippy::unwrap_used)]
 
 mod common;
 

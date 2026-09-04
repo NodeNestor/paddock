@@ -31,14 +31,14 @@ pub fn load_f32(map: &MappedGguf, name: &str) -> Result<HostTensor, RefModelErro
     let mut data = vec![0f32; n];
     match info.ggml_type {
         GgmlType::F32 => {
-            for (i, chunk) in bytes.chunks_exact(4).enumerate() {
-                // chunks_exact(4) guarantees the conversion
-                data[i] = f32::from_le_bytes(chunk.try_into().expect("4 bytes"));
+            for (i, chunk) in bytes.as_chunks::<4>().0.iter().enumerate() {
+                // as_chunks::<4>() hands out whole words only
+                data[i] = f32::from_le_bytes(*chunk);
             }
         }
         GgmlType::F16 => {
-            for (i, chunk) in bytes.chunks_exact(2).enumerate() {
-                data[i] = half::f16::from_le_bytes(chunk.try_into().expect("2 bytes")).to_f32();
+            for (i, chunk) in bytes.as_chunks::<2>().0.iter().enumerate() {
+                data[i] = half::f16::from_le_bytes(*chunk).to_f32();
             }
         }
         GgmlType::Q8_0 => paddock_kernels::reference::dequant_q8_0(bytes, &mut data)?,

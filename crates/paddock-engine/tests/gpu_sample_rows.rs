@@ -41,6 +41,9 @@ fn host_sample_all(logits: &[f32], inv_t: f32, u: f32) -> u32 {
     for &l in logits.iter() {
         sum += (l * inv_t - m).exp();
     }
+    // a NaN sum (a NaN logit slips past the max fold) must take the argmax
+    // fallback exactly as the kernel does; `sum <= 0.0` would sample from it
+    #[allow(clippy::neg_cmp_op_on_partial_ord)]
     if !(sum > 0.0) {
         return argmax(logits);
     }
@@ -394,6 +397,8 @@ fn host_nucleus_k0(logits: &[f32], inv_t: f32, u: f32, top_p: f32, min_p: f32) -
             .total_cmp(&(logits[a as usize] * inv_t))
             .then(a.cmp(&b))
     });
+    // `!(min_p > 0.0)` mirrors the kernel's gate: a NaN threshold means no floor
+    #[allow(clippy::neg_cmp_op_on_partial_ord)]
     let surv: Vec<(u32, f32)> = idx
         .iter()
         .map(|&i| (i, (logits[i as usize] * inv_t - m).exp()))

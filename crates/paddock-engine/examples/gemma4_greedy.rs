@@ -8,6 +8,9 @@
 //!
 //! Usage: GEMMA4_GGUF=... PADDOCK_PACK=... [PROMPT=...] [N_GEN=32]
 //!        [MAX_CTX=4096] gemma4_greedy
+// A development probe: it runs on a box its author is looking at, and a
+// failure should stop it where it happened rather than be reported.
+#![allow(clippy::unwrap_used)]
 
 use std::sync::Arc;
 

@@ -5,6 +5,8 @@
 //! (draft -> trunk verify -> accept walk -> commit) produces exactly the
 //! no-spec greedy stream. Acceptance quality is reported, not asserted
 //! (it is the model's business); correctness is asserted.
+// Test code: a failed assumption stops the test where it happened.
+#![allow(clippy::unwrap_used)]
 
 mod common;
 

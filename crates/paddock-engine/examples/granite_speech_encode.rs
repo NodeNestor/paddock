@@ -11,6 +11,9 @@
 //!   python our ASR oracle tool \
 //!       --model /models/granite-speech-4.1-2b --wav <clip.wav> \
 //!       --ours ours.f32
+// A development probe: it runs on a box its author is looking at, and a
+// failure should stop it where it happened rather than be reported.
+#![allow(clippy::unwrap_used)]
 
 use std::sync::Arc;
 

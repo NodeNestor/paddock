@@ -618,16 +618,14 @@ fn forward_batch_heterogeneous_positions() {
         }
         // joint phase: slot 1 either stays idle or prefills B from pos 0
         // while slot 0 keeps decoding at pos0
-        let mut pos1 = 0u32;
-        for i in 0..b.len() {
-            let (t1, p1) = if with_b { (b[i], pos1) } else { (0, 0) };
+        for (pos1, &bt) in (0u32..).zip(b.iter()) {
+            let (t1, p1) = if with_b { (bt, pos1) } else { (0, 0) };
             l = m
                 .forward_batch(&[last0, t1], &[pos0, p1])
                 .expect("fb joint");
             a_got.push(last0);
             last0 = argmax(&l[0..vocab]);
             pos0 += 1;
-            pos1 += 1;
         }
         // after the last joint step, row 1's logits (having consumed all of B)
         // predict B's first greedy token

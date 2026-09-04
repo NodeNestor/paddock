@@ -12,6 +12,9 @@
 //! (LAGUNA_PROMPT, not PROMPT: on Windows cmd.exe exports PROMPT="$P$G" -
 //! its prompt-format string - and the inherited env silently replaced the
 //! default prompt on first bring-up. An hour of "why is it doing geometry".)
+// A development probe: it runs on a box its author is looking at, and a
+// failure should stop it where it happened rather than be reported.
+#![allow(clippy::unwrap_used)]
 
 use std::sync::Arc;
 

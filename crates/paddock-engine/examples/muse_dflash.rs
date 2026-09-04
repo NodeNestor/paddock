@@ -11,6 +11,9 @@
 //!   MUSE_DFLASH=/models/Muse-Glimmer-30B-GGUF/dflash-kquant.gguf \
 //!   PADDOCK_PACK=packs/cuda/build/pd-cuda-sm120.so \
 //!   cargo run --release --example muse_dflash
+// A development probe: it runs on a box its author is looking at, and a
+// failure should stop it where it happened rather than be reported.
+#![allow(clippy::unwrap_used)]
 
 use std::sync::Arc;
 

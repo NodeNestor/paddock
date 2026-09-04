@@ -27,12 +27,8 @@ fn setup() -> Option<(GpuQwen35, GgufTokenizer)> {
     if !common::heavy() {
         return None;
     }
-    let Some(path) = common::model("QWEN35_GGUF", common::QWEN35_9B_Q8) else {
-        return None;
-    };
-    let Some(exec) = common::gpu_arc() else {
-        return None;
-    };
+    let path = common::model("QWEN35_GGUF", common::QWEN35_9B_Q8)?;
+    let exec = common::gpu_arc()?;
     let map = MappedGguf::open(&path).expect("open gguf");
     let tok = GgufTokenizer::from_gguf(map.gguf()).expect("tokenizer");
     let m = GpuQwen35::load(exec, &map, 4096).expect("load 9B");

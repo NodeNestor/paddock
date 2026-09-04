@@ -109,12 +109,16 @@ fn host_f32(map: &MappedGguf, name: &str) -> Result<(Vec<f32>, Vec<usize>), GpuE
     let dims: Vec<usize> = info.dims.iter().map(|&d| d as usize).collect();
     let host = match info.ggml_type {
         GgmlType::F32 => bytes
-            .chunks_exact(4)
-            .map(|c| f32::from_le_bytes(c.try_into().unwrap()))
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .map(|c| f32::from_le_bytes(*c))
             .collect(),
         GgmlType::Bf16 => bytes
-            .chunks_exact(2)
-            .map(|c| f32::from_bits((u16::from_le_bytes([c[0], c[1]]) as u32) << 16))
+            .as_chunks::<2>()
+            .0
+            .iter()
+            .map(|c| f32::from_bits((u16::from_le_bytes(*c) as u32) << 16))
             .collect(),
         ty => return Err(GpuError::Driver(format!("{name}: unhandled type {ty:?}"))),
     };

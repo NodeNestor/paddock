@@ -229,6 +229,8 @@ impl GpuLaguna {
                 && tys.iter().all(|&t| t == tys[0])
                 && crate::gpu::kq_params(tys[0]).is_some()
         };
+        // the layer index names every blk.{i} tensor and picks its head count
+        #[allow(clippy::needless_range_loop)]
         for i in 0..n_layer {
             let dt = |name: &str| exec.upload(map, &format!("blk.{i}.{name}"));
             // Matmul weights stay quantized-resident with per-TENSOR dispatch

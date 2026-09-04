@@ -1,6 +1,9 @@
 //! Tiny admin-surface CLI for debugging: `adminctl <port> <verb> [arg]` with
 //! verbs identify | health | stats | events | drain | shutdown | list. Talks
 //! the same pipe/socket the manager uses - handy for poking a live runner.
+// A development probe: it runs on a box its author is looking at, and a
+// failure should stop it where it happened rather than be reported.
+#![allow(clippy::unwrap_used)]
 
 use paddock_admin::client::AdminClient;
 

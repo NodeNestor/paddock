@@ -2,6 +2,9 @@
 //! the text. Same bring-up coherence gate as gptoss_say - a broken kernel writes
 //! word salad, not English. Works for both 9B and 27B (QWEN35_GGUF picks the file).
 //! Usage: qwen35_say [prompt] [n_tokens]   (QWEN35_GGUF/PADDOCK_PACK override paths)
+// A development probe: it runs on a box its author is looking at, and a
+// failure should stop it where it happened rather than be reported.
+#![allow(clippy::unwrap_used)]
 
 use std::sync::Arc;
 

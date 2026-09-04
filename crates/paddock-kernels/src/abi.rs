@@ -3469,6 +3469,9 @@ pub struct KernelTableV1 {
     /// class). Per-segment nullable bias. `(d0,s0,b0,y0,out0, d1,s1,b1,y1,out1,
     /// d2,s2,b2,y2,out2, d3,s3,b3,y3,out3, xq, xs, in_dim, n_segs, ncols,
     /// stream)`; unused trailing segments pass nulls/0.
+    // The C signature, spelled out where the table entry is rather than
+    // behind an alias: 26 parameters is what the kernel takes.
+    #[allow(clippy::type_complexity)]
     pub q8_0_gemv_dp4a_nc_multi: Option<
         unsafe extern "C" fn(
             *const core::ffi::c_void,

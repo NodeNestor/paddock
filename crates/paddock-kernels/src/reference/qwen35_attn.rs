@@ -127,14 +127,14 @@ pub fn gated_attention_core(
             let qoff = (t * n_heads + h) * head_dim;
             // scores over the causal window 0..=t
             let mut m = f32::NEG_INFINITY;
-            for j in 0..=t {
+            for (j, s) in scores[..=t].iter_mut().enumerate() {
                 let koff = (j * n_kv_heads + kvh) * head_dim;
                 let mut dot = 0f32;
                 for d in 0..head_dim {
                     dot += q[qoff + d] * kk[koff + d];
                 }
-                scores[j] = dot * scale;
-                m = m.max(scores[j]);
+                *s = dot * scale;
+                m = m.max(*s);
             }
             let mut denom = 0f32;
             for s in scores.iter_mut().take(t + 1) {
@@ -142,8 +142,8 @@ pub fn gated_attention_core(
                 denom += *s;
             }
             let coff = (t * n_heads + h) * head_dim;
-            for j in 0..=t {
-                let w = scores[j] / denom;
+            for (j, &sj) in scores[..=t].iter().enumerate() {
+                let w = sj / denom;
                 let voff = (j * n_kv_heads + kvh) * head_dim;
                 for d in 0..head_dim {
                     ctx[coff + d] += w * v[voff + d];

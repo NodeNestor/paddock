@@ -366,7 +366,6 @@ mod tests {
             enc.write_image::<colortype::RGB8>(w, h, &data)
                 .expect("page");
         }
-        drop(enc);
         out.into_inner()
     }
 

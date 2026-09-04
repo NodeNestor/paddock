@@ -1181,13 +1181,13 @@ impl GpuGemma4 {
                 a += 1;
             }
             spans.push((base, a + 1));
-            for j in 0..chunk.len() {
+            for (j, &tok) in chunk.iter().enumerate() {
                 positions.push((*start + j) as u32);
                 slots.push(*slot as u32);
                 // the row's INPUT token is what its feature encodes - for a
                 // verify chunk that is the chunk itself (pending + drafts),
                 // and only the accepted prefix of it is committed by `spans`
-                toks.push(chunk[j]);
+                toks.push(tok);
             }
             base += chunk.len();
         }

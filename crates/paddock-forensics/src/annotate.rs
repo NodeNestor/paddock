@@ -382,7 +382,9 @@ fn render_forensic_composite(ctx: &Context, findings: &[Finding]) -> Option<Vec<
 
     for finding in &spatial_findings {
         let weight = severity_weight(finding.severity) * finding.confidence;
-        let region = finding.region.as_ref().unwrap();
+        let Some(region) = finding.region.as_ref() else {
+            continue;
+        };
 
         match region {
             Region::BoundingBox {

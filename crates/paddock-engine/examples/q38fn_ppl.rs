@@ -21,6 +21,9 @@
 //! Prints: token count, mean NLL (nats), perplexity, self-top-1.
 //! Optional CSV: pos,true_id,nll,argmax_id - the cross-leg comparison
 //! (top-1 agreement, positions-worse, median abs delta) is computed from two.
+// A development probe: it runs on a box its author is looking at, and a
+// failure should stop it where it happened rather than be reported.
+#![allow(clippy::unwrap_used)]
 
 use std::io::Write;
 use std::sync::Arc;

@@ -46,9 +46,9 @@ fn serving_batch_isolation_and_throughput() {
     m.enable_batch(b).expect("enable_batch");
     let vocab = m.vocab;
     let mut last_tok = vec![0u32; b];
-    for s in 0..b {
+    for (s, lt) in last_tok.iter_mut().enumerate() {
         let lg = m.forward_prefill_slot(s, &prompt).expect("prefill slot");
-        last_tok[s] = argmax(&lg);
+        *lt = argmax(&lg);
     }
     assert!(
         last_tok.iter().all(|&t| t == last_tok[0]),

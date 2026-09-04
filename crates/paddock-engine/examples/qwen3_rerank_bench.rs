@@ -3,6 +3,9 @@
 //! cache should make the per-doc cost ~the suffix tokens only.
 //!
 //! Usage: qwen3_rerank_bench [n_docs]   (env QWEN3_RERANK_GGUF overrides)
+// A development probe: it runs on a box its author is looking at, and a
+// failure should stop it where it happened rather than be reported.
+#![allow(clippy::unwrap_used)]
 
 use std::sync::Arc;
 use std::time::Instant;

@@ -4,6 +4,8 @@
 //! contract, and the admission/release plumbing must move pool blocks the
 //! way the scheduler will assume. No forward ticks here - those are stage C
 //! and get their own serial-parity gate.
+// Test code: a failed assumption stops the test where it happened.
+#![allow(clippy::unwrap_used)]
 
 mod common;
 
@@ -292,8 +294,7 @@ fn prefix_cache_resumes_with_state_snapshot() {
     let greedy8 = |model: &mut GpuNemotron, slot: usize, first: &[f32], pos0: usize| {
         let mut ids = Vec::new();
         let mut tok = argmax(first);
-        let mut pos = pos0 as u32;
-        for _ in 0..8 {
+        for pos in (pos0 as u32..).take(8) {
             ids.push(tok);
             let (step, _) = model
                 .forward_mixed_sampled(
@@ -306,7 +307,6 @@ fn prefix_cache_resumes_with_state_snapshot() {
                 )
                 .expect("decode tick");
             tok = step.ids[0];
-            pos += 1;
         }
         ids
     };

@@ -17,6 +17,8 @@
 //!
 //! Sequential (two ~27 GB residencies): mtmd-cli runs to completion first.
 //! Very heavy: gated on PADDOCK_HEAVY_TESTS, --test-threads=1.
+// Test code: a failed assumption stops the test where it happened.
+#![allow(clippy::unwrap_used)]
 
 use std::path::PathBuf;
 use std::process::Command;

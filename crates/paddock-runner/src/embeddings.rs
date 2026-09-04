@@ -34,6 +34,8 @@ fn encode_base64(v: &[f32]) -> EmbeddingValue {
     EmbeddingValue::Base64(base64::engine::general_purpose::STANDARD.encode(bytes))
 }
 
+// the Err is the finished axum reply on a cold error path; boxing it buys nothing
+#[allow(clippy::result_large_err)]
 fn model_or_400(state: &AppState) -> Result<&EmbedModel, Response> {
     state.embedder.as_ref().ok_or_else(|| {
         err(

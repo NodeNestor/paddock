@@ -216,19 +216,20 @@ impl JpegGhostDetector {
         num_blocks: usize,
     ) -> Vec<Finding> {
         // best quality per block (min MSE across the ladder)
-        let mut best_q: Vec<u8> = Vec::with_capacity(num_blocks);
-        for b in 0..num_blocks {
-            let mut bq = qualities[0];
-            let mut be = f64::MAX;
-            for (qi, &q) in qualities.iter().enumerate() {
-                let e = block_mse[qi][b];
-                if e < be {
-                    be = e;
-                    bq = q;
+        let best_q: Vec<u8> = (0..num_blocks)
+            .map(|b| {
+                let mut bq = qualities[0];
+                let mut be = f64::MAX;
+                for (qi, &q) in qualities.iter().enumerate() {
+                    let e = block_mse[qi][b];
+                    if e < be {
+                        be = e;
+                        bq = q;
+                    }
                 }
-            }
-            best_q.push(bq);
-        }
+                bq
+            })
+            .collect();
 
         // Histogram over the fixed quality ladder -> dominant with a
         // DETERMINISTIC tie-break (highest count, then lowest quality).

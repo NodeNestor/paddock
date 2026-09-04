@@ -4,6 +4,9 @@
 //! the same thermal window. Args: `<B list, e.g. 8,32>` `<steps>` (defaults
 //! 32, 64). A single-B invocation is the cleanest shape to profile for
 //! per-kernel attribution.
+// A development probe: it runs on a box its author is looking at, and a
+// failure should stop it where it happened rather than be reported.
+#![allow(clippy::unwrap_used)]
 
 use std::sync::Arc;
 

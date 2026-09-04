@@ -5,6 +5,10 @@
 //! each other bit-wise) and times each. Env PADDOCK_ROUTER_GEMM is latched
 //! statically in the pack, so run twice (on/off) for the speed A/B - the
 //! parity check is self-contained either way.
+// A development probe: it runs on a box its author is looking at, and a
+// failure should stop it where it happened rather than be reported.
+#![allow(clippy::unwrap_used)]
+
 use std::sync::Arc;
 
 use paddock_engine::gpu::{DeviceTensor, GpuExecutor};

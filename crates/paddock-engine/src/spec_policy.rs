@@ -569,8 +569,7 @@ impl SpecController {
         };
         let mut best_k = 0;
         let mut best_g = f64::NEG_INFINITY;
-        for k in 0..=k_cap {
-            let c = row[k];
+        for (k, c) in row[..=k_cap].iter().enumerate() {
             let t = if c.ready() && c.t > 0.0 {
                 c.t
             } else if let Some((a, slope, t_min)) = fit {

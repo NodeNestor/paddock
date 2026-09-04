@@ -199,7 +199,7 @@ impl GpuQwen35 {
         self.ensure_decode()?;
         let exec = self.exec.clone();
         let vocab = self.vocab;
-        let pos = self.decode.as_ref().unwrap().pos;
+        let pos = self.decode.as_ref().expect("decode").pos;
         assert!(
             pos < self.max_ctx,
             "decode position {pos} exceeds max_ctx {}",
@@ -209,7 +209,7 @@ impl GpuQwen35 {
         // Push this token's inputs into the fixed device buffers (stream-ordered,
         // outside the graph - only their contents change per token).
         {
-            let ds = self.decode.as_mut().unwrap();
+            let ds = self.decode.as_mut().expect("decode");
             exec.stream
                 .memcpy_htod(&[token], &mut ds.d_token)
                 .map_err(|e| GpuError::Driver(e.to_string()))?;
@@ -229,23 +229,23 @@ impl GpuQwen35 {
         // loop bound - which the kernel reads from `d_pos` on device, so the grid is
         // position-independent and one capture is valid at every position. Replaying
         // the graph collapses ~480 per-token kernel launches into a single submit.
-        if self.decode.as_ref().unwrap().graph.is_none() {
+        if self.decode.as_ref().expect("decode").graph.is_none() {
             self.capture_graph()?;
         }
         self.decode
             .as_ref()
-            .unwrap()
+            .expect("decode")
             .graph
             .as_ref()
-            .unwrap()
+            .expect("graph captured above")
             .0
             .launch()
             .map_err(|e| GpuError::Driver(format!("graph launch: {e}")))?;
 
-        let logits = exec.to_host(&self.scratch.as_ref().unwrap().d_logits)?;
+        let logits = exec.to_host(&self.scratch.as_ref().expect("scratch").d_logits)?;
         debug_assert_eq!(logits.len(), vocab);
         {
-            let ds = self.decode.as_mut().unwrap();
+            let ds = self.decode.as_mut().expect("decode");
             ds.pos += 1;
             ds.mrope_pos += 1;
         }
@@ -273,7 +273,7 @@ impl GpuQwen35 {
             .map_err(|e| GpuError::Driver(format!("end_capture: {e}")));
         rec?; // surface a record_step failure only after capture is cleanly ended
         let graph = graph?.ok_or_else(|| GpuError::Driver("capture produced no graph".into()))?;
-        self.decode.as_mut().unwrap().graph = Some(SendGraph(graph));
+        self.decode.as_mut().expect("decode").graph = Some(SendGraph(graph));
         Ok(())
     }
 
@@ -296,7 +296,7 @@ impl GpuQwen35 {
         rec?;
         let graph =
             graph?.ok_or_else(|| GpuError::Driver("gen capture produced no graph".into()))?;
-        self.decode.as_mut().unwrap().graph_gen = Some(SendGraph(graph));
+        self.decode.as_mut().expect("decode").graph_gen = Some(SendGraph(graph));
         Ok(())
     }
 
@@ -333,7 +333,7 @@ impl GpuQwen35 {
         }
         self.ensure_decode()?;
         assert_eq!(
-            self.decode.as_ref().unwrap().pos,
+            self.decode.as_ref().expect("decode").pos,
             0,
             "prefill requires a fresh sequence (reset first)"
         );
@@ -352,7 +352,7 @@ impl GpuQwen35 {
         // text layout (all four axes = token index) but axis-major [4, t_len],
         // so its layout depends on the length - re-uploaded each call.
         {
-            let ds = self.decode.as_mut().unwrap();
+            let ds = self.decode.as_mut().expect("decode");
             let mrope_host: Vec<u32> = (0..4).flat_map(|_| 0..t_len as u32).collect();
             let mut tok_view = ds.d_pf_tokens.slice_mut(0..t_len);
             exec.stream
@@ -377,18 +377,24 @@ impl GpuQwen35 {
         if eager {
             self.record_prefill(t_len)?;
         } else {
-            if !self.decode.as_ref().unwrap().pf_graphs.contains_key(&t_len) {
+            if !self
+                .decode
+                .as_ref()
+                .expect("decode")
+                .pf_graphs
+                .contains_key(&t_len)
+            {
                 self.capture_prefill_graph(t_len)?;
             }
-            self.decode.as_ref().unwrap().pf_graphs[&t_len]
+            self.decode.as_ref().expect("decode").pf_graphs[&t_len]
                 .0
                 .launch()
                 .map_err(|e| GpuError::Driver(format!("prefill graph launch: {e}")))?;
         }
 
-        let logits = exec.to_host(&self.scratch.as_ref().unwrap().d_logits)?;
+        let logits = exec.to_host(&self.scratch.as_ref().expect("scratch").d_logits)?;
         {
-            let ds = self.decode.as_mut().unwrap();
+            let ds = self.decode.as_mut().expect("decode");
             ds.pos = t_len;
             ds.mrope_pos = t_len;
         }
@@ -412,7 +418,7 @@ impl GpuQwen35 {
         rec?;
         let graph =
             graph?.ok_or_else(|| GpuError::Driver("prefill capture produced no graph".into()))?;
-        let ds = self.decode.as_mut().unwrap();
+        let ds = self.decode.as_mut().expect("decode");
         // Chat traffic can produce many distinct lengths - bound the cache.
         if ds.pf_graphs.len() >= 16 {
             ds.pf_graphs.clear();
@@ -589,7 +595,7 @@ impl GpuQwen35 {
                     )?;
                     exec.kv_append_batch(
                         &sc.d_kn,
-                        ds.kv_k[li].as_mut().unwrap(),
+                        ds.kv_k[li].as_mut().expect("full-attn layer KV"),
                         &ds.d_pf_pos,
                         Some(&ds.d_pf_slots),
                         kv_dim,
@@ -599,7 +605,7 @@ impl GpuQwen35 {
                     )?;
                     exec.kv_append_batch(
                         &sc.d_v,
-                        ds.kv_v[li].as_mut().unwrap(),
+                        ds.kv_v[li].as_mut().expect("full-attn layer KV"),
                         &ds.d_pf_pos,
                         Some(&ds.d_pf_slots),
                         kv_dim,
@@ -610,8 +616,8 @@ impl GpuQwen35 {
                     prefill_attn(
                         &exec,
                         &sc.d_qn,
-                        ds.kv_k[li].as_ref().unwrap(),
-                        ds.kv_v[li].as_ref().unwrap(),
+                        ds.kv_k[li].as_ref().expect("full-attn layer KV"),
+                        ds.kv_v[li].as_ref().expect("full-attn layer KV"),
                         sinks,
                         &mut sc.d_attn,
                         &ds.d_pf_pos,
@@ -686,7 +692,7 @@ impl GpuQwen35 {
                     // incremental decode continues seamlessly. Window rows are
                     // oldest-first == the tail rows of d_mixed (contiguous copy).
                     {
-                        let win = ds.conv_win[li].as_mut().unwrap();
+                        let win = ds.conv_win[li].as_mut().expect("DeltaNet layer conv");
                         let km1 = conv_k - 1;
                         if t_len >= km1 {
                             exec.copy_region(
@@ -774,7 +780,7 @@ impl GpuQwen35 {
                     prefill_delta_recurrent(
                         &exec,
                         sc,
-                        ds.recur[li].as_mut().unwrap(),
+                        ds.recur[li].as_mut().expect("DeltaNet layer state"),
                         0,
                         t_len,
                         n_v_heads,
@@ -1085,7 +1091,7 @@ impl GpuQwen35 {
                     )?;
                     exec.kv_append_batch(
                         &sc.d_kn,
-                        ds.kv_k[li].as_mut().unwrap(),
+                        ds.kv_k[li].as_mut().expect("full-attn layer KV"),
                         &ds.d_pos,
                         Some(&ds.d_slots),
                         kv_dim,
@@ -1095,7 +1101,7 @@ impl GpuQwen35 {
                     )?;
                     exec.kv_append_batch(
                         &sc.d_v,
-                        ds.kv_v[li].as_mut().unwrap(),
+                        ds.kv_v[li].as_mut().expect("full-attn layer KV"),
                         &ds.d_pos,
                         Some(&ds.d_slots),
                         kv_dim,
@@ -1111,8 +1117,8 @@ impl GpuQwen35 {
                     attn_decode_dispatch(
                         &exec,
                         &sc.d_qn,
-                        ds.kv_k[li].as_ref().unwrap(),
-                        ds.kv_v[li].as_ref().unwrap(),
+                        ds.kv_k[li].as_ref().expect("full-attn layer KV"),
+                        ds.kv_v[li].as_ref().expect("full-attn layer KV"),
                         sinks,
                         &mut sc.d_attn_o,
                         &mut sc.d_attn_ml,
@@ -1137,7 +1143,7 @@ impl GpuQwen35 {
                     super::stub_guard(&w.in_qkv, "forward.rs serial in_qkv")?;
                     gemv_any(&exec, &w.in_qkv, &sc.d_xn, &mut sc.d_mixed)?;
                     exec.conv_step(
-                        ds.conv_win[li].as_mut().unwrap(),
+                        ds.conv_win[li].as_mut().expect("DeltaNet layer conv"),
                         &sc.d_mixed,
                         &w.conv_w.buf,
                         &mut sc.d_conv,
@@ -1194,7 +1200,7 @@ impl GpuQwen35 {
                         &sc.d_g,
                         &sc.d_beta,
                         None,
-                        ds.recur[li].as_mut().unwrap(),
+                        ds.recur[li].as_mut().expect("DeltaNet layer state"),
                         0,
                         None,
                         &mut sc.d_dattn,
@@ -1896,7 +1902,7 @@ impl GpuQwen35 {
             return Ok(out);
         }
 
-        let p = self.decode.as_ref().unwrap().pos; // = prompt.len()
+        let p = self.decode.as_ref().expect("decode").pos; // = prompt.len()
         assert!(
             p + max_new <= self.max_ctx,
             "context {p} + {max_new} exceeds max_ctx {}",
@@ -1906,7 +1912,7 @@ impl GpuQwen35 {
         // Seed the device inputs for the first generation replay: process token0 at
         // position p. Subsequent tokens/positions are produced on-device by graph_gen.
         {
-            let ds = self.decode.as_mut().unwrap();
+            let ds = self.decode.as_mut().expect("decode");
             let mp = ds.mrope_pos as u32;
             let e = |x: cudarc::driver::DriverError| crate::gpu::from_driver(x);
             exec.stream
@@ -1919,7 +1925,7 @@ impl GpuQwen35 {
                 .memcpy_htod(&[mp; 4], &mut ds.d_mrope)
                 .map_err(e)?;
         }
-        if self.decode.as_ref().unwrap().graph_gen.is_none() {
+        if self.decode.as_ref().expect("decode").graph_gen.is_none() {
             self.capture_graph_gen()?;
         }
 
@@ -1930,28 +1936,28 @@ impl GpuQwen35 {
         while produced < target {
             let k = (target - produced).min(GEN_CHUNK);
             {
-                let ds = self.decode.as_mut().unwrap();
+                let ds = self.decode.as_mut().expect("decode");
                 let e = |x: cudarc::driver::DriverError| crate::gpu::from_driver(x);
                 exec.stream
                     .memcpy_htod(&[0u32], &mut ds.d_step)
                     .map_err(e)?; // reset ring
-                let g = ds.graph_gen.as_ref().unwrap();
+                let g = ds.graph_gen.as_ref().expect("gen graph captured above");
                 for _ in 0..k {
                     g.0.launch()
                         .map_err(|x| GpuError::Driver(format!("gen launch: {x}")))?;
                 }
             }
-            let ids = exec.to_host_u32(&self.decode.as_ref().unwrap().d_out)?;
+            let ids = exec.to_host_u32(&self.decode.as_ref().expect("decode").d_out)?;
             for &id in ids.iter().take(k) {
                 out.push(id);
                 produced += 1;
                 if Some(id) == stop {
-                    self.decode.as_mut().unwrap().pos = p + produced;
+                    self.decode.as_mut().expect("decode").pos = p + produced;
                     return Ok(out);
                 }
             }
         }
-        self.decode.as_mut().unwrap().pos = p + produced;
+        self.decode.as_mut().expect("decode").pos = p + produced;
         Ok(out)
     }
 
@@ -1977,10 +1983,10 @@ impl GpuQwen35 {
         let launch = |m: &Self| -> Result<(), GpuModelError> {
             m.decode
                 .as_ref()
-                .unwrap()
+                .expect("decode")
                 .graph
                 .as_ref()
-                .unwrap()
+                .expect("step captured the base graph")
                 .0
                 .launch()
                 .map_err(|x| GpuError::Driver(format!("bench launch: {x}")))?;

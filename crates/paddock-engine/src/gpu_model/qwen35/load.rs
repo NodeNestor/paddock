@@ -620,8 +620,10 @@ impl GpuQwen35 {
                 return None;
             }
             let scales: Vec<f32> = sb
-                .chunks_exact(2)
-                .map(|c| f32::from_bits((u16::from_le_bytes([c[0], c[1]]) as u32) << 16))
+                .as_chunks::<2>()
+                .0
+                .iter()
+                .map(|c| f32::from_bits((u16::from_le_bytes(*c) as u32) << 16))
                 .collect();
             Some((b, scales, rows, cols))
         };
@@ -1717,10 +1719,10 @@ impl GpuQwen35 {
                             return None;
                         }
                         let scales: Vec<f32> = sb
-                            .chunks_exact(2)
-                            .map(|c| {
-                                f32::from_bits((u16::from_le_bytes([c[0], c[1]]) as u32) << 16)
-                            })
+                            .as_chunks::<2>()
+                            .0
+                            .iter()
+                            .map(|c| f32::from_bits((u16::from_le_bytes(*c) as u32) << 16))
                             .collect();
                         Some((b.to_vec(), scales, rows, cols))
                     };

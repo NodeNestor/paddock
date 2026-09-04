@@ -8,6 +8,8 @@
 //! generate on the identical ids -> compare token streams.
 //!
 //! Very heavy (two ~27 GB loads): gated on PADDOCK_HEAVY_TESTS, --test-threads=1.
+// Test code: a failed assumption stops the test where it happened.
+#![allow(clippy::unwrap_used)]
 
 use std::io::Read;
 use std::path::PathBuf;

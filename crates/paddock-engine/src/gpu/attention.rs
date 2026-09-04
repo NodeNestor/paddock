@@ -929,6 +929,8 @@ impl GpuExecutor {
         self.kernels.qkv_rope_norm_from_parts_paged.is_some()
     }
 
+    // A kernel launcher: the parameter list is the kernel's.
+    #[allow(clippy::too_many_arguments)]
     pub fn rope_norm_qk_append_paged(
         &self,
         q: &mut CudaSlice<f32>,
@@ -1401,6 +1403,8 @@ impl GpuExecutor {
         check(unsafe { f(ptr, n, maxn) })
     }
 
+    // A kernel launcher: the parameter list is the kernel's.
+    #[allow(clippy::too_many_arguments)]
     pub fn attn_prefill_batch(
         &self,
         q: &CudaSlice<f32>,
@@ -2130,6 +2134,8 @@ impl GpuExecutor {
         })
     }
 
+    // A kernel launcher: the parameter list is the kernel's.
+    #[allow(clippy::too_many_arguments)]
     pub fn attn_prefill_f16_rows(
         &self,
         q: &CudaSlice<f32>,
@@ -2783,6 +2789,8 @@ impl GpuExecutor {
     /// `ml` is fin's dead out_ml slot (scratch, untouched under fin).
     /// Ok(false) = same accept envelope as `attn_spec_batch_fin` refusing
     /// - caller keeps the f32 fin + quantize chain.
+    // A kernel launcher: the parameter list is the kernel's.
+    #[allow(clippy::too_many_arguments)]
     pub fn attn_spec_batch_fin_e4s(
         &self,
         q: &CudaSlice<f32>,

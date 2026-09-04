@@ -2,6 +2,8 @@
 //! Quantization moves logits a little; a wiring bug moves them completely.
 //! Prints top-5 ids + cosine similarity for a few prompts - triage tool, only
 //! asserts the correlation floor.
+// Test code: a failed assumption stops the test where it happened.
+#![allow(clippy::unwrap_used)]
 
 mod common;
 

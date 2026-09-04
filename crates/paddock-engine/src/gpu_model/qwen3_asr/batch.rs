@@ -94,11 +94,7 @@ fn no_gemv_multi() -> bool {
 /// 16q/8kv = group 2, inside the fused range, so this engages at every
 /// batched decode width.
 fn attn_gqa_fused(n_heads: usize, n_kv_heads: usize, batch: usize) -> bool {
-    let group = if n_kv_heads > 0 {
-        n_heads / n_kv_heads
-    } else {
-        1
-    };
+    let group = n_heads.checked_div(n_kv_heads).unwrap_or(1);
     batch > 1
         && (2..=8).contains(&group)
         && n_kv_heads >= 2

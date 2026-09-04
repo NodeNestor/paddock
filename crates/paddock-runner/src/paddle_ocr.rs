@@ -233,8 +233,7 @@ pub fn parse_spotting(raw: &str) -> Vec<Region> {
     }
     let mut out = Vec::new();
     let mut cur = raw;
-    loop {
-        let Some(i) = cur.find("<|LOC_") else { break };
+    while let Some(i) = cur.find("<|LOC_") {
         let text = cur[..i].trim();
         // consume the whole marker cluster: numeric LOC tokens + structural
         // separators, nothing else
@@ -281,10 +280,10 @@ pub fn parse_spotting(raw: &str) -> Vec<Region> {
             let xs = [quad[0], quad[2], quad[4], quad[6]];
             let ys = [quad[1], quad[3], quad[5], quad[7]];
             boxes.push([
-                *xs.iter().min().unwrap(),
-                *ys.iter().min().unwrap(),
-                *xs.iter().max().unwrap(),
-                *ys.iter().max().unwrap(),
+                xs[0].min(xs[1]).min(xs[2]).min(xs[3]),
+                ys[0].min(ys[1]).min(ys[2]).min(ys[3]),
+                xs[0].max(xs[1]).max(xs[2]).max(xs[3]),
+                ys[0].max(ys[1]).max(ys[2]).max(ys[3]),
             ]);
             quads.push(quad);
         }

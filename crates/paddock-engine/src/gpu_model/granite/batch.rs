@@ -171,11 +171,7 @@ impl PfCuts {
 /// dispatch both key off it. granite is 32q/8kv = group 4, so this engages
 /// at every batched decode width.
 fn attn_gqa_fused(n_heads: usize, n_kv_heads: usize, batch: usize) -> bool {
-    let group = if n_kv_heads > 0 {
-        n_heads / n_kv_heads
-    } else {
-        1
-    };
+    let group = n_heads.checked_div(n_kv_heads).unwrap_or(1);
     batch > 1
         && (2..=8).contains(&group)
         && n_kv_heads >= 2
@@ -3770,7 +3766,7 @@ impl GpuGranite {
         // a growth error leaves the rings/inputs untouched
         {
             let (pos0, slot_map) = {
-                let p = self.pipe.as_ref().unwrap();
+                let p = self.pipe.as_ref().expect("pipe active");
                 (p.pos0.clone(), p.slots.clone())
             };
             let slots_v: Vec<u32> = (0..b as u32)
@@ -3783,7 +3779,7 @@ impl GpuGranite {
         let (par, tpar) = Self::pack_samp_par(plans);
         let max_batch = self.batch.as_ref().expect("batch enabled").n_slots;
         {
-            let sc = &mut self.batch.as_mut().unwrap().sc;
+            let sc = &mut self.batch.as_mut().expect("batch enabled").sc;
             let off = ring * max_batch * 4;
             let mut v = sc
                 .d_pipe_par
@@ -3801,7 +3797,7 @@ impl GpuGranite {
         if advance {
             // tokens <- previous ring's sampled ids, positions += 1, on device
             let prev = ((tick + 1) % 2) as usize;
-            let sc = &mut self.batch.as_mut().unwrap().sc;
+            let sc = &mut self.batch.as_mut().expect("batch enabled").sc;
             let (out, tok, pos) = (&sc.d_pipe_out, &mut sc.d_toks, &mut sc.d_pos);
             exec.pipe_advance(out, prev * max_batch, tok, pos, b)?;
         }
@@ -3813,7 +3809,7 @@ impl GpuGranite {
         // same out ring inside `sampler_body`.
         self.sampler_replay(b, ring, tpar.is_some())?;
         let ev = exec.record_event()?;
-        self.pipe.as_mut().unwrap().ev[ring] = Some(ev);
+        self.pipe.as_mut().expect("pipe active").ev[ring] = Some(ev);
         Ok(())
     }
 
@@ -3890,7 +3886,7 @@ impl GpuGranite {
             (p.b, p.tick)
         };
         assert_eq!(plans.len(), b, "one plan per row");
-        self.pipe.as_mut().unwrap().tick = j + 1;
+        self.pipe.as_mut().expect("live pipe").tick = j + 1;
         if let Err(e) = self.pipe_launch_tick(plans, true) {
             self.pipe_abort();
             return Err(e);
@@ -3898,8 +3894,8 @@ impl GpuGranite {
         let ring = (j % 2) as usize;
         let max_batch = self.batch.as_ref().expect("batch enabled").n_slots;
         let r = {
-            let sc = &self.batch.as_ref().unwrap().sc;
-            let ev = self.pipe.as_ref().unwrap().ev[ring]
+            let sc = &self.batch.as_ref().expect("batch enabled").sc;
+            let ev = self.pipe.as_ref().expect("live pipe").ev[ring]
                 .as_ref()
                 .expect("in-flight event");
             exec.to_host_u32_after(ev, &sc.d_pipe_out, ring * max_batch, b)
@@ -3942,7 +3938,7 @@ impl GpuGranite {
             .ok_or(GpuModelError::BatchDisabled)?
             .n_slots;
         let ev = st.ev[ring].as_ref().expect("in-flight event");
-        let sc = &self.batch.as_ref().unwrap().sc;
+        let sc = &self.batch.as_ref().expect("batch checked above").sc;
         match exec.to_host_u32_after(ev, &sc.d_pipe_out, ring * max_batch, st.b) {
             Ok(ids) => Ok(ids),
             Err(e) => {
@@ -3968,7 +3964,6 @@ impl GpuGranite {
 /// Attend rows [off, off+len) of the current pass. `dec_band` routes a fused
 /// tick's q_len==1 rows to the decode kernel; otherwise a span takes the
 /// tensor-core prefill kernel when available and the tiled one below it.
-#[allow(clippy::too_many_arguments)]
 fn attend_span(
     exec: &crate::gpu::GpuExecutor,
     sc: &mut BatchScratch,

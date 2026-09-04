@@ -1,6 +1,10 @@
 //! P1-2 probe: per-32 chain (mma2) vs per-128 xg pair (mma2g with host-made
 //! per-128 xs) on identical synthetic weights + activations. Reports fq
 //! maxrel (expect quantize-class ~1.3x of per-32 error) and gu timing.
+// A development probe: it runs on a box its author is looking at, and a
+// failure should stop it where it happened rather than be reported.
+#![allow(clippy::unwrap_used)]
+
 use std::sync::Arc;
 
 use paddock_engine::gpu::{GpuExecutor, RepackedQ8};

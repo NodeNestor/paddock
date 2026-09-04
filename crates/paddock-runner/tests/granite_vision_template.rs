@@ -20,6 +20,8 @@
 //!   parts of type `image`. OpenAI clients send `image_url`, so
 //!   `normalize_messages` has to rewrite the part first - the same seam gemma4
 //!   uses - or the slot count comes out zero and the pixels are dropped.
+// Test code: a failed assumption stops the test where it happened.
+#![allow(clippy::unwrap_used)]
 
 use paddock_runner::chat_template;
 use serde_json::json;

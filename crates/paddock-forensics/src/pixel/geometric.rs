@@ -271,7 +271,7 @@ impl GeometricConsistencyAnalyzer {
             }
         }
 
-        peaks.sort_by(|a, b| b.votes.cmp(&a.votes));
+        peaks.sort_by_key(|p| std::cmp::Reverse(p.votes));
         peaks.truncate(50);
         peaks
     }
@@ -581,10 +581,12 @@ impl GeometricConsistencyAnalyzer {
             return;
         }
 
-        let strongest = outlier_blocks
+        let Some(strongest) = outlier_blocks
             .iter()
             .max_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal))
-            .unwrap();
+        else {
+            return;
+        };
         let sx = (strongest.0 % blocks_x) * bs;
         let sy = (strongest.0 / blocks_x) * bs;
 

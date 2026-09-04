@@ -634,6 +634,9 @@ impl Sampler {
                 head_sum += c.1;
             }
             let denom = if p.top_k > 0 { head_sum } else { full_sum };
+            // `!(x > 0.0)` on purpose: a NaN denominator must land here too,
+            // and `x <= 0.0` would let it through
+            #[allow(clippy::neg_cmp_op_on_partial_ord)]
             if !(denom > 0.0) {
                 // degenerate distribution (all mass underflowed): argmax head
                 self.scratch.truncate(1);
@@ -694,6 +697,8 @@ fn sample_all(logits: &[f32], inv_t: f32, u: f32) -> u32 {
     for &l in logits.iter() {
         sum += (l * inv_t - m).exp();
     }
+    // `!(x > 0.0)` on purpose: a NaN sum must fall back to argmax too
+    #[allow(clippy::neg_cmp_op_on_partial_ord)]
     if !(sum > 0.0) {
         return argmax(logits);
     }
@@ -739,6 +744,8 @@ pub fn sample_trunc_head(
         c.1 = (c.1 - m).exp();
         head_sum += c.1;
     }
+    // `!(x > 0.0)` on purpose: a NaN head sum must take the argmax path too
+    #[allow(clippy::neg_cmp_op_on_partial_ord)]
     if !(head_sum > 0.0) {
         return cand[0].0; // degenerate: argmax head, like build_nucleus
     }

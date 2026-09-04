@@ -287,8 +287,12 @@ impl FrequencyAnalyzer {
         let mut sum_xy = 0.0_f64;
         let mut n = 0.0_f64;
 
-        for i in 2..num_bins.saturating_sub(2) {
-            let power = radial_avg[i];
+        for (i, &power) in radial_avg
+            .iter()
+            .enumerate()
+            .take(num_bins.saturating_sub(2))
+            .skip(2)
+        {
             if power <= 0.0 {
                 continue;
             }

@@ -1298,8 +1298,8 @@ fn counter_meta(out: &mut String, family: &str, help: &str, om: bool) {
 
 fn write_hist(out: &mut String, name: &str, labels: &str, h: &Hist, om: bool) {
     let mut cum = 0u64;
-    for i in 0..15 {
-        cum += h.buckets[i];
+    for (i, &b) in h.buckets.iter().enumerate() {
+        cum += b;
         let le = if i < 14 { BOUND_LABELS[i] } else { "+Inf" };
         out.push_str(&format!("{name}_bucket{{{labels},le=\"{le}\"}} {cum}"));
         // Exemplars exist only in OpenMetrics - a classic parser would choke.

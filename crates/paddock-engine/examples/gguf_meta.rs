@@ -1,5 +1,8 @@
 //! Dump a GGUF's arch metadata + tensor-name summary - bring-up scoping tool.
 //! Usage: gguf_meta <path.gguf> [name-filter]
+// A development probe: it runs on a box its author is looking at, and a
+// failure should stop it where it happened rather than be reported.
+#![allow(clippy::unwrap_used)]
 
 use paddock_models::mapped::MappedGguf;
 

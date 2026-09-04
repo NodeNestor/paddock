@@ -2178,7 +2178,8 @@ fn spec_verify_attention_matches_decode_batch_on_fp8() {
             "{what}: max_abs_diff {maxd:.2e}{}",
             if nz == 0 { "  [WROTE NOTHING]" } else { "" }
         );
-        if !(maxd < SPEC_CLASS) {
+        // a NaN max must fail too, so this is deliberately not `maxd >= SPEC_CLASS`
+        if maxd.partial_cmp(&SPEC_CLASS) != Some(std::cmp::Ordering::Less) {
             fails.push(if nz == 0 {
                 format!(
                     "{what}: wrote NOTHING (0/{} nonzero), reported success",

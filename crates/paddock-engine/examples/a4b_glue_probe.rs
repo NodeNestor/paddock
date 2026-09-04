@@ -3,6 +3,9 @@
 //! pd_quantize_q8_geglu_remap at the prefill-wave shape. Synthetic data;
 //! perf only (numerics are bitwise-by-construction edits upstream).
 //! Usage: PADDOCK_PACK=... a4b_glue_probe [batch]
+// A development probe: it runs on a box its author is looking at, and a
+// failure should stop it where it happened rather than be reported.
+#![allow(clippy::unwrap_used)]
 
 use std::sync::Arc;
 

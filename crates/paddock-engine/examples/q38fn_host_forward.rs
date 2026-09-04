@@ -12,6 +12,9 @@
 //! core.cuh:317 - parity-proven on the 27B's identical 48V/16K geometry).
 //!
 //! Usage: q38fn_host_forward --dir <checkpoint> --ids 760,6511,314,22466,369
+// A development probe: it runs on a box its author is looking at, and a
+// failure should stop it where it happened rather than be reported.
+#![allow(clippy::unwrap_used)]
 
 use paddock_kernels::reference::delta_net::gated_delta_recurrent;
 use paddock_kernels::reference::ops::YarnRope;
@@ -22,8 +25,10 @@ use paddock_models::qwen4exp::{Qwen4ExpBlock, Qwen4ExpConfig};
 use paddock_models::safetensors::{ShardedSafetensors, StDtype};
 
 fn bf16_to_f32(b: &[u8]) -> Vec<f32> {
-    b.chunks_exact(2)
-        .map(|c| f32::from_bits((u16::from_le_bytes([c[0], c[1]]) as u32) << 16))
+    b.as_chunks::<2>()
+        .0
+        .iter()
+        .map(|c| f32::from_bits((u16::from_le_bytes(*c) as u32) << 16))
         .collect()
 }
 
@@ -42,8 +47,8 @@ fn bf16_matvec(st: &ShardedSafetensors, name: &str, x: &[f32], rows: usize, k: u
                 for (r, yr) in ych.iter_mut().enumerate() {
                     let row = &b[r * k * 2..(r + 1) * k * 2];
                     let mut acc = 0f32;
-                    for (i, c) in row.chunks_exact(2).enumerate() {
-                        let w = f32::from_bits((u16::from_le_bytes([c[0], c[1]]) as u32) << 16);
+                    for (i, c) in row.as_chunks::<2>().0.iter().enumerate() {
+                        let w = f32::from_bits((u16::from_le_bytes(*c) as u32) << 16);
                         acc += w * x[i];
                     }
                     *yr = acc;
@@ -63,8 +68,10 @@ fn tensor_f32(st: &ShardedSafetensors, name: &str, want: usize) -> Vec<f32> {
         }
         StDtype::F32 => {
             assert_eq!(b.len(), want * 4, "{name}");
-            b.chunks_exact(4)
-                .map(|c| f32::from_le_bytes(c.try_into().unwrap()))
+            b.as_chunks::<4>()
+                .0
+                .iter()
+                .map(|c| f32::from_le_bytes(*c))
                 .collect()
         }
         other => panic!("{name}: dtype {other:?}"),
@@ -74,8 +81,10 @@ fn tensor_f32(st: &ShardedSafetensors, name: &str, want: usize) -> Vec<f32> {
 fn i64s(st: &ShardedSafetensors, name: &str) -> Vec<i64> {
     let (t, b) = st.bytes(name).unwrap_or_else(|| panic!("{name} missing"));
     assert_eq!(t.dtype, StDtype::I64, "{name}");
-    b.chunks_exact(8)
-        .map(|c| i64::from_le_bytes(c.try_into().unwrap()))
+    b.as_chunks::<8>()
+        .0
+        .iter()
+        .map(|c| i64::from_le_bytes(*c))
         .collect()
 }
 
@@ -227,7 +236,7 @@ fn main() {
             let mut stream = vec![eos; 2];
             stream.extend(ids.iter().map(|&i| i as i64));
             let mut gvs: Vec<Vec<f32>> = Vec::with_capacity(n);
-            for t in 0..n {
+            for (t, ht) in hst.iter().enumerate() {
                 let w3 = rq::ple_window(&stream, t + 2, eos);
                 let row_ids = rq::ple_ngram_ids(&w3, &mult, &sizes, &offs, c.heads_per_ngram);
                 let mut emb = Vec::with_capacity(c.ple_embed);
@@ -244,7 +253,7 @@ fn main() {
                 let key = bf16_matvec(&st, &format!("{pl}.key_proj.weight"), &emb, hw, h);
                 let value = bf16_matvec(&st, &format!("{pl}.value_proj.weight"), &emb, h, h);
                 let gv = rq::ple_gate(
-                    &hst[t],
+                    ht,
                     &key,
                     &value,
                     &norm_key_w,
@@ -292,9 +301,9 @@ fn main() {
         );
         let mut block_in: Vec<Vec<f32>> = Vec::with_capacity(n);
         let mut injs: Vec<Vec<f32>> = Vec::with_capacity(n);
-        for t in 0..n {
+        for ht in &hst {
             let (bi, inj) = rq::hc_mix(
-                &hst[t],
+                ht,
                 &a_norm,
                 &a_down,
                 &a_up,
@@ -467,9 +476,9 @@ fn main() {
         let sh_gate_v = tensor_f32(&st, &format!("{p}.mlp.shared_expert_gate.weight"), h);
         let (mut mlp_bis, mut mlp_injs, mut moes, mut topks) =
             (Vec::new(), Vec::new(), Vec::new(), Vec::new());
-        for t in 0..n {
+        for ht in hst.iter_mut() {
             let (x, inj) = rq::hc_mix(
-                &hst[t],
+                ht,
                 &m_norm,
                 &m_down,
                 &m_up,
@@ -503,17 +512,17 @@ fn main() {
                 let uv = nvfp4_view(&st, &format!("{ep}.up_proj")).expect("up");
                 let dv = nvfp4_view(&st, &format!("{ep}.down_proj")).expect("down");
                 let mut act = vec![0f32; c.moe_ff];
-                for r in 0..c.moe_ff {
+                for (r, a) in act.iter_mut().enumerate() {
                     let gr = gv.dequant_row_f32(r);
                     let ur = uv.dequant_row_f32(r);
                     let gd: f32 = gr.iter().zip(&x).map(|(a, b)| a * b).sum();
                     let ud: f32 = ur.iter().zip(&x).map(|(a, b)| a * b).sum();
-                    act[r] = gd * rq::sigmoid(gd) * ud; // swiglu
+                    *a = gd * rq::sigmoid(gd) * ud; // swiglu
                 }
                 let w = logits[e] / wsum;
-                for r in 0..h {
+                for (r, m) in moe.iter_mut().enumerate() {
                     let dr = dv.dequant_row_f32(r);
-                    moe[r] += w * dr.iter().zip(&act).map(|(a, b)| a * b).sum::<f32>();
+                    *m += w * dr.iter().zip(&act).map(|(a, b)| a * b).sum::<f32>();
                 }
             }
             // shared expert with sigmoid scalar gate
@@ -549,7 +558,7 @@ fn main() {
             if dump.on() {
                 moes.push(moe.clone());
             }
-            rq::hc_combine(&mut hst[t], &moe, &inj, c.hc_count);
+            rq::hc_combine(ht, &moe, &inj, c.hc_count);
         }
         dump.put_rows(li, "mlp_bi", &mlp_bis);
         dump.put_rows(li, "mlp_inj", &mlp_injs);

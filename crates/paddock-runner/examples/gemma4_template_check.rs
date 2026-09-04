@@ -3,6 +3,9 @@
 //! --verbose-prompt` (minja) to pin template-engine divergences.
 //!
 //! Usage: gemma4_template_check <model.gguf> [message]
+// A development probe: it runs on a box its author is looking at, and a
+// failure should stop it where it happened rather than be reported.
+#![allow(clippy::unwrap_used)]
 
 use paddock_models::mapped::MappedGguf;
 use paddock_tokenizer::GgufTokenizer;

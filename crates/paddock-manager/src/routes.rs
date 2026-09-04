@@ -558,8 +558,13 @@ async fn models_pull(
     match state.registry.start_pull(id, artifacts.as_deref()) {
         Ok(job_id) => {
             if let (Some(f), Some(job)) = (follow, state.registry.job(&job_id)) {
-                *job.follow.lock().unwrap() = Some(f);
-                *job.follow_state.lock().unwrap() = Some(serde_json::json!({ "state": "queued" }));
+                *job.follow
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(f);
+                *job.follow_state
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner) =
+                    Some(serde_json::json!({ "state": "queued" }));
                 arm_follow(state.clone(), job_id.clone());
             }
             Json(serde_json::json!({ "job": job_id })).into_response()
@@ -580,14 +585,25 @@ fn arm_follow(state: Arc<AppState>, job_id: String) {
             let Some(job) = state.registry.job(&job_id) else {
                 return;
             };
-            let status = job.status.lock().unwrap().clone();
+            let status = job
+                .status
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .clone();
             match status {
                 PullStatus::Running => continue,
                 PullStatus::Done => {
-                    let Some(f) = job.follow.lock().unwrap().clone() else {
+                    let Some(f) = job
+                        .follow
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner)
+                        .clone()
+                    else {
                         return;
                     };
-                    *job.follow_state.lock().unwrap() =
+                    *job.follow_state
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner) =
                         Some(serde_json::json!({ "state": "starting" }));
                     let action = f
                         .get("action")
@@ -598,9 +614,12 @@ fn arm_follow(state: Arc<AppState>, job_id: String) {
                         match serde_json::from_value(f.get("spec").cloned().unwrap_or_default()) {
                             Ok(s) => s,
                             Err(e) => {
-                                *job.follow_state.lock().unwrap() = Some(serde_json::json!({
-                                    "state": "error", "message": format!("bad spec: {e}"),
-                                }));
+                                *job.follow_state
+                                    .lock()
+                                    .unwrap_or_else(std::sync::PoisonError::into_inner) =
+                                    Some(serde_json::json!({
+                                        "state": "error", "message": format!("bad spec: {e}"),
+                                    }));
                                 return;
                             }
                         };
@@ -618,13 +637,17 @@ fn arm_follow(state: Arc<AppState>, job_id: String) {
                         .filter(|p| Some(*p) != freeing)
                         .collect();
                     if let Err(e) = perform_evictions(&state, &evict).await {
-                        *job.follow_state.lock().unwrap() =
+                        *job.follow_state
+                            .lock()
+                            .unwrap_or_else(std::sync::PoisonError::into_inner) =
                             Some(serde_json::json!({ "state": "error", "message": e }));
                         return;
                     }
                     match vram_admission(&state, AdmitReq::for_spec(&spec, freeing)).await {
                         Err(refusal) => {
-                            *job.follow_state.lock().unwrap() = Some(
+                            *job.follow_state
+                                .lock()
+                                .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(
                                 serde_json::json!({ "state": "error", "message": refusal.message }),
                             );
                             return;
@@ -650,7 +673,9 @@ fn arm_follow(state: Arc<AppState>, job_id: String) {
                             .await
                             .map_err(|e| e.to_string())
                     };
-                    *job.follow_state.lock().unwrap() = Some(match outcome {
+                    *job.follow_state
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(match outcome {
                         Ok(v) => serde_json::json!({ "state": "ok", "port": v.port }),
                         Err(e) => serde_json::json!({ "state": "error", "message": e }),
                     });
@@ -705,13 +730,17 @@ async fn models_pull_resume(
 ) -> Response {
     match state.registry.resume_pull(&job) {
         Ok(new_id) => {
-            let follows = state
-                .registry
-                .job(&new_id)
-                .is_some_and(|j| j.follow.lock().unwrap().is_some());
+            let follows = state.registry.job(&new_id).is_some_and(|j| {
+                j.follow
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .is_some()
+            });
             if follows {
                 if let Some(j) = state.registry.job(&new_id) {
-                    *j.follow_state.lock().unwrap() =
+                    *j.follow_state
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner) =
                         Some(serde_json::json!({ "state": "queued" }));
                 }
                 arm_follow(state.clone(), new_id.clone());

@@ -171,8 +171,10 @@ impl GpuExecutor {
     pub fn to_host_f16_from_u8(&self, buf: &CudaSlice<u8>, n: usize) -> Result<Vec<f16>, GpuError> {
         let bytes = self.to_host_range_u8(buf, 0, n * 2)?;
         Ok(bytes
-            .chunks_exact(2)
-            .map(|c| f16::from_bits(u16::from_le_bytes([c[0], c[1]])))
+            .as_chunks::<2>()
+            .0
+            .iter()
+            .map(|c| f16::from_bits(u16::from_le_bytes(*c)))
             .collect())
     }
 

@@ -1903,6 +1903,8 @@ struct SummaryPass {
 /// over-window case, where compaction cannot rescue the conversation and the
 /// loud error stands (the Anthropic dialect has no fail-open backstop; its
 /// Responses twin does, hence `summary_pass(lenient_gate)` there).
+// Err is axum's own Response by design: a ready-to-return body, not a boxed error
+#[allow(clippy::result_large_err)]
 async fn anth_summary_pass(
     state: &Arc<AppState>,
     model: &ServingModel,
@@ -2051,6 +2053,8 @@ async fn anth_summary_pass(
 ///   Ok(Some) = compacted, `req.messages` replaced; Ok(None) = nothing to do;
 ///   Err = a ready-to-return response (an error, or the pause_after_compaction
 ///   answer, which is a complete response by definition).
+// Err is axum's own Response by design: a ready-to-return body, not a boxed error
+#[allow(clippy::result_large_err)]
 async fn precompact_agent(
     state: &Arc<AppState>,
     req: &mut MessagesRequest,

@@ -1127,7 +1127,7 @@ impl GpuQwen3 {
             out.extend_from_slice(&d.to_le_bytes());
         }
         for l in &self.layers {
-            let sm = l.smooth.as_ref().unwrap();
+            let sm = l.smooth.as_ref().expect("smooth checked above");
             for buf in [
                 &sm.attn_s,
                 &sm.gu_s,
@@ -1169,8 +1169,10 @@ impl GpuQwen3 {
         let mut off = 16usize;
         let mut read_vec = |n: usize| -> Option<Vec<f32>> {
             let v: Vec<f32> = bytes[off..off + n * 4]
-                .chunks_exact(4)
-                .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
+                .as_chunks::<4>()
+                .0
+                .iter()
+                .map(|c| f32::from_le_bytes(*c))
                 .collect();
             off += n * 4;
             v.iter().all(|x| x.is_finite() && *x > 0.0).then_some(v)

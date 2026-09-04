@@ -138,7 +138,11 @@ static APPROVALS: LazyLock<StdMutex<HashMap<String, oneshot::Sender<bool>>>> =
     LazyLock::new(StdMutex::default);
 
 pub fn resolve_approval(id: &str, approve: bool) -> bool {
-    match APPROVALS.lock().unwrap().remove(id) {
+    match APPROVALS
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .remove(id)
+    {
         Some(tx) => {
             let _ = tx.send(approve);
             true
@@ -390,7 +394,10 @@ async fn execute(
     if gated {
         let approval_id = format!("appr_{}", uuid::Uuid::new_v4().simple());
         let (atx, arx) = oneshot::channel();
-        APPROVALS.lock().unwrap().insert(approval_id.clone(), atx);
+        APPROVALS
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .insert(approval_id.clone(), atx);
         send(sse(&json!({"type":"response.output_item.added","item":{
             "type":"mcp_approval_request","id":approval_id,"call_id":call_id,
             "server_label":label,"name":real,"arguments":args_text}})));
@@ -398,7 +405,10 @@ async fn execute(
             tokio::time::timeout(APPROVAL_TIMEOUT, arx).await,
             Ok(Ok(true))
         );
-        APPROVALS.lock().unwrap().remove(&approval_id);
+        APPROVALS
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .remove(&approval_id);
         send(sse(&json!({"type":"response.output_item.done","item":{
             "type":"mcp_approval_request","id":approval_id,"call_id":call_id,
             "server_label":label,"name":real,"arguments":args_text,
@@ -700,7 +710,7 @@ pub async fn run_anthropic(
         }
         body["messages"]
             .as_array_mut()
-            .unwrap()
+            .expect("messages is the array this loop built")
             .push(json!({"role":"user","content":results}));
         if total_out >= out_cap {
             stop = Some(loop_budget::Stop::Output);

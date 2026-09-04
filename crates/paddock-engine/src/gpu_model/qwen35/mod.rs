@@ -264,6 +264,9 @@ struct FullAttnWeights {
 
 /// One transformer block: shared pre-norms + FFN, plus the layer-type-specific
 /// mixer.
+// one per layer, built once at load and matched on every forward: an indirection
+// would cost a hop on the hot path to save nothing that matters
+#[allow(clippy::large_enum_variant)]
 enum Mixer {
     Linear(DeltaNetWeights),
     Full(FullAttnWeights),
@@ -1169,6 +1172,9 @@ struct MoeFfnWeights {
 
 /// Dense SwiGLU or routed-expert MoE - per-layer FFN. MoE expert weights stay
 /// Q8_0-only for now (k-quant experts are the stage-3 MoE arm).
+// one per layer, built once at load and matched on every forward: an indirection
+// would cost a hop on the hot path to save nothing that matters
+#[allow(clippy::large_enum_variant)]
 enum Ffn {
     Dense {
         gate: QuantW,
@@ -2534,7 +2540,7 @@ fn attn_splits(n_heads: usize, batch: usize, sm_count: usize) -> usize {
     // single-stream parallelism at b=1 unless the count tiers by rows, and a
     // rows-tiered count needs the spec-verify paths pinned to one count first
     // (the B=8 K=4 exact gate compares r=40 batched vs r=5 single-slot).
-    if sm_count < 128 { 16 } else { 16 }
+    16
 }
 
 /// `CapturedGraph` holds raw CUDA handles and is `!Send`, but the model is driven from
@@ -2703,7 +2709,7 @@ impl TokEmbd {
     }
 }
 
-/// Embedding row-gather with per-tensor dispatch.
+// Embedding row-gather with per-tensor dispatch.
 #[cfg(test)]
 mod mm_layout_tests {
     //! CPU gate for the multi-image prompt layout. The single-image case is

@@ -213,8 +213,8 @@ impl ResamplingDetector {
         let ac0 = autocov[0].abs().max(1e-10);
 
         let mut max_peak = 0.0_f64;
-        for lag in 2..max_lag {
-            let normalized = autocov[lag].abs() / ac0;
+        for v in &autocov[2..max_lag] {
+            let normalized = v.abs() / ac0;
             if normalized > max_peak {
                 max_peak = normalized;
             }

@@ -12,6 +12,8 @@
 //! resolves empty on both sides, and each engine's TOKENIZER supplies the
 //! leading BOS id (chat.rs inserts model.bos; llama.cpp tokenizes with
 //! add_special).
+// Test code: a failed assumption stops the test where it happened.
+#![allow(clippy::unwrap_used)]
 
 use paddock_runner::chat_template;
 use serde_json::json;

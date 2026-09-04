@@ -245,13 +245,13 @@ impl DoubleJpegDetector {
         let max_k = (n / 4).min(power.len());
         let mut best_k = 0;
         let mut best_power = 0.0_f64;
-        for k in min_k..max_k {
-            if power[k] > best_power {
+        for (k, &pk) in power.iter().enumerate().take(max_k).skip(min_k) {
+            if pk > best_power {
                 let period = n as f64 / k as f64;
                 if (period - current_step as f64).abs() < 1.0 {
                     continue;
                 }
-                best_power = power[k];
+                best_power = pk;
                 best_k = k;
             }
         }
@@ -333,8 +333,8 @@ impl DoubleJpegDetector {
         let gray = ctx.gray();
         let mut grid = [[0.0_f64; 8]; 8];
         let step = if w * h > 500_000 { 4 } else { 1 };
-        for offset_y in 0..8usize {
-            for offset_x in 0..8usize {
+        for (offset_y, grid_row) in grid.iter_mut().enumerate() {
+            for (offset_x, cell) in grid_row.iter_mut().enumerate() {
                 let (mut bsum, mut bcnt, mut isum, mut icnt) = (0.0_f64, 0u64, 0.0_f64, 0u64);
                 for y in (0..h).step_by(step) {
                     for x in 1..w {
@@ -362,20 +362,20 @@ impl DoubleJpegDetector {
                 }
                 if bcnt > 0 && icnt > 0 {
                     let (ba, ia) = (bsum / bcnt as f64, isum / icnt as f64);
-                    grid[offset_y][offset_x] = if ia > 0.0 { ba / ia } else { 0.0 };
+                    *cell = if ia > 0.0 { ba / ia } else { 0.0 };
                 }
             }
         }
         let standard = grid[0][0];
         let mut best_off = (0usize, 0usize);
         let mut best = 0.0_f64;
-        for oy in 0..8usize {
-            for ox in 0..8usize {
+        for (oy, grid_row) in grid.iter().enumerate() {
+            for (ox, &g) in grid_row.iter().enumerate() {
                 if (oy, ox) == (0, 0) {
                     continue;
                 }
-                if grid[oy][ox] > best {
-                    best = grid[oy][ox];
+                if g > best {
+                    best = g;
                     best_off = (ox, oy);
                 }
             }

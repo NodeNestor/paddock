@@ -1835,7 +1835,13 @@ impl Generator for GpuNemotron {
             let mut out = Vec::with_capacity(pendings.len());
             for &(slot, tok) in pendings {
                 let end = {
-                    let st = self.dflash.as_ref().unwrap().state.as_ref().unwrap();
+                    let st = self
+                        .dflash
+                        .as_ref()
+                        .expect("dflash")
+                        .state
+                        .as_ref()
+                        .expect("dflash state");
                     st.feat[slot].1 as usize
                 };
                 if !self.dflash_warm(slot, end) || end == 0 {
@@ -1853,7 +1859,13 @@ impl Generator for GpuNemotron {
             let mut out = Vec::with_capacity(pendings.len());
             for &(slot, tok) in pendings {
                 let end = {
-                    let st = self.mtp.as_ref().unwrap().state.as_ref().unwrap();
+                    let st = self
+                        .mtp
+                        .as_ref()
+                        .expect("mtp weights")
+                        .state
+                        .as_ref()
+                        .expect("mtp state");
                     st.feat[slot].1 as usize
                 };
                 if !self.mtp_warm(slot, end) || end == 0 {

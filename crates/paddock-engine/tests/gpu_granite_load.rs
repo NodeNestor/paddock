@@ -44,13 +44,11 @@ fn generate_greedy_serial(m: &mut GpuGranite, prompt: &[u32], steps: usize) -> V
 /// `enable_batch` succeeds. Caller must have already called `enable_batch`.
 fn generate_greedy_batched(m: &mut GpuGranite, prompt: &[u32], steps: usize) -> Vec<u32> {
     let mut logits = m.forward_prefill(0, prompt).expect("prefill");
-    let mut pos = prompt.len() as u32;
     let mut out = Vec::with_capacity(steps);
-    for _ in 0..steps {
+    for pos in (prompt.len() as u32..).take(steps) {
         let tok = argmax(&logits);
         out.push(tok);
         logits = m.forward_batch(&[tok], &[pos]).expect("decode step");
-        pos += 1;
     }
     out
 }

@@ -3,6 +3,10 @@
 //! weights + per-128 activations. Reports fq dequant rel-err between arms
 //! (census bound: per-64 adds 0.9-1.4%), part-vs-f64-reference maxrel for
 //! both arms (consumer correctness), and gu/down timings.
+// A development probe: it runs on a box its author is looking at, and a
+// failure should stop it where it happened rather than be reported.
+#![allow(clippy::unwrap_used)]
+
 use std::sync::Arc;
 
 use paddock_engine::gpu::{GpuExecutor, RepackedQ8};

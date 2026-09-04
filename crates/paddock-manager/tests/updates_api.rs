@@ -5,6 +5,8 @@
 //! a laptop is on a train is worse than one that says it does not know, so the
 //! endpoint must be 200-with-`unknown` rather than a 5xx - and that is easy to
 //! get wrong by letting a `?` escape.
+// Test code: a failed assumption stops the test where it happened.
+#![allow(clippy::unwrap_used)]
 
 use std::sync::Arc;
 

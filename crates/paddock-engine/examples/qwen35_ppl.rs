@@ -22,6 +22,9 @@
 //! path (batch=1 never triggers W8). The NLL of the continuation thus measures
 //! precisely what W8 perturbs: the KV cache, DeltaNet states and conv windows
 //! built through the fp8 projections. Run twice (env off/on), same corpus.
+// A development probe: it runs on a box its author is looking at, and a
+// failure should stop it where it happened rather than be reported.
+#![allow(clippy::unwrap_used)]
 
 use std::io::Write;
 use std::sync::Arc;

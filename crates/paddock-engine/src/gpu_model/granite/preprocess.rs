@@ -513,9 +513,9 @@ mod tests {
         assert_eq!(p.grid, (2, 2));
         let rows = p.rows();
         let first_line = &rows[144..144 + 25];
-        for x in 0..12 {
+        for (x, row) in first_line.iter().enumerate().take(12) {
             assert_eq!(
-                first_line[x],
+                *row,
                 PackRow::Feature { tile: 1, idx: x },
                 "left half col {x}"
             );

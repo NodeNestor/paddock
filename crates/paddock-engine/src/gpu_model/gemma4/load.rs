@@ -731,8 +731,10 @@ impl GpuGemma4 {
                 .tensor_bytes(&name)
                 .map_err(|_| LoadError::BadKey(format!("{name} missing")))?;
             Ok(bytes
-                .chunks_exact(4)
-                .map(|c| f32::from_le_bytes(c.try_into().expect("f32")))
+                .as_chunks::<4>()
+                .0
+                .iter()
+                .map(|c| f32::from_le_bytes(*c))
                 .collect())
         };
         // device-to-device byte-range copy for the fused gate_up split
@@ -2043,8 +2045,7 @@ impl GpuGemma4 {
                     lw.f8_gu = Some(if gu_il {
                         // rowwise: pc-quantized gu only (native per-32 strips
                         // carry real information and keep the strip route)
-                        if rowvec && pc_ws.is_some() {
-                            let (wsg, wsu) = pc_ws.as_ref().expect("checked");
+                        if rowvec && let Some((wsg, wsu)) = &pc_ws {
                             let mut wsa = wsg.clone();
                             wsa.extend_from_slice(wsu);
                             exec.f8w_build_lin_rw(gu.data, &wse_of(&wsa), gin, 2 * gout, true)?
@@ -2287,8 +2288,7 @@ impl GpuGemma4 {
                     let qkv_out = qd + kvd * if lw.wv.is_some() { 2 } else { 1 };
                     let qkv = crate::gpu::RepackedMxfp4 { data, scale };
                     lw.f8a_wqkv = Some(if f8lin_attn && qd % 128 == 0 && kvd % 128 == 0 {
-                        if rowvec && qkv_pc.is_some() {
-                            let ws = qkv_pc.as_ref().expect("checked");
+                        if rowvec && let Some(ws) = &qkv_pc {
                             exec.f8w_build_lin_rw(qkv.data, &wse_of(ws), qin, qkv_out, false)?
                         } else {
                             lin(true, qkv, qin, qkv_out)?

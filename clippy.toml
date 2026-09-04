@@ -1,0 +1,17 @@
+# Clippy configuration for the workspace. The lint LEVELS live in Cargo.toml
+# under [workspace.lints.clippy]; this file holds the thresholds and switches.
+
+# unwrap in a test is idiomatic Rust: a failed assumption should stop the test
+# where it happened. The unwrap_used lint stays on for library code.
+allow-unwrap-in-tests = true
+
+# Kernel launch wrappers take the arguments the kernels take. 38 of the 56
+# functions over the default 7 have exactly 8; the five that go to 15-20 are
+# launchers and carry a per-site allow that says so. 12 draws the line at
+# "ordinary code with a wide signature" without excusing the launchers.
+too-many-arguments-threshold = 12
+
+# Scratch buffers travel as tuples of device slices; the default 250 flags a
+# hundred of them. 500 covers the shape those honestly have; the two above it
+# were given type aliases.
+type-complexity-threshold = 500

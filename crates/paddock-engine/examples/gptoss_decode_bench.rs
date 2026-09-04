@@ -2,6 +2,9 @@
 //! The comparable reference shape is llama.cpp's
 //! `llama-bench -m <gguf> -ngl 99 -n 128` (tg128), run in the same thermal
 //! window.
+// A development probe: it runs on a box its author is looking at, and a
+// failure should stop it where it happened rather than be reported.
+#![allow(clippy::unwrap_used)]
 
 use std::sync::Arc;
 

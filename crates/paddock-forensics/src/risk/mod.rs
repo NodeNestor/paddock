@@ -338,14 +338,13 @@ fn build_key_findings(findings: &[Finding]) -> Vec<KeyFinding> {
             .map(|f| f.confidence)
             .fold(0.0_f64, f64::max);
 
-        let best = matching
-            .iter()
-            .max_by(|a, b| {
-                a.confidence
-                    .partial_cmp(&b.confidence)
-                    .unwrap_or(std::cmp::Ordering::Equal)
-            })
-            .unwrap();
+        let Some(best) = matching.iter().max_by(|a, b| {
+            a.confidence
+                .partial_cmp(&b.confidence)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        }) else {
+            continue;
+        };
 
         let mut sources: Vec<String> = matching
             .iter()

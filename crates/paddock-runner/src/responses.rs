@@ -1708,6 +1708,8 @@ fn greedy_for_summary(mut r: ResponsesRequest) -> ResponsesRequest {
 /// request must fall through to `truncation:"auto"` when it's armed; the
 /// trigger and the standalone endpoint were ASKED to compact, so for them
 /// the loud over-window error stands.
+// Err is axum's own Response by design: a ready-to-return body, not a boxed error
+#[allow(clippy::result_large_err)]
 async fn summary_pass(
     state: &Arc<AppState>,
     model: &ServingModel,
@@ -1809,7 +1811,8 @@ async fn summary_pass(
 ///   trigger unmet, empty span, or a failed summarization - the absent item is
 ///   the OpenAI dialect's "compaction did not happen" signal. Err = a
 ///   ready-to-return error response.
-#[allow(clippy::too_many_arguments)]
+// Err is axum's own Response by design: a ready-to-return body, not a boxed error
+#[allow(clippy::too_many_arguments, clippy::result_large_err)]
 async fn precompact_agent(
     state: &Arc<AppState>,
     model: &ServingModel,
@@ -2272,20 +2275,31 @@ impl ApprovalGate {
     /// Arm an approval; returns the receiver the loop awaits.
     pub fn register(&self, id: String) -> tokio::sync::oneshot::Receiver<bool> {
         let (tx, rx) = tokio::sync::oneshot::channel();
-        self.pending.lock().unwrap().insert(id, tx);
+        self.pending
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .insert(id, tx);
         rx
     }
     /// Resolve a pending approval; returns false if the id is unknown (already
     /// decided, timed out, or never existed).
     pub fn resolve(&self, id: &str, approve: bool) -> bool {
-        match self.pending.lock().unwrap().remove(id) {
+        match self
+            .pending
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .remove(id)
+        {
             Some(tx) => tx.send(approve).is_ok(),
             None => false,
         }
     }
     /// Drop an armed approval without deciding it (timeout / stream aborted).
     pub fn cancel(&self, id: &str) {
-        self.pending.lock().unwrap().remove(id);
+        self.pending
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .remove(id);
     }
 }
 
@@ -2328,7 +2342,10 @@ pub struct ApprovalStore {
 impl ApprovalStore {
     const CAP: usize = 128;
     pub fn insert(&self, id: String, p: PendingApproval) {
-        let mut m = self.map.lock().unwrap();
+        let mut m = self
+            .map
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         if m.len() >= Self::CAP
             && let Some(oldest) = m
                 .iter()
@@ -2340,7 +2357,10 @@ impl ApprovalStore {
         m.insert(id, p);
     }
     pub fn take(&self, id: &str) -> Option<PendingApproval> {
-        self.map.lock().unwrap().remove(id)
+        self.map
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .remove(id)
     }
 }
 
@@ -4224,15 +4244,12 @@ fn stream_agent(
             // truncation "auto" armed, drop whole leading turns - never into
             // the pending turn - and report the count on the final response;
             // otherwise fail the stream cleanly, as before.
-            loop {
-                let Some(ge) = crate::chat::context_gate(
-                    model,
-                    prepared.engine_prompt.len(),
-                    prepared.mm_chunks.as_deref(),
-                    state.max_ctx,
-                ) else {
-                    break;
-                };
+            while let Some(ge) = crate::chat::context_gate(
+                model,
+                prepared.engine_prompt.len(),
+                prepared.mm_chunks.as_deref(),
+                state.max_ctx,
+            ) {
                 let n = if req.truncation.as_deref() == Some("auto") {
                     drop_leading_turn(&mut messages)
                 } else {

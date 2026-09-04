@@ -70,7 +70,10 @@ fn compile_fatbins() {
     cu_files.sort();
 
     for cu in &cu_files {
-        let stem = cu.file_stem().unwrap().to_str().unwrap();
+        let stem = cu
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .expect("kernel source path has a UTF-8 stem");
         let fatbin = out_dir.join(format!("{stem}.fatbin"));
         println!("cargo:rerun-if-changed={}", cu.display());
 

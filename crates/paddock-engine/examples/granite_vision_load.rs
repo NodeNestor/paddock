@@ -11,6 +11,9 @@
 //! Usage: GRANITE_MMPROJ=<path to mmproj-model-f16.gguf>
 //!        PADDOCK_PACK=packs\cuda\build\pd-cuda-sm86.dll
 //!        cargo run --release --example granite_vision_load
+// A development probe: it runs on a box its author is looking at, and a
+// failure should stop it where it happened rather than be reported.
+#![allow(clippy::unwrap_used)]
 
 use std::sync::Arc;
 
@@ -209,12 +212,12 @@ fn main() {
     println!("Shape: [{n_embd}, {tokens}]   (8 projectors x {w})");
 
     print!("Token 0 (first 16 values): ");
-    for i in 0..16 {
-        print!("{:.6} ", host[0][i]);
+    for v in &host[0][..16] {
+        print!("{v:.6} ");
     }
     print!("\nToken 0 (last 16 values):  ");
-    for i in w - 16..w {
-        print!("{:.6} ", host[host.len() - 1][i]);
+    for v in &host[host.len() - 1][w - 16..w] {
+        print!("{v:.6} ");
     }
     println!();
 

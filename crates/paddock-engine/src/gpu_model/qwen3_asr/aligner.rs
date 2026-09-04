@@ -55,8 +55,8 @@ pub struct AlignerMeta {
 pub(super) fn bf16_to_f16(bytes: &[u8]) -> (Vec<f16>, usize) {
     let mut out = Vec::with_capacity(bytes.len() / 2);
     let mut bad = 0usize;
-    for c in bytes.chunks_exact(2) {
-        let bits = u16::from_le_bytes([c[0], c[1]]);
+    for c in bytes.as_chunks::<2>().0 {
+        let bits = u16::from_le_bytes(*c);
         let f = f32::from_bits((bits as u32) << 16);
         if !f.is_finite() || f.abs() > f16::MAX.to_f32() {
             bad += 1;
@@ -68,15 +68,17 @@ pub(super) fn bf16_to_f16(bytes: &[u8]) -> (Vec<f16>, usize) {
 
 pub(super) fn bf16_to_f32(bytes: &[u8]) -> Vec<f32> {
     bytes
-        .chunks_exact(2)
-        .map(|c| f32::from_bits((u16::from_le_bytes([c[0], c[1]]) as u32) << 16))
+        .as_chunks::<2>()
+        .0
+        .iter()
+        .map(|c| f32::from_bits((u16::from_le_bytes(*c) as u32) << 16))
         .collect()
 }
 
 fn q8_0_blocks(vals: &[f32], bad: &mut usize) -> Vec<u8> {
     debug_assert_eq!(vals.len() % 32, 0);
     let mut out = Vec::with_capacity(vals.len() / 32 * 34);
-    for blk in vals.chunks_exact(32) {
+    for blk in vals.as_chunks::<32>().0 {
         let mut amax = 0.0f32;
         for &v in blk {
             if !v.is_finite() {

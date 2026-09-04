@@ -113,18 +113,24 @@ pub(crate) fn host_f32(
     let dims: Vec<usize> = info.dims.iter().map(|&d| d as usize).collect();
     let data = match info.ggml_type {
         GgmlType::F32 => bytes
-            .chunks_exact(4)
-            .map(|c| f32::from_le_bytes(c.try_into().unwrap()))
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .map(|c| f32::from_le_bytes(*c))
             .collect(),
         GgmlType::F16 => bytes
-            .chunks_exact(2)
-            .map(|c| f16::from_le_bytes([c[0], c[1]]).to_f32())
+            .as_chunks::<2>()
+            .0
+            .iter()
+            .map(|c| f16::from_le_bytes(*c).to_f32())
             .collect(),
         // bf16 = the top half of the f32 bit pattern - exact widening
         // (unsloth ships mmproj-BF16.gguf for the 9B/qwen3.5 family)
         GgmlType::Bf16 => bytes
-            .chunks_exact(2)
-            .map(|c| f32::from_bits((u16::from_le_bytes([c[0], c[1]]) as u32) << 16))
+            .as_chunks::<2>()
+            .0
+            .iter()
+            .map(|c| f32::from_bits((u16::from_le_bytes(*c) as u32) << 16))
             .collect(),
         t => panic!("vision tensor {name}: unsupported type {t:?}"),
     };

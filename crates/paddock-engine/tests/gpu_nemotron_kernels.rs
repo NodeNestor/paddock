@@ -323,18 +323,18 @@ fn mamba_rmsnorm_gated_g_matches_f64_reference() {
         for grp in 0..G {
             let mut ss = 0f64;
             let mut gated = vec![0f64; gsize];
-            for j in 0..gsize {
+            for (j, g) in gated.iter_mut().enumerate() {
                 let c = grp * gsize + j;
                 let xv = x[t * D_INNER + c] as f64;
                 let zv = z[t * z_stride + c] as f64;
                 let gv = xv * (zv / (1.0 + (-zv).exp()));
-                gated[j] = gv;
+                *g = gv;
                 ss += gv * gv;
             }
             let inv = 1.0 / (ss / gsize as f64 + eps as f64).sqrt();
-            for j in 0..gsize {
+            for (j, &gj) in gated.iter().enumerate() {
                 let c = grp * gsize + j;
-                let want = gated[j] * inv * w[c] as f64;
+                let want = gj * inv * w[c] as f64;
                 let got = out[t * D_INNER + c] as f64;
                 assert!(
                     (got - want).abs() / want.abs().max(1e-4) < 1e-4,
@@ -372,10 +372,10 @@ fn f8r_gemv_matches_f64_reference_on_real_plane() {
     for o in (0..v.n).step_by(97) {
         let mut acc = 0f64;
         let mut mag = 0f64;
-        for kk in 0..v.k {
-            let wv = e4m3_to_f32(v.weight[o * v.k + kk]) as f64 * v.weight_scale as f64;
-            acc += wv * x[kk] as f64;
-            mag += (wv * x[kk] as f64).abs();
+        for (&wq, &xk) in v.weight[o * v.k..(o + 1) * v.k].iter().zip(&x) {
+            let wv = e4m3_to_f32(wq) as f64 * v.weight_scale as f64;
+            acc += wv * xk as f64;
+            mag += (wv * xk as f64).abs();
         }
         let rel = (y[o] as f64 - acc).abs() / mag.max(1e-6);
         worst = worst.max(rel);
@@ -472,8 +472,8 @@ fn nvf4_moe_kernels_match_host_reference() {
             );
         }
         // full up rows for the down reference (host, exact dequant)
-        for r in 0..ff {
-            if hu[r] == 0.0 {
+        for (r, h) in hu.iter_mut().enumerate() {
+            if *h == 0.0 {
                 let row = u.dequant_row_f32(r);
                 let acc: f64 = row
                     .iter()
@@ -481,7 +481,7 @@ fn nvf4_moe_kernels_match_host_reference() {
                     .map(|(w, x)| *w as f64 * *x as f64)
                     .sum();
                 let v = acc.max(0.0);
-                hu[r] = v * v;
+                *h = v * v;
             }
         }
         // fold the GPU's own up outputs into the down reference instead?

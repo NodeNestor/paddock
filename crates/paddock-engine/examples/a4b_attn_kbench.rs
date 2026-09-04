@@ -6,6 +6,9 @@
 //! (swa_window 0), score scale 1.0 - exactly the A4B's 5 global layers.
 //!
 //! Usage: PADDOCK_PACK=... a4b_attn_kbench [--parity]
+// A development probe: it runs on a box its author is looking at, and a
+// failure should stop it where it happened rather than be reported.
+#![allow(clippy::unwrap_used)]
 
 use std::sync::Arc;
 
