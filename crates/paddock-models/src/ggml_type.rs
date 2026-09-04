@@ -114,6 +114,14 @@ impl GgmlType {
             Q8K => (256, 292),
             Iq4Nl => (32, 18),
             Iq4Xs => (256, 136),
+            // the i-quant family: codebook-indexed 8-weight groups (ggml-common.h)
+            Iq2Xxs => (256, 66),
+            Iq2Xs => (256, 74),
+            Iq2S => (256, 82),
+            Iq3Xxs => (256, 98),
+            Iq3S => (256, 110),
+            Iq1S => (256, 50),
+            Iq1M => (256, 56),
             // 32 elems: 1-byte shared E8M0 scale + 16 bytes of packed FP4
             Mxfp4 => (32, 17),
             // iq1/iq2/iq3/tq/nvfp4/q1_0 layouts not yet verified against ggml -

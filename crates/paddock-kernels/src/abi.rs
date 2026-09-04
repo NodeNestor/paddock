@@ -6139,6 +6139,11 @@ pub struct KernelTableV1 {
     /// (gate/up/down x data/scales). (jobs, n_jobs (device), max_jobs,
     /// src[6], dst[6], bytes[6] (HOST u64 arrays), stream).
     pub moe_cache_fill: Option<MoeCacheFillFn>,
+    /// Slot 539: capability marker - present iff the k-quant repack, dequant
+    /// and token-batched MoE pair serve the ggml i-quant family (IQ1_S/M,
+    /// IQ2_XXS/XS/S, IQ3_XXS/S) and IQ4_NL (quant/iquant.cuh). The dtypes
+    /// ride the existing entry points, so only this slot can say.
+    pub kquant_iq: Option<unsafe extern "C" fn() -> i32>,
 }
 
 /// MoE expert-offload cache resolve (see `KernelTableV1::moe_cache_resolve`).
@@ -6516,7 +6521,7 @@ pub type AddRmsnormQ8XnFn = unsafe extern "C" fn(
 /// the copy to the smaller of declared and expected, so an old pack against a
 /// new engine (or the reverse) reads missing entries as None rather than a
 /// shifted slot.
-pub const KERNEL_TABLE_SLOTS: usize = 562;
+pub const KERNEL_TABLE_SLOTS: usize = 563;
 
 const _: () = assert!(
     core::mem::size_of::<KernelTableV1>() == 8 + KERNEL_TABLE_SLOTS * 8,
@@ -9780,6 +9785,7 @@ mod tests {
         // 253: add_rmsnorm_e4m3_xn (decode norm+quant fuse).
         // 575/576: moe_cache_resolve + moe_cache_fill (MoE expert offload,
         // device-managed LRU slot cache over host-mapped expert planes).
+        // 539: kquant_iq - i-quant family capability marker.
         // 254..256: the tile-linear f8 lane (f8w_repack_lin / f8_gemm_lin /
         // f8_gemm_lin_kt - access-pattern fix).
         // 257: add_rmsnorm_e4m3_xn_b16 (prefill glue fusion).

@@ -226,6 +226,11 @@ pub const QWEN36_35B_A3B_UD_Q4: &[&str] = &[
     "Qwen3.6-35B-A3B-MTP-GGUF/Qwen3.6-35B-A3B-UD-Q4_K_XL.gguf",
     "Qwen3.6-35B-A3B-UD-Q4_K_XL.gguf",
 ];
+/// The i-quant demo file: IQ2_XXS / IQ2_S / IQ3_S expert seats, Q5_K/Q6_K dense.
+pub const QWEN36_35B_A3B_UD_IQ2: &[&str] = &[
+    "Qwen3.6-35B-A3B-GGUF/Qwen3.6-35B-A3B-UD-IQ2_XXS.gguf",
+    "Qwen3.6-35B-A3B-UD-IQ2_XXS.gguf",
+];
 pub const GRANITE_8B_Q8: &[&str] = &[
     "granite-4.1-8b-GGUF/granite-4.1-8b-Q8_0.gguf",
     "granite-4.1-8b-Q8_0.gguf",

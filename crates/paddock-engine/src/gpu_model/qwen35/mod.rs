@@ -1255,10 +1255,12 @@ struct MoeFfnWeights {
     down_exps: ExpW,
     /// `ffn_gate_inp_shexp` [embd] F32 - the shared expert's sigmoid scalar gate.
     shexp_gate_inp: DeviceTensor,
-    /// `ffn_{gate,up,down}_shexp` - a plain dense SwiGLU FFN of width shexp_ff.
-    shexp_gate: RepackedQ8,
-    shexp_up: RepackedQ8,
-    shexp_down: RepackedQ8,
+    /// `ffn_{gate,up,down}_shexp` - a plain dense SwiGLU FFN of width
+    /// shexp_ff. Per-tensor seat like the dense FFN: Q8_0 in the UD-Q4_K_XL
+    /// exports, k-quant (Q5_K) in the UD-IQ2 ones.
+    shexp_gate: QuantW,
+    shexp_up: QuantW,
+    shexp_down: QuantW,
     /// b2: fp4 (W4A8) plane variants of the routed experts, built at load under
     /// `PADDOCK_QWEN35_MOE_FP4`. fp4 weights are ~half the Q8_0 DRAM - the lever
     /// for the weight-bandwidth-bound MoE. Used only in the sorted prefill path
@@ -2243,9 +2245,9 @@ impl AuSum {
                 self.expw(&m.up_exps);
                 self.expw(&m.down_exps);
                 self.dt(&m.shexp_gate_inp);
-                self.q8(&m.shexp_gate);
-                self.q8(&m.shexp_up);
-                self.q8(&m.shexp_down);
+                self.qw(&m.shexp_gate);
+                self.qw(&m.shexp_up);
+                self.qw(&m.shexp_down);
                 if let Some(p) = &m.gate_exps_fp4 {
                     self.fp4(p);
                 }
