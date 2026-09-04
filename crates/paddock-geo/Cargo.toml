@@ -1,9 +1,13 @@
 [package]
 name = "paddock-geo"
+description = "Offline reverse geocoding for photo coordinates: two decimal degrees in, a place name a person recognises out, from an embedded gazetteer so the coordinate never leaves the box."
 version.workspace = true
 edition.workspace = true
 license.workspace = true
 publish = false
+
+[lints]
+workspace = true
 
 [dependencies]
 zstd.workspace = true

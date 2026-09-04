@@ -3,8 +3,7 @@
 //!
 //! Registered servers are inert until a tool is actually needed; `McpManager`
 //! connects on first use and keeps one live client per server, shared across
-//! every request/conversation (this is the "reuse" the API exposes). See
-//!  for the full design.
+//! every request/conversation (this is the "reuse" the API exposes).
 //!
 //! P0 wires the **stdio** (child-process) transport; Streamable HTTP + OAuth
 //! land next behind the same `ServerConfig`/`McpClient` surface.
