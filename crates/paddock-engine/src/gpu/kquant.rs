@@ -51,6 +51,13 @@ impl GpuExecutor {
         self.kernels.kquant_q40.is_some()
     }
 
+    /// True when the pack serves the i-quant family (IQ1/IQ2/IQ3, IQ4_NL)
+    /// on the k-quant streams - repack, dequant and the token-batched MoE
+    /// pair. Capability marker slot 539.
+    pub fn has_kquant_iq(&self) -> bool {
+        self.kernels.kquant_iq.is_some()
+    }
+
     /// True when the pack carries the K-split W4A8 mma rung (appended after
     /// the base k-quant family - older packs fall back to the dp4a z-tiling).
     pub fn has_kquant_mma_ks(&self) -> bool {
@@ -106,6 +113,9 @@ impl GpuExecutor {
                     Ok(QuantW::Q8(self.repack_q8_blocks(&q8, dims)?))
                 }
             }
+            ty if kq_is_iq(ty) => Err(GpuError::Unsupported(format!(
+                "{name} is {ty:?}: the i-quant family serves as MoE expert seats only                  (no dense GEMV / GEMM lane yet) - pick a file whose dense tensors                  are Q4_K/Q5_K/Q6_K/Q8_0"
+            ))),
             ty if kq_params(ty).is_some() => {
                 if !self.has_kquant() {
                     return Err(GpuError::NoKernel {
@@ -133,6 +143,12 @@ impl GpuExecutor {
         let (info, _) = map.tensor_bytes(name)?;
         if kq_params(info.ggml_type).is_none() {
             return Ok(None);
+        }
+        if kq_is_iq(info.ggml_type) && !self.has_kquant_iq() {
+            return Err(GpuError::NoKernel {
+                name: name.to_owned(),
+                ty: info.ggml_type,
+            });
         }
         Ok(Some(self.repack_kquant(map, name)?))
     }

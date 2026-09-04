@@ -2654,3 +2654,324 @@ fn kq_moe_pair_host_mapped_bitmatches_resident() {
         "down differs between host-mapped and resident planes"
     );
 }
+
+/// The i-quant family (quant/iquant.cuh): (1) the pack's raw dequant is
+/// BIT-identical to the ggml reference port for every i-quant type the file
+/// carries; (2) the token-batched MoE pair over repacked i-quant expert
+/// seats matches a float reference built from that dequant (exact int dots
+/// times f32 scales on the GPU, f64 on the CPU - tolerance covers order).
+#[test]
+fn iq_family_matches_reference() {
+    use paddock_kernels::reference::iq::{dequant_iq, iq_block_bytes};
+    let Some(model) = common::model("QWEN36_MOE_IQ2_GGUF", common::QWEN36_35B_A3B_UD_IQ2) else {
+        return;
+    };
+    let Some(exec) = common::gpu() else {
+        return;
+    };
+    if !exec.has_kquant_iq() {
+        eprintln!("pack lacks the i-quant family - skipping");
+        return;
+    }
+    let map = MappedGguf::open(&model).expect("open gguf");
+
+    // (1) one expert tensor per i-quant type present
+    let mut seen = std::collections::BTreeMap::new();
+    for t in map.tensor_infos() {
+        if iq_block_bytes(t.raw_type).is_some() && t.name.contains("_exps") {
+            seen.entry(t.raw_type).or_insert_with(|| t.name.clone());
+        }
+    }
+    assert!(
+        !seen.is_empty(),
+        "no i-quant expert tensors in {}",
+        model.display()
+    );
+    for (raw, name) in &seen {
+        let (info, bytes) = map.tensor_bytes(name).expect("tensor bytes");
+        let n = info.element_count() as usize;
+        let block = iq_block_bytes(*raw).expect("i-quant");
+        let take = (4096usize * 256).min(n);
+        let mut cpu = vec![0f32; take];
+        dequant_iq(*raw, &bytes[..take / 256 * block], &mut cpu).expect("cpu dequant");
+        let t = exec.upload(&map, name).expect("gpu dequant");
+        let gpu = exec.to_host_len(&t.buf, take).expect("dtoh");
+        let mism = gpu
+            .iter()
+            .zip(&cpu)
+            .filter(|(a, b)| a.to_bits() != b.to_bits())
+            .count();
+        eprintln!(
+            "{name} {:?}: {take} weights, {mism} bit mismatches",
+            info.ggml_type
+        );
+        assert_eq!(
+            mism, 0,
+            "{name}: GPU dequant differs from the ggml reference port"
+        );
+    }
+
+    // (2) MoE pair on every distinct (gate, up, down) type triple in the file
+    let mut triples: std::collections::BTreeMap<Vec<u32>, [String; 3]> = Default::default();
+    for i in 0..64 {
+        let names = [
+            format!("blk.{i}.ffn_gate_exps.weight"),
+            format!("blk.{i}.ffn_up_exps.weight"),
+            format!("blk.{i}.ffn_down_exps.weight"),
+        ];
+        let raws: Vec<u32> = names
+            .iter()
+            .filter_map(|n| map.tensor_info(n).map(|t| t.raw_type))
+            .collect();
+        if raws.len() == 3 && raws.iter().all(|&r| iq_block_bytes(r).is_some()) {
+            triples.entry(raws).or_insert(names);
+        }
+    }
+    assert!(
+        !triples.is_empty(),
+        "no all-i-quant expert block - nothing to pair-test"
+    );
+    for (raws, names) in &triples {
+        iq_pair_check(&exec, &map, names, raws);
+    }
+}
+
+fn iq_pair_check(exec: &GpuExecutor, map: &MappedGguf, names: &[String; 3], raws: &[u32]) {
+    use paddock_kernels::reference::iq::{dequant_iq, iq_block_bytes};
+    let gate = exec.repack_kquant(&map, &names[0]).expect("repack gate");
+    let up = exec.repack_kquant(&map, &names[1]).expect("repack up");
+    let down = exec.repack_kquant(&map, &names[2]).expect("repack down");
+    let (embd, ff, ne) = (gate.dims[0], gate.dims[1], gate.dims[2]);
+    eprintln!(
+        "i-quant expert block {} [{embd}x{ff}x{ne}] raw types {raws:?}",
+        names[0]
+    );
+
+    let batch = 3usize;
+    let n_active = 8usize;
+    let idx_h: Vec<u32> = (0..batch * n_active)
+        .map(|i| ((i as u32).wrapping_mul(2654435761) >> 7) % ne as u32)
+        .collect();
+    let topk_h: Vec<f32> = (0..batch * n_active)
+        .map(|i| 1.0 / (1.0 + (i % n_active) as f32))
+        .collect();
+    let d_idx = exec.to_device_u32(&idx_h).expect("idx");
+    let d_topk = exec.to_device(&topk_h).expect("topk");
+    let x = deterministic_input(batch * embd, 11);
+    let d_x = exec.to_device(&x).expect("x");
+    let mut d_xq = exec.alloc_i8(batch * embd).expect("xq");
+    let mut d_xs = exec.alloc(batch * embd / 32).expect("xs");
+    exec.quantize_q8(&d_x, &mut d_xq, &mut d_xs, batch * embd)
+        .expect("quantize");
+    let mut d_fused = exec.alloc(batch * n_active * ff).expect("fused");
+    exec.kquant_moe_gate_up(
+        &gate,
+        &up,
+        &d_idx,
+        &d_xq,
+        &d_xs,
+        None,
+        &mut d_fused,
+        n_active,
+        batch,
+    )
+    .expect("gate_up");
+    let fused_gpu = exec.to_host(&d_fused).expect("fused host");
+
+    // reference: dequantized expert rows (one expert = `rows` rows of in_dim)
+    let expert_rows = |name: &str, raw: u32, e: usize, rows: usize, in_dim: usize| -> Vec<f32> {
+        let (_, bytes) = map.tensor_bytes(name).expect("bytes");
+        let block = iq_block_bytes(raw).expect("i-quant");
+        let per_row = in_dim / 256 * block;
+        let mut out = vec![0f32; rows * in_dim];
+        dequant_iq(
+            raw,
+            &bytes[e * rows * per_row..(e + 1) * rows * per_row],
+            &mut out,
+        )
+        .expect("expert rows");
+        out
+    };
+    let mut xq = vec![0i8; batch * embd];
+    let mut xs = vec![0f32; batch * embd / 32];
+    for c in 0..batch {
+        let (q, s) = cpu_quantize_q8(&x[c * embd..(c + 1) * embd]);
+        xq[c * embd..(c + 1) * embd].copy_from_slice(&q);
+        xs[c * (embd / 32)..(c + 1) * (embd / 32)].copy_from_slice(&s);
+    }
+    let dot = |w: &[f32], xq: &[i8], xs: &[f32]| -> f64 {
+        w.iter()
+            .zip(xq)
+            .enumerate()
+            .map(|(k, (&wk, &q))| wk as f64 * q as f64 * xs[k / 32] as f64)
+            .sum()
+    };
+    let mut fused_ref = vec![0f32; batch * n_active * ff];
+    let mut cache: std::collections::HashMap<usize, (Vec<f32>, Vec<f32>)> = Default::default();
+    for b in 0..batch {
+        let xqr = &xq[b * embd..(b + 1) * embd];
+        let xsr = &xs[b * (embd / 32)..(b + 1) * (embd / 32)];
+        for slot in 0..n_active {
+            let e = idx_h[b * n_active + slot] as usize;
+            let (g, u) = cache.entry(e).or_insert_with(|| {
+                (
+                    expert_rows(&names[0], raws[0], e, ff, embd),
+                    expert_rows(&names[1], raws[1], e, ff, embd),
+                )
+            });
+            for o in 0..ff {
+                let gv = dot(&g[o * embd..(o + 1) * embd], xqr, xsr);
+                let uv = dot(&u[o * embd..(o + 1) * embd], xqr, xsr);
+                fused_ref[(b * n_active + slot) * ff + o] =
+                    ((gv / (1.0 + (-gv).exp())) * uv) as f32;
+            }
+        }
+    }
+    let e1 = rel_err(&fused_gpu, &fused_ref);
+    eprintln!("i-quant moe gate_up vs dequant reference rel_err {e1:.2e}");
+    assert!(e1 < 5e-4, "gate_up mismatch ({e1:.2e})");
+
+    let mut d_fq = exec.alloc_i8(batch * n_active * ff).expect("fq");
+    let mut d_fs = exec.alloc(batch * n_active * ff / 32).expect("fs");
+    exec.quantize_q8(&d_fused, &mut d_fq, &mut d_fs, batch * n_active * ff)
+        .expect("fq quant");
+    let mut d_out = exec.alloc(batch * embd).expect("out");
+    exec.kquant_moe_down(
+        &down, &d_idx, &d_topk, &d_fq, &d_fs, None, &mut d_out, n_active, batch,
+    )
+    .expect("down");
+    let out_gpu = exec.to_host(&d_out).expect("out host");
+    let (fq, fs) = cpu_quantize_q8(&fused_gpu);
+    let mut dcache: std::collections::HashMap<usize, Vec<f32>> = Default::default();
+    let mut out_ref = vec![0f32; batch * embd];
+    for b in 0..batch {
+        for slot in 0..n_active {
+            let srow = b * n_active + slot;
+            let e = idx_h[srow] as usize;
+            let dw = dcache
+                .entry(e)
+                .or_insert_with(|| expert_rows(&names[2], raws[2], e, embd, ff));
+            let fqr = &fq[srow * ff..(srow + 1) * ff];
+            let fsr = &fs[srow * (ff / 32)..(srow + 1) * (ff / 32)];
+            for o in 0..embd {
+                out_ref[b * embd + o] +=
+                    (topk_h[srow] as f64 * dot(&dw[o * ff..(o + 1) * ff], fqr, fsr)) as f32;
+            }
+        }
+    }
+    let e2 = rel_err(&out_gpu, &out_ref);
+    eprintln!("i-quant moe down vs dequant reference rel_err {e2:.2e}");
+    assert!(e2 < 5e-4, "down mismatch ({e2:.2e})");
+}
+
+/// The shared expert's k-quant seats (Q5_K [2048 -> 512], Q6_K [512 -> 2048]
+/// in the UD-IQ2 files) through every lane the shexp dispatch can take:
+/// b=1 fused GEMV, the nc GEMV, the mma K-split, the dp4a GEMM.
+#[test]
+fn shexp_kquant_lanes_match_reference() {
+    let Some(model) = common::model("QWEN36_MOE_IQ2_GGUF", common::QWEN36_35B_A3B_UD_IQ2) else {
+        return;
+    };
+    let Some(exec) = common::gpu() else {
+        return;
+    };
+    let map = MappedGguf::open(&model).expect("open gguf");
+    for name in [
+        "blk.0.ffn_gate_shexp.weight",
+        "blk.0.ffn_down_shexp.weight",
+        "blk.0.attn_gate.weight",
+        "blk.0.attn_qkv.weight",
+        "blk.0.ssm_out.weight",
+        "output.weight",
+    ] {
+        let (info, _) = map.tensor_bytes(name).expect("bytes");
+        let (in_dim, out_dim) = (info.dims[0] as usize, info.dims[1] as usize);
+        let wf = exec
+            .to_host(&exec.upload(&map, name).expect("dequant").buf)
+            .expect("host");
+        let kq = exec.repack_kquant(&map, name).expect("repack");
+        eprintln!("{name} {:?} [{in_dim} -> {out_dim}]", info.ggml_type);
+        let dotf = |x: &[f32], o: usize| -> f32 {
+            (0..in_dim)
+                .map(|i| wf[o * in_dim + i] as f64 * x[i] as f64)
+                .sum::<f64>() as f32
+        };
+        // b=1 fused GEMV (gemv_any's k-quant arm)
+        let x = deterministic_input(in_dim, 3);
+        let d_x = exec.to_device(&x).expect("x");
+        let mut d_y = exec.alloc(out_dim).expect("y");
+        exec.kquant_gemv(&kq, &d_x, &mut d_y).expect("gemv");
+        let gy = exec.to_host(&d_y).expect("y");
+        let cy: Vec<f32> = (0..out_dim).map(|o| dotf(&x, o)).collect();
+        let e = rel_err(&gy, &cy);
+        eprintln!("  kquant_gemv rel_err {e:.2e}");
+        assert!(e < 1e-4, "{name}: kquant_gemv ({e:.2e})");
+        // the int8 lanes: quantize on GPU, reference with the CPU mirror
+        let rs: &[usize] = if out_dim > 65536 {
+            &[2, 5]
+        } else {
+            &[2, 5, 30]
+        };
+        for &r in rs {
+            let xb = deterministic_input(r * in_dim, 9 + r as u64);
+            let d_xb = exec.to_device(&xb).expect("xb");
+            let mut d_xq = exec.alloc_i8(r * in_dim).expect("xq");
+            let mut d_xs = exec.alloc(r * in_dim / 32).expect("xs");
+            exec.quantize_q8(&d_xb, &mut d_xq, &mut d_xs, r * in_dim)
+                .expect("quant");
+            exec.synchronize().expect("sync after quantize");
+            let mut d_sums = exec.alloc(r * in_dim / 16).expect("sums");
+            exec.q8_sums_strided(&d_xq, &mut d_sums, in_dim, r)
+                .expect("sums");
+            exec.synchronize().expect("sync after sums");
+            let needs = matches!(kq.ty, GgmlType::Q4K | GgmlType::Q5K | GgmlType::Q4_0);
+            let mut cref = vec![0f32; r * out_dim];
+            for row in 0..r {
+                let (q, s) = cpu_quantize_q8(&xb[row * in_dim..(row + 1) * in_dim]);
+                let xdq: Vec<f32> = q
+                    .iter()
+                    .enumerate()
+                    .map(|(i, &v)| v as f32 * s[i / 32])
+                    .collect();
+                for o in 0..out_dim {
+                    cref[row * out_dim + o] = dotf(&xdq, o);
+                }
+            }
+            let mut lanes: Vec<(&str, Vec<f32>)> = Vec::new();
+            let mut d_yb = exec.alloc(r * out_dim).expect("yb");
+            exec.kquant_gemm_dp4a(&kq, &d_xq, &d_xs, needs.then_some(&d_sums), &mut d_yb, r)
+                .expect("dp4a");
+            exec.synchronize().expect("sync after dp4a");
+            lanes.push(("gemm_dp4a", exec.to_host(&d_yb).expect("h")));
+            if (3..=64).contains(&r) && exec.has_kquant_mma_ks() {
+                let mut part = exec.alloc(8 * 64 * out_dim).expect("part");
+                let mut d_yk = exec.alloc(r * out_dim).expect("yk");
+                exec.kquant_gemm_mma_ks(
+                    &kq,
+                    &d_xq,
+                    &d_xs,
+                    needs.then_some(&d_sums),
+                    &mut part,
+                    &mut d_yk,
+                    r,
+                )
+                .expect("mma_ks");
+                lanes.push(("gemm_mma_ks", exec.to_host(&d_yk).expect("h")));
+            }
+            if std::env::var_os("PADDOCK_NO_KQ_NC").is_none()
+                && exec.has_kquant_gemv_w4a8_nc()
+                && GpuExecutor::kquant_gemv_w4a8_nc_fits(&kq, r)
+            {
+                let mut d_yn = exec.alloc(r * out_dim).expect("yn");
+                exec.kquant_gemv_w4a8_nc(&kq, &d_xq, &d_xs, needs.then_some(&d_sums), &mut d_yn, r)
+                    .expect("nc");
+                lanes.push(("gemv_w4a8_nc", exec.to_host(&d_yn).expect("h")));
+            }
+            for (lane, y) in &lanes {
+                let e = rel_err(y, &cref);
+                eprintln!("  r={r} {lane} rel_err {e:.2e}");
+                assert!(e < 5e-4, "{name}: {lane} r={r} ({e:.2e})");
+            }
+        }
+    }
+}

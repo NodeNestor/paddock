@@ -738,6 +738,7 @@ __device__ __forceinline__ int pd_kq_iq4_prmt(uint32_t idx4) {
 }
 
 __host__ __device__ __forceinline__ uint32_t pd_kq_datab(uint32_t dt) {
+    if (pd_kq_valid_iq(dt)) return pd_iq_datab(dt);
     return dt == PD_KQ_Q6K ? PD_KQ6_DATA
          : dt == PD_KQ_Q5K ? PD_KQ5_DATA : PD_KQ4_DATA;
 }
@@ -751,6 +752,10 @@ __device__ __forceinline__ void pd_kq_win_unpack(
         const uint8_t* __restrict__ rec, uint32_t w, int wq[4], float* f,
         float* g) {
     *g = 0.0f;
+    if (pd_kq_valid_iq(dtype)) {
+        pd_iq_win_unpack(dtype, sb, rec, w, wq, f);
+        return;
+    }
     if (dtype == PD_KQ_Q6K) {
         const uint32_t n = w >> 3u, rw = (w >> 1u) & 3u, h = w & 1u;
         const uint32_t qoff = n * 64u + (rw & 1u) * 32u + h * 16u;

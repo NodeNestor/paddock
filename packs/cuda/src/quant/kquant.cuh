@@ -118,6 +118,10 @@ __global__ void pd_kquant_dequant_kernel(const uint8_t* __restrict__ src,
     for (uint64_t b = (uint64_t)blockIdx.x * blockDim.x + threadIdx.x; b < n_super;
          b += (uint64_t)gridDim.x * blockDim.x) {
         float* y = dst + b * 256u;
+        if (pd_kq_valid_iq(dtype)) {
+            pd_iq_dequant_super(dtype, src + b * pd_iq_srcb(dtype), y);
+            continue;
+        }
         if (dtype == PD_KQ_Q6K) {
             const uint8_t* s = src + b * PD_KQ6_SRC;
             const uint8_t* ql = s;
@@ -207,7 +211,7 @@ PD_EXPORT
 int pd_kquant_dequant(const void* src, void* dst, uint64_t n_super, uint32_t dtype,
                       void* stream) {
     if (n_super == 0) return 0;
-    if (!pd_kq_valid(dtype)) return cudaErrorInvalidValue;
+    if (!pd_kq_valid(dtype) && !pd_kq_valid_iq(dtype)) return cudaErrorInvalidValue;
     uint32_t threads = 256;
     uint64_t blocks = (n_super + threads - 1) / threads;
     if (blocks > 65535u) blocks = 65535u;
@@ -226,6 +230,10 @@ __global__ void pd_kquant_repack_kernel(const uint8_t* __restrict__ src,
     uint64_t b = (uint64_t)blockIdx.x * blockDim.x + threadIdx.x;
     if (b >= n_super) return;
     uint8_t* rec = dst_scales + b * PD_KQ_SCB;
+    if (pd_kq_valid_iq(dtype)) {
+        pd_iq_repack_super(dtype, src + b * pd_iq_srcb(dtype), dst_data + b * pd_iq_datab(dtype), rec);
+        return;
+    }
     if (dtype == PD_KQ_Q6K) {
         const uint8_t* s = src + b * PD_KQ6_SRC;
         uint8_t* d = dst_data + b * PD_KQ6_DATA;
@@ -299,7 +307,7 @@ PD_EXPORT
 int pd_kquant_repack(const void* src, void* dst_data, void* dst_scales,
                      uint64_t n_super, uint32_t dtype, void* stream) {
     if (n_super == 0) return 0;
-    if (!pd_kq_valid(dtype)) return cudaErrorInvalidValue;
+    if (!pd_kq_valid(dtype) && !pd_kq_valid_iq(dtype)) return cudaErrorInvalidValue;
     uint32_t threads = 256;
     uint64_t blocks = (n_super + threads - 1) / threads;
     pd_kquant_repack_kernel<<<(uint32_t)blocks, threads, 0, (cudaStream_t)stream>>>(
@@ -777,6 +785,13 @@ __global__ void pd_kquant_dequant_rp_kernel(const uint8_t* __restrict__ data,
 // dtype rides existing entry points and slot presence alone cannot say.
 PD_EXPORT
 int pd_kquant_q40(void) { return 0; }
+
+// Capability marker (slot 539): present iff the k-quant repack, dequant and
+// token-batched MoE pair serve the ggml i-quant family (IQ1_S/M, IQ2_XXS/XS/S,
+// IQ3_XXS/S) and IQ4_NL - see quant/iquant.cuh. Same reason as the Q4_0
+// marker: the dtypes ride existing entry points.
+PD_EXPORT
+int pd_kquant_iq(void) { return 0; }
 
 PD_EXPORT
 int pd_kquant_dequant_rp(const void* data, const void* scales, void* dst,
