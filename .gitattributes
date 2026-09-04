@@ -52,6 +52,7 @@ crates/paddock-runner/tests/fixtures/*.jinja  text eol=lf
 *.png         binary
 *.ico         binary
 *.jpg         binary
+*.gif         binary
 *.webm        binary
 *.wav         binary
 *.pdf         binary

@@ -1,5 +1,7 @@
 # Paddock
 
+![Paddock Studio](assets/studio-graph.gif)
+
 ## What it is
 
 AI inference server written in Rust, currently for NVIDIA GPUs, with an OpenAI and Anthropic compatible API
@@ -111,6 +113,12 @@ extraction from PDF and Office files.
 
 **Studio.** A built-in web UI for downloading and managing models, running them,
 comparing them side by side, and serving them.
+
+Side by side means across the boundary, not just within it: a model running on
+your own box against one behind OpenRouter or any other OpenAI-compatible
+endpoint, same prompt, same view.
+
+![Comparing a local model with a cloud one](assets/studio-compare.gif)
 
 ## Status
 
