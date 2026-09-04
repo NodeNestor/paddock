@@ -8,6 +8,8 @@
 
 pub mod delta_net;
 pub mod dflash;
+pub mod iq;
+pub mod iq_grids;
 pub mod ops;
 pub mod qwen35_attn;
 pub mod qwen4exp;

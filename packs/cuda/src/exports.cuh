@@ -1483,6 +1483,7 @@ static const KernelTableV1 PD_KERNELS = {
     pd_bf16_hc_perm_pad,
     pd_moe_cache_resolve,
     pd_moe_cache_fill,
+    pd_kquant_iq,
 };
 
 PD_EXPORT const PackInfo* paddock_pack_info(void) {

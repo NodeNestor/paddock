@@ -286,8 +286,36 @@ pub(crate) fn kq_params(ty: GgmlType) -> Option<(u32, usize, usize)> {
         // IQ4_XS rides the same kernel family (nonlinear codebook, 4.25 bpw) -
         // UD-Q4_K_XL files mix it in for select ffn tensors.
         GgmlType::Iq4Xs => Some((23, 136, 128)),
+        // The i-quant family (quant/iquant.cuh): raw bytes are ggml's block
+        // sizes, repacked payloads are 16-byte multiples. Gate on
+        // GpuExecutor::has_kquant_iq before routing here, the same way as
+        // Q4_0. IQ4_NL is 8 x 18-byte blocks per 256, like Q4_0.
+        GgmlType::Iq2Xxs => Some((16, 66, 64)),
+        GgmlType::Iq2Xs => Some((17, 74, 64)),
+        GgmlType::Iq2S => Some((22, 82, 80)),
+        GgmlType::Iq3Xxs => Some((18, 98, 96)),
+        GgmlType::Iq3S => Some((21, 110, 112)),
+        GgmlType::Iq1S => Some((19, 50, 48)),
+        GgmlType::Iq1M => Some((29, 56, 48)),
+        GgmlType::Iq4Nl => Some((20, 144, 128)),
         _ => None,
     }
+}
+
+/// The i-quant family + IQ4_NL: served through the k-quant repack, dequant
+/// and the token-batched MoE pair only (no dense GEMV / mma lanes yet).
+pub(crate) fn kq_is_iq(ty: GgmlType) -> bool {
+    matches!(
+        ty,
+        GgmlType::Iq2Xxs
+            | GgmlType::Iq2Xs
+            | GgmlType::Iq2S
+            | GgmlType::Iq3Xxs
+            | GgmlType::Iq3S
+            | GgmlType::Iq1S
+            | GgmlType::Iq1M
+            | GgmlType::Iq4Nl
+    )
 }
 
 /// A weight kept quantized-resident, dispatched per-TENSOR (UD/XL GGUF files

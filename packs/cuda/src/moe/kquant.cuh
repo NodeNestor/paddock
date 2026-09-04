@@ -114,7 +114,8 @@ int pd_kquant_moe_gate_up(const void* gate_data, const void* gate_scales,
                           uint32_t gdt, uint32_t udt, void* stream) {
     if (ff == 0 || n_active == 0 || batch == 0) return 0;
     if ((in_dim & 255u) != 0) return cudaErrorInvalidValue;
-    if (!pd_kq_valid(gdt) || !pd_kq_valid(udt)) return cudaErrorInvalidValue;
+    if (!(pd_kq_valid(gdt) || pd_kq_valid_iq(gdt)) || !(pd_kq_valid(udt) || pd_kq_valid_iq(udt)))
+        return cudaErrorInvalidValue;
     const bool mu = gdt == PD_KQ_Q4K || gdt == PD_KQ_Q5K || gdt == PD_KQ_Q40 ||
                     udt == PD_KQ_Q4K || udt == PD_KQ_Q5K || udt == PD_KQ_Q40;
     if (mu && xsums == nullptr) return cudaErrorInvalidValue;
@@ -204,7 +205,7 @@ int pd_kquant_moe_down(const void* down_data, const void* down_scales,
                        uint32_t batch, uint32_t ddt, void* stream) {
     if (embd == 0 || n_active == 0 || batch == 0) return 0;
     if ((ff & 255u) != 0 || n_active > 16u) return cudaErrorInvalidValue;
-    if (!pd_kq_valid(ddt)) return cudaErrorInvalidValue;
+    if (!pd_kq_valid(ddt) && !pd_kq_valid_iq(ddt)) return cudaErrorInvalidValue;
     if ((ddt == PD_KQ_Q4K || ddt == PD_KQ_Q5K || ddt == PD_KQ_Q40) && fsums == nullptr)
         return cudaErrorInvalidValue;
     dim3 grid(embd, batch);

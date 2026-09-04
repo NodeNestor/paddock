@@ -49,6 +49,8 @@
 #include "src/moe/q8.cuh"
 #include "src/moe/f8.cuh"           // tcgen05 e4m3 grouped MoE (needs attn/decode + moe/block_scale_quant; its tc5 descriptors now come from tma_desc)
 #include "src/moe/f8row.cuh"        // flat per-row-scale e4m3 expert GEMM, sm_89+ mma.sync (needs moe/mmq stage_y + int8_mma's PD_MMA_OK)
+#include "src/quant/iq_grids.cuh"   // ggml i-quant codebooks (generated from ggml-common.h)
+#include "src/quant/iquant.cuh"     // IQ1/IQ2/IQ3/IQ4_NL on the k-quant streams: repack, dequant, window unpack (needs abi.cuh only)
 #include "src/quant/kquant.cuh"     // must precede exports.cuh (which closes the table)
 #include "src/quant/kquant_w4a8.cuh"  // stage-2 W4A8 (needs kquant layouts + gemm/mmq constants)
 #include "src/asr/whisper.cuh"      // whisper decode lane (flash-decoding attn + fused decode epilogues)
