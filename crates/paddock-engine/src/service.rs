@@ -6179,6 +6179,13 @@ mod error_class_tests {
             matches!(oom, crate::gpu::GpuError::OutOfMemory),
             "code 2 -> typed OOM"
         );
+        // Rendering any other code goes through cuGetErrorString, which needs
+        // the driver library. The OOM arm above is decided by the code alone,
+        // so that half holds on a box without a GPU; only this half skips.
+        if !crate::cuda::driver_present() {
+            eprintln!("SKIP: no CUDA driver here, the Driver(text) arm needs cuGetErrorString");
+            return;
+        }
         let other = crate::gpu::from_driver(DriverError(CUresult::CUDA_ERROR_INVALID_VALUE));
         assert!(
             matches!(other, crate::gpu::GpuError::Driver(_)),

@@ -152,6 +152,14 @@ impl GpuExecutor {
         // "cublas64" at all - they could not ask. The only library the engine
         // opens is the CUDA DRIVER, which belongs to the display driver and has
         // exactly one copy on any machine.
+        //
+        // And if that one copy is not there, say so: cudarc panics on its
+        // first call when the library cannot be opened, and a panic here is
+        // the runner dying at startup with a dlopen trace instead of a line
+        // naming the driver.
+        if !crate::cuda::driver_present() {
+            return Err(GpuError::Driver(crate::cuda::NO_DRIVER.into()));
+        }
         let ctx = CudaContext::new(ordinal).map_err(drv)?;
         // A real (non-blocking) stream, not ctx.default_stream(): the null/legacy
         // default stream cannot be captured - cuStreamBeginCapture on it returns
