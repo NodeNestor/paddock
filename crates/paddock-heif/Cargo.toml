@@ -1,5 +1,6 @@
 [package]
 name = "paddock-heif"
+description = "HEIF-family images: sniffing and container metadata for AVIF and HEIC, and AVIF pixels through an embedded pure-Rust AV1 decoder. HEIC is named, not decoded."
 version.workspace = true
 edition.workspace = true
 license.workspace = true

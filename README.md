@@ -22,7 +22,7 @@ Paddock aims at being the fastest inference engine for models that fit on a sing
 GPU, until we support tensor parallelism, meaning splitting model layers across GPUs.
 
 We currently beat llama.cpp, vLLM, SGLang on tested RTX PRO 6000, B200 with models such as
-Qwen 3.8 27B, Qwen 3.6 27B, Gemma 4 31B on F8/Q8_0 and Q4_K_XL and in most cases on NVFP4.
+Qwen 3.8 27B, Qwen 3.6 27B, Gemma 4 31B on FP8/Q8_0 and Q4_K_XL and in most cases on NVFP4.
 We recently added Qwen 3.8 Flash Next and results are promising for lower concurrency but still
 have a bit of work in the higher concurrency tests.
 
@@ -166,6 +166,7 @@ The remaining prerequisites:
 |---|---|
 | Rust, current stable | the toolchain file pins the channel, not a version |
 | Node and npm | builds the Studio bundle embedded into `paddock` |
+| cmake and a C/C++ compiler | the Opus codec is compiled from source at build time, by cmake; on Windows VS2022 covers it |
 | CUDA toolkit 13.x | only for the kernel pack, not for `cargo build` |
 | Windows: VS2022 | build from a `vcvars64` environment; `rc.exe` is also required |
 

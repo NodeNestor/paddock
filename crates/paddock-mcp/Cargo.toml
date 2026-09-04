@@ -1,5 +1,6 @@
 [package]
 name = "paddock-mcp"
+description = "MCP (Model Context Protocol) client for Paddock: a thin wrapper over the official rmcp SDK with a lazy, shared connection pool over stdio and Streamable HTTP."
 version.workspace = true
 edition.workspace = true
 license.workspace = true
