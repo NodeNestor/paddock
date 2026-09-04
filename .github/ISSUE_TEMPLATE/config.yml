@@ -1,5 +1,8 @@
 blank_issues_enabled: true
 contact_links:
+  - name: Ask on Discord
+    url: https://discord.gg/fMeKkPdrsW
+    about: Questions, setup help and discussion. Bugs and model requests belong here as issues.
   - name: Documentation
     url: https://truespar.com/paddock/docs/v1/getting-started
     about: Getting started, configuration and the API surface.
