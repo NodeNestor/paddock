@@ -43,12 +43,17 @@ fn main() {
         } else {
             "packs/pdfium/build/build-linux.sh"
         };
+        let fetch = if dir == "win-x64" {
+            "powershell -File packs/pdfium/fetch.ps1"
+        } else {
+            "bash packs/pdfium/fetch.sh"
+        };
         panic!(
             "pdfium is not staged at {}\n\
              \n\
-             build it:                {build}   (needs depot_tools, ~15 min)\n\
-             or download ours:        the URLs and sha256s are in \
-             packs/pdfium/prebuilt.json\n\
+             download ours:           {fetch}   (reads packs/pdfium/prebuilt.json, \
+             checks the sha256)\n\
+             or build it:             {build}   (needs depot_tools, ~15 min)\n\
              \n\
              It is linked INTO this binary, so there is nothing to ship \
              separately - see packs/pdfium/build/ for how it is made.",

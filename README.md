@@ -173,9 +173,9 @@ Neither `siftx` nor `scriptor` is on crates.io, so cargo fetches them from GitHu
 pinned revision. The first build needs network for that; nothing else does.
 
 ```sh
-# 1. pdfium, a build input linked into paddock-runner
-powershell -File packs/pdfium/build/build-windows.ps1   # Windows
-bash packs/pdfium/build/build-linux.sh                  # Linux, via Docker
+# 1. pdfium, a build input linked into paddock-runner: download our prebuilt
+powershell -File packs/pdfium/fetch.ps1                 # Windows
+bash packs/pdfium/fetch.sh                              # Linux
 
 # 2. the Studio bundle, embedded by rust-embed
 cd studio && npm ci && npm run build && cd ..
@@ -184,12 +184,16 @@ cd studio && npm ci && npm run build && cd ..
 cargo build --release -p paddock-manager -p paddock-runner
 ```
 
-Building pdfium needs depot_tools and takes around 15 minutes; the Windows
-script syncs the Chromium tree into a `pdfium-build` directory beside the
-checkout (`-Root` puts it elsewhere). To skip the build,
-`packs/pdfium/prebuilt.json` carries the download URL and SHA-256 for a build
-of the same pin; put the library at `packs/pdfium/<platform>/` and the build
-script will find it.
+The fetch scripts read `packs/pdfium/prebuilt.json`, download our own build of
+pdfium at the pin in `packs/pdfium/VERSION`, check the SHA-256 and stage the
+library at `packs/pdfium/<platform>/`, where the build script looks for it.
+They are idempotent, so they are safe to run on every build.
+
+To build pdfium from source instead, `packs/pdfium/build/build-windows.ps1`
+(native, needs depot_tools) and `packs/pdfium/build/build-linux.sh` (via
+Docker) stage the same file; both take around 15 minutes. The Windows script
+syncs the Chromium tree into a `pdfium-build` directory beside the checkout
+(`-Root` puts it elsewhere).
 
 The CUDA kernel pack is built separately, on purpose: the Rust build needs
 neither a CUDA toolkit nor a GPU, and the pack is loaded over a stable C ABI at

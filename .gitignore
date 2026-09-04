@@ -15,6 +15,8 @@ packs/*/build/
 packs/pdfium/*
 !packs/pdfium/VERSION
 !packs/pdfium/prebuilt.json
+!packs/pdfium/fetch.sh
+!packs/pdfium/fetch.ps1
 !packs/pdfium/build/
 !packs/pdfium/licenses/
 
