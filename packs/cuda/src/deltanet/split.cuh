@@ -686,7 +686,7 @@ pd_dnc_stage1_v2_kernel(const IT* __restrict__ q, const IT* __restrict__ k,
                 const float v0 = r0 * acc[nt][2u * ep];
                 const float v1 = r1 * acc[nt][2u * ep + 1u];
                 if (warp >= 4u)
-                    *reinterpret_cast<pd_dns1_pair<at>*>(
+                    *reinterpret_cast<pd_dns1_pair<AT>*>(
                         aqk + tb * C * C + i * C + j) =
                         pd_dns1_pair<AT>{(AT)v0, (AT)v1};
                 else {
