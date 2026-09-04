@@ -28,6 +28,7 @@ import { SEARCH_PROVIDERS, searchLabel, searchProvider } from '@/lib/websearch'
 import Icon from '@/components/Icon.vue'
 import Select from '@/components/ui/Select.vue'
 import NumberField from '@/components/ui/NumberField.vue'
+import { CTX_CUSTOM, CTX_MAX, CTX_STEPS, ctxCapOf, ctxFits, ctxLadder } from '@/lib/ctx-ladder'
 import FieldLabel from '@/components/manage/FieldLabel.vue'
 import TextInput from '@/components/ui/TextInput.vue'
 import Switch from '@/components/ui/Switch.vue'
@@ -815,32 +816,31 @@ const modelOptions = computed(() => [
   { value: '__custom', label: 'Other (installed name or GGUF path)...' },
 ])
 /** Every context this MODEL supports, with the ones the card cannot back
- *  greyed out and told why.
+ *  greyed out and priced, led by the fit itself and closed by Custom.
  *
  *  This list used to be filtered down to what fits, which quietly conflated two
  *  very different facts: "this model is short-context" and "your GPU is the
  *  limit here". A 256K model on a busy card would offer 8K and say nothing, so
  *  the one number the user needed - that VRAM, not the model, was the ceiling -
  *  was the number we removed. Steps beyond the MODEL's own maximum stay out:
- *  those do not exist at any VRAM. */
-const ctxSelectOptions = computed(() => {
-  const fits = new Set(ctxOptions.value)
-  const model = ctxModelCap.value
-  const steps = CTX_STEPS.filter((c) => !model || c <= model)
-  const opts = steps.map((c) => ({
-    value: c,
-    label: fmtCtx(c),
-    ...(fits.has(c) ? {} : { disabled: true, hint: 'will not fit VRAM' }),
-  }))
-  // nothing on the ladder fits: surface the exact cap so there is a choice
-  // (ctxOptions falls back to it too, so the two stay in agreement)
-  for (const c of ctxOptions.value) {
-    if (!opts.some((o) => o.value === c)) {
-      opts.unshift({ value: c, label: fmtCtx(c) })
-    }
-  }
-  return opts
-})
+ *  those do not exist at any VRAM.
+ *
+ *  The fit rung is the other half of the same lesson: the ladder is powers of
+ *  two and the card's ceiling almost never is, so a card that backs 224K used
+ *  to top out at 128K here and lose the rest in silence. The ladder itself is
+ *  pure (lib/ctx-ladder.ts) and tested there. */
+const ctxSelectOptions = computed(() =>
+  ctxLadder(
+    {
+      vramCap: ctxVramCap.value,
+      modelCap: ctxModelCap.value,
+      batch: batch.value,
+      bytesPerToken: est.value?.estimate?.kv_bytes_per_token ?? 0,
+    },
+    fmtCtx,
+    gb,
+  ),
+)
 // -1 = driver default (Select values are string|number, not null)
 const gpuOptions = computed(() => [
   { value: -1, label: 'Driver default' },
@@ -1001,7 +1001,6 @@ const WORKLOADS = [
   { id: 'team', label: 'A team / an app', batch: 16 },
 ] as const
 const CUSTOM_WORKLOAD = 'custom'
-const CTX_STEPS = [4096, 8192, 16384, 32768, 65536, 131072, 262144]
 
 // ToggleGroup speaks strings; `batch` is a number. `batchCustom` is its own
 // ref rather than derived from "does a preset own this number", because
@@ -1039,7 +1038,7 @@ function compact(n: number): string {
 }
 const ctxScale = computed(() => {
   const words = ctx.value * 0.75
-  return [
+  const out = [
     { value: compact(words), unit: 'words' },
     // "pages", not "A4 pages": A4 and US Letter hold within ~3% of the same
     // text at equal margins (62,370 vs 60,323 mm2), which is far inside the
@@ -1048,6 +1047,11 @@ const ctxScale = computed(() => {
     // accurate everywhere and one word shorter.
     { value: compact(words / 500), unit: 'pages' },
   ]
+  // Room left on the card, for whoever never opens the dropdown: the one
+  // figure that says a bigger window is a choice, not a limit.
+  if (ctxCap.value && ctx.value < ctxCap.value)
+    out.push({ value: fmtCtx(ctxCap.value), unit: 'possible on this card' })
+  return out
 })
 
 const chosenModel = computed(() =>
@@ -1264,16 +1268,56 @@ const ctxVramCap = computed(() => {
 })
 /** What the MODEL itself supports, whatever the card has. */
 const ctxModelCap = computed(() => est.value?.estimate?.model_max_ctx ?? 0)
-/** The cap that actually applies - the lower of the two. */
-const ctxCap = computed(() => {
-  if (!ctxVramCap.value) return 0
-  return ctxModelCap.value ? Math.min(ctxVramCap.value, ctxModelCap.value) : ctxVramCap.value
-})
+/** The cap that actually applies - the lower of the two, on a KV page. */
+const ctxCap = computed(() =>
+  ctxCapOf({ vramCap: ctxVramCap.value, modelCap: ctxModelCap.value }),
+)
 /** Steps that FIT: what auto-selection and clamping may choose from. */
-const ctxOptions = computed(() => {
-  if (!ctxCap.value) return CTX_STEPS
-  const opts = CTX_STEPS.filter((c) => c <= ctxCap.value)
-  return opts.length ? opts : [ctxCap.value]
+const ctxOptions = computed(() =>
+  ctxFits({ vramCap: ctxVramCap.value, modelCap: ctxModelCap.value }),
+)
+
+// How the context was chosen. The select speaks three kinds of value - a rung,
+// "everything that fits" and "custom" - and only the rung is a number the
+// form can bind directly. `ctxMode` is its own ref, like `batchCustom`: a
+// custom 131072 must stay Custom, and the fit rung must stay the fit rung
+// when the cap moves under it, neither of which a value comparison can tell.
+type CtxMode = 'ladder' | 'max' | 'custom'
+const ctxMode = ref<CtxMode>('ladder')
+const ctxPick = computed<string | number>({
+  get: () => (ctxMode.value === 'max' ? CTX_MAX : ctxMode.value === 'custom' ? CTX_CUSTOM : ctx.value),
+  set: (v) => {
+    userTouchedCtx.value = true
+    if (v === CTX_MAX) {
+      ctxMode.value = 'max'
+      if (ctxCap.value) ctx.value = ctxCap.value
+      return
+    }
+    if (v === CTX_CUSTOM) {
+      // the field opens on the current value - a starting point, not a reset
+      ctxMode.value = 'custom'
+      return
+    }
+    ctxMode.value = 'ladder'
+    ctx.value = Number(v)
+  },
+})
+/** The custom field's ceiling: the model's own maximum, or generous when the
+ *  model has not said. The runner's own will-it-fit check still guards the
+ *  load; this only stops a typo from asking for a gigatoken. */
+const ctxCustomMax = computed(() => ctxModelCap.value || 2_097_152)
+/** Under the custom field: what the card backs at this concurrency, and what
+ *  going past it means. A warning, not a clamp - the estimate is a model of
+ *  the card, and someone who measured 220K on their own box outranks it. */
+const ctxCustomHint = computed(() => {
+  const cap = ctxCap.value
+  if (!cap) return { warn: false, text: 'Any size the model supports; the will-it-fit check guards the load.' }
+  if (ctx.value > cap)
+    return {
+      warn: true,
+      text: `${fmtCtx(cap)} is the most this card backs at ${batch.value} at once - past it conversations are evicted and refilled, or the load is refused. Lower concurrency or KV precision to raise it.`,
+    }
+  return { warn: false, text: `Up to ${fmtCtx(cap)} fits at ${batch.value} at once.` }
 })
 
 // Propose a context when the MODEL or the concurrency changes - the two
@@ -1299,8 +1343,19 @@ watch([model, batch], () => {
 // Growing is now the user's move (the ladder greys out what does not fit, so
 // they can see the room appear); shrinking stays automatic, because a context
 // the card cannot back is not a choice we may leave standing.
+//
+// The fit rung is the one exception, by definition: "everything that fits" is
+// a request to follow the cap wherever it goes, up included. Custom is the
+// other way round - a number someone typed is theirs, and the hint under the
+// field says when the card disagrees.
 watch(ctxCap, (cap) => {
-  if (cap && ctx.value > cap) {
+  if (!cap) return
+  if (ctxMode.value === 'max') {
+    ctx.value = cap
+    return
+  }
+  if (ctxMode.value === 'custom') return
+  if (ctx.value > cap) {
     const fits = ctxOptions.value.filter((c) => c <= cap)
     ctx.value = fits.length ? fits[fits.length - 1] : cap
   }
@@ -1381,6 +1436,8 @@ function applySimpleConfig(cfg: SimpleCfg): void {
   if (cfg.max_ctx) {
     ctx.value = cfg.max_ctx
     userTouchedCtx.value = true
+    // a file can carry any number; the ladder only owns its rungs
+    ctxMode.value = (CTX_STEPS as readonly number[]).includes(cfg.max_ctx) ? 'ladder' : 'custom'
   }
   // the file pins by UUID; the Simple picker speaks NVML indexes - stash
   // the pin and resolve once (or if) the GPU list has landed
@@ -2225,7 +2282,13 @@ function start(): void {
         </ToggleGroup>
 
         <label class="sf__lbl">Context per conversation</label>
-        <Select v-model="ctx" :options="ctxSelectOptions" @update:model-value="userTouchedCtx = true" />
+        <Select v-model="ctxPick" :options="ctxSelectOptions" />
+        <template v-if="ctxMode === 'custom'">
+          <NumberField v-model="ctx" :min="1024" :max="ctxCustomMax" :step="1024" />
+          <p class="sf__hint" :class="{ 'sf__hint--warn': ctxCustomHint.warn }">
+            {{ ctxCustomHint.text }}
+          </p>
+        </template>
         <p class="sf__scale">
           <span v-for="f in ctxScale" :key="f.unit" class="sf__stat">
             <b class="sf__stat-v">≈{{ f.value }}</b>
