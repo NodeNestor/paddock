@@ -1,0 +1,8 @@
+blank_issues_enabled: true
+contact_links:
+  - name: Documentation
+    url: https://truespar.com/paddock/docs/v1/getting-started
+    about: Getting started, configuration and the API surface.
+  - name: GPU access for contributors
+    url: https://github.com/truespar/paddock/blob/main/CONTRIBUTING.md#gpus-for-contributors
+    about: How to get a private RTX 5090, RTX PRO 6000 or B200 for your work on Paddock.

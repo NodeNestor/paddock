@@ -1,0 +1,47 @@
+name: Model support
+description: A model or checkpoint that does not load or does not serve correctly
+labels: [model]
+body:
+  - type: input
+    id: model
+    attributes:
+      label: Model
+      description: Name and a link to the checkpoint (Hugging Face or wherever it lives).
+      placeholder: Qwen/Qwen3.8-27B
+    validations:
+      required: true
+  - type: input
+    id: file
+    attributes:
+      label: File and quantization
+      description: GGUF or safetensors, the quantization, and who made the file if it is a conversion.
+      placeholder: Qwen3.8-27B-Q4_K_M.gguf from unsloth
+    validations:
+      required: true
+  - type: textarea
+    id: today
+    attributes:
+      label: What happens today
+      description: The exact error on load, or what is wrong with the output if it loads. Paste the log lines.
+      render: text
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Paddock version
+      description: The output of `paddock --version`.
+    validations:
+      required: true
+  - type: input
+    id: gpu
+    attributes:
+      label: GPU and driver
+      placeholder: RTX PRO 6000, driver 580.xx
+    validations:
+      required: true
+  - type: textarea
+    id: notes
+    attributes:
+      label: Anything else
+      description: Architecture notes, a reference implementation that serves it, whether you can help test.

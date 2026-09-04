@@ -1,0 +1,67 @@
+name: Bug report
+description: Something is wrong, produces bad output, or refuses to run
+labels: [bug]
+body:
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened
+      description: What you did, what you got, and what you expected instead. Paste the exact error text if there is one.
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      description: The command or the Studio steps, the request if it was an API call, and how often it happens.
+      placeholder: |
+        1. paddock ...
+        2. load model ...
+        3. send ...
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Paddock version
+      description: The output of `paddock --version`. It is a build stamp, not just the SemVer, and it tells two builds a week apart from each other.
+      placeholder: paddock 0.1.4 (...)
+    validations:
+      required: true
+  - type: dropdown
+    id: os
+    attributes:
+      label: Operating system
+      options:
+        - Windows 10/11 x64
+        - Linux x64
+        - Other (say which below)
+    validations:
+      required: true
+  - type: input
+    id: gpu
+    attributes:
+      label: GPU and driver
+      description: The card and the driver version, as the first lines of `nvidia-smi` print them.
+      placeholder: RTX 5090, driver 580.xx
+    validations:
+      required: true
+  - type: input
+    id: model
+    attributes:
+      label: Model
+      description: File name, quantization and where the file came from, if a model is involved.
+      placeholder: Qwen3.8-27B-Q8_0.gguf from the Studio catalog
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs
+      description: The relevant part of `manager.log` or `runner-<port>.log` from the `logs` folder in the data directory (`data` beside the executable for a portable unzip, otherwise `~/paddock`). Also readable in the Studio.
+      render: text
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Before submitting
+      options:
+        - label: I searched the existing issues
+          required: true
