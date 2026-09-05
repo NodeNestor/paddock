@@ -2629,6 +2629,16 @@ static int pd_f16_gemm_mmaf_launch(const __half* w, const __half* x, float* y,
 #endif  // launcher arch guard (mmaf)
 #endif  // PD_TC5_HOST
 
+#ifndef PD_TC5_HOST
+// No tc5g lane on this pack, so the K-split gate above has nothing to guard.
+// The slot still has to resolve: exports.cuh names it unconditionally, and a
+// build without sm_100 (a 4090, a 5090) otherwise dies at link with an
+// undefined pd_f16_ksplit_set. A no-op keeps the table dense and the engine
+// path identical whichever pack it loads.
+PD_EXPORT int pd_f16_ksplit_set(int) { return 0; }
+#endif  // !PD_TC5_HOST
+
+
 // Capture-time mmaf election gate (dual-graph routing). Whisper's
 // encode/decode overlap captures a SECOND decode-graph variant with the mmaf
 // arm declined, replayed only on ticks whose admission encode is in flight on

@@ -4134,6 +4134,7 @@ __global__ void __launch_bounds__(544) pd_f8row_gemm_tw5_kernel(
 // probe, 2048 entries (30b: 64 layers x 4 planes + X maps per width).
 // Launchers run under the engine's per-stream serialization => no locking.
 struct PdTmapEntry { const void* base; uint64_t inner, outer; CUtensorMap map; };
+#if defined(PD_BS_HOST) || defined(PD_TC5_HOST)  // pd_tmap_2d_h64 (tma_desc.cuh) exists only on those builds; so does the one caller
 static bool pd_tmap_2d_h64_cached(CUtensorMap* out, const void* base, uint64_t inner, uint64_t outer) {
     static PdTmapEntry* tab = nullptr;
     static const uint32_t N = 2048u;
@@ -4150,6 +4151,7 @@ static bool pd_tmap_2d_h64_cached(CUtensorMap* out, const void* base, uint64_t i
     }
     return pd_tmap_2d_h64(out, base, inner, outer);   // probe run full: encode uncached
 }
+#endif  // PD_BS_HOST || PD_TC5_HOST
 
 
 template <uint32_t STAGES, uint32_t BN>

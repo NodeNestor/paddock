@@ -111,6 +111,27 @@ if ($bsHost) { $defines += "-DPD_BS_HOST=1" }
 # bring-up and an explicit SASS target, not a fallback.
 if ($gencode.Count -eq 0) { throw "no supported arches to build" }
 
+# /MT for the static lib, and only for it. Rust's Windows binaries link the
+# static CRT (+crt-static in .cargo/config.toml) because pdfium is built /MT
+# and mixing CRTs gives the process two heaps - the same trap, so the kernels
+# have to agree. nvcc defaults to /MD, which would link but corrupt. The DLL
+# keeps the default: it is self-contained and never shares a heap with us.
+# /Zc:preprocessor is not optional and not about the CRT: CUDA 13's
+# <cooperative_groups.h> - pulled into the fatbin by gemm/f32_qkv.cuh since the
+# qwen4exp lane landed - includes CCCL, and CCCL hard-#errors on
+# MSVC's traditional preprocessor. It aborts the pack.cu compile outright, so
+# there is no .dll and no .lib at the end, only a throw. gcc has no such check,
+# which is why build.sh never needed this and why a Linux-side push cannot see
+# the break - it is Windows-only by construction. Satisfy the check rather than
+# define CCCL_IGNORE_MSVC_TRADITIONAL_PREPROCESSOR_WARNING: that silences the
+# diagnostic and keeps the non-conforming preprocessor CCCL is warning about.
+$crt = @('-Xcompiler', '/Zc:preprocessor')
+if ($Static) { $crt += @('-Xcompiler', '/MT') }
+# PD_STATIC drops __declspec(dllexport) from every launcher - see abi.cuh. An
+# archive is resolved by address at link time, so exporting 430 kernel names
+# from the consuming exe buys nothing.
+if ($Static) { $defines += '-DPD_STATIC=1' }
+
 # -lib archives the objects; the DLL name is kept for compatibility (it is a
 # fatbin either way, not sm_86-only). Both carry the same fatbin and the same
 # two exports - only how the engine reaches them differs.
