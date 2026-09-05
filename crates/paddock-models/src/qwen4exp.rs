@@ -301,7 +301,10 @@ impl Qwen4ExpConfig {
     /// indexer kv-head count from the first `indexer.k_proj` tensor, the
     /// vocab from `token_embd`, and the PLE width from
     /// `embedding_length_per_layer_input` x the head count.
-    pub fn from_gguf(g: &crate::gguf::GgufFile) -> Result<Self, StError> {
+    pub fn from_gguf(
+        g: &crate::gguf::GgufFile,
+        tensor_dims_of: impl Fn(&str) -> Option<Vec<usize>>,
+    ) -> Result<Self, StError> {
         use crate::gguf::Value;
         let arch = g.architecture().unwrap_or("");
         if arch != "qwen4exp" {
@@ -328,11 +331,10 @@ impl Qwen4ExpConfig {
                 _ => Err(miss(k)),
             }
         };
+        // tensor geometry comes through the caller's lookup: a split family's
+        // first shard carries the metadata and none of the tensors
         let tensor_dims = |name: &str| -> Result<Vec<usize>, StError> {
-            g.tensors
-                .iter()
-                .find(|t| t.name == name)
-                .map(|t| t.dims.iter().map(|&d| d as usize).collect())
+            tensor_dims_of(name)
                 .ok_or_else(|| StError::Header(format!("qwen4exp gguf: no tensor {name}")))
         };
 

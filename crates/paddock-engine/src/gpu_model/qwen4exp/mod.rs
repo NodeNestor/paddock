@@ -1017,10 +1017,30 @@ fn kq_matmul(
     batch: usize,
     stage: &mut DenseStage,
 ) -> Result<(), GpuError> {
+    // Localizer (PADDOCK_Q4X_KQ_ROWLOOP=1): every row through the batch-1
+    // GEMV, so a prefill disagreement can be pinned on the batched lanes.
+    if batch > 1 && std::env::var_os("PADDOCK_Q4X_KQ_ROWLOOP").is_some() {
+        let (in_dim, out_dim) = (w.dims()[0], w.dims()[1]);
+        let mut xr: CudaSlice<f32> = e.alloc(in_dim)?;
+        let mut yr: CudaSlice<f32> = e.alloc(out_dim)?;
+        for r in 0..batch {
+            e.copy_region(x, r * in_dim, &mut xr, 0, in_dim)?;
+            match w {
+                QuantW::Q8(q) => e.q8_0_gemv_repacked(q, None, &xr, &mut yr)?,
+                QuantW::Kq(k) => e.kquant_gemv(k, &xr, &mut yr)?,
+            }
+            e.copy_region(&yr, 0, y, r * out_dim, out_dim)?;
+        }
+        return Ok(());
+    }
     match w {
         QuantW::Q8(q) => {
+            // the qwen35 `mm_q8` ladder: gemv, the small-batch tiled GEMM,
+            // the plain per-row GEMM above 12 rows
             if batch == 1 {
                 e.q8_0_gemv_repacked(q, None, x, y)
+            } else if batch <= 12 {
+                e.q8_0_gemm_repacked_mt(q, None, x, y, batch)
             } else {
                 e.q8_0_gemm_repacked(q, None, x, y, batch)
             }
@@ -1176,6 +1196,12 @@ pub struct GdnW {
     pub norm: DeviceTensor,
     /// out_proj [hidden, 6144]
     pub out: DensePlane,
+    /// Value-head order of the planes above: `false` = the checkpoint's
+    /// (HF) order, key head `vh / (hv/hk)` serves value head `vh`; `true` =
+    /// the GGUF lane's tiled order (llama.cpp's converter), key head
+    /// `vh % hk`. Selects the conv split kernel; no permutation of the key
+    /// heads converts one into the other.
+    pub tiled_heads: bool,
 }
 
 /// Gated attention + QSA indexer mixer.

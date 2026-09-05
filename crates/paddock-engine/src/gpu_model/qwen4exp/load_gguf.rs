@@ -284,6 +284,8 @@ pub(super) fn load_layer(
                 // the GDN norm is the one norm the converter leaves raw
                 norm: f32_dt(exec, map, &format!("{p}.ssm_norm.weight"), vec![c.gdn_v_dim])?,
                 out: dense(exec, map, &format!("{p}.ssm_out.weight"), h, c.gdn_z_rows())?,
+                // the converter tiles the value heads (see the module doc)
+                tiled_heads: true,
             })
         }
         Qwen4ExpBlock::Attention => {
@@ -382,8 +384,11 @@ pub(super) fn load_ple(
             info.ggml_type
         )));
     }
+    // the exporter pads the table's row count (to a multiple of 512 in the
+    // Unsloth files: 320,001,536 rows for a 320,001,446-row hash space);
+    // every hashed row id must land inside the tensor, padding is never read
     let total: i64 = hash.head_vocab_sizes.iter().sum();
-    if total != d[1] as i64 {
+    if total > d[1] as i64 {
         return Err(unsupported(format!(
             "{PLE_TABLE}: {} rows but the head vocab sizes sum to {total}",
             d[1]

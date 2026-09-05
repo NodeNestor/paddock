@@ -574,12 +574,19 @@ impl Qwen4ExpGpu {
             MappedGguf::open(path)
                 .map_err(|e| GpuModelError::Unsupported(format!("qwen4exp gguf: {e}")))?,
         );
-        let cfg = Qwen4ExpConfig::from_gguf(map.gguf())
+        let cfg = Qwen4ExpConfig::from_gguf(map.gguf(), |name| {
+            map.tensor_info(name)
+                .map(|t| t.dims.iter().map(|&d| d as usize).collect())
+        })
             .map_err(|e| GpuModelError::Unsupported(format!("qwen4exp gguf config: {e}")))?;
         let hash = Qwen4ExpConfig::ple_hash_from_gguf(map.gguf())
             .map_err(|e| GpuModelError::Unsupported(format!("qwen4exp gguf ple: {e}")))?;
         let mut layers = Vec::with_capacity(cfg.n_layer);
+        let trace = std::env::var_os("PADDOCK_Q4X_LOAD_TRACE").is_some();
         for li in 0..cfg.n_layer {
+            if trace {
+                eprintln!("[q4x-gguf] layer {li} ({:?})", cfg.blocks[li]);
+            }
             let mut layer = super::load_gguf::load_layer(exec, &map, &cfg, li)?;
             if cfg.ple_layers.contains(&li) {
                 layer.ple = Some(super::load_gguf::load_ple(exec, &map, &cfg, li, &hash)?);
@@ -587,9 +594,21 @@ impl Qwen4ExpGpu {
             }
             layers.push(layer);
         }
+        if trace {
+            eprintln!("[q4x-gguf] token_embd");
+        }
         let embed = super::load_gguf::load_embed(exec, &map, &cfg)?;
+        if trace {
+            eprintln!("[q4x-gguf] output head");
+        }
         let lm_head = super::load_gguf::load_head(exec, &map, &cfg)?;
+        if trace {
+            eprintln!("[q4x-gguf] output_hc");
+        }
         let final_mix = super::load_gguf::hc_weights(exec, &map, &cfg, "output_hc", false)?;
+        if trace {
+            eprintln!("[q4x-gguf] state + scratch");
+        }
         let src = {
             let name = super::load_gguf::PLE_TABLE.to_owned();
             let (info, _) = map
@@ -1669,7 +1688,10 @@ impl Qwen4ExpGpu {
             && layers
                 .first()
                 .map(|l| matches!(l.attn_hc.down, super::DensePlane::Bf16(_)))
-                .unwrap_or(false);
+                .unwrap_or(false)
+            // the k-quant dense class stages its batched activations in the
+            // one DenseStage; a side-stream twin would race it at width > 1
+            && !matches!(lm_head, DensePlane::Kq { .. });
         // Declare co-residency to the f16 lane for this walk. A forked walk
         // may have a side-stream kernel resident, and the lane's K-split is a
         // cross-CTA spin whose factor assumes it owns the machine - so the
@@ -1801,6 +1823,17 @@ impl Qwen4ExpGpu {
                         cur_runs,
                         fork_ok,
                     )?;
+                    if dump.on() {
+                        let (hv, vdim) = (c.gdn_v_heads, c.gdn_v_heads * c.gdn_v_dim);
+                        dump.put(e, li, "gdn_qkv", &sc.d_qkv, n * c.gdn_qkv_rows())?;
+                        dump.put(e, li, "gdn_conv", &sc.d_conv, n * c.gdn_qkv_rows())?;
+                        dump.put(e, li, "gdn_z", &sc.d_zg, n * c.gdn_z_rows())?;
+                        dump.put(e, li, "gdn_ab", &sc.d_ab, n * 2 * hv)?;
+                        dump.put(e, li, "gdn_g", &sc.d_g, n * hv)?;
+                        dump.put(e, li, "gdn_beta", &sc.d_beta, n * hv)?;
+                        dump.put(e, li, "gdn_core", &sc.d_core, n * vdim)?;
+                        dump.put(e, li, "gdn_final", &sc.d_dattn, n * vdim)?;
+                    }
                 }
                 Qwen4ExpBlock::Attention => {
                     let MixerW::Attn(w) = &layer.mixer else {
@@ -2546,6 +2579,10 @@ fn gather_ple_rows_gguf(
     let rows = table.len() / row_bytes;
     let eos = c.bos_id as i64;
     let mut out = vec![0f32; n * c.ple_embed];
+    // localizer: PADDOCK_Q4X_PLE_ZERO=1 feeds zero n-gram rows
+    if std::env::var_os("PADDOCK_Q4X_PLE_ZERO").is_some() {
+        return Ok(out);
+    }
     for t in 0..n {
         let w3 = rq::ple_window(stream, first + t, eos);
         let row_ids = rq::ple_ngram_ids(
@@ -2771,19 +2808,23 @@ fn gdn_pass(
                 d_slots,
                 ..
             } = sc;
-            if !e.conv_step_slots_split(
-                win,
-                d_qkv,
-                &w.conv.buf,
-                d_dq,
-                d_dk,
-                d_dv,
-                d_slots,
-                n,
-                qkv_rows,
-                c.gdn_conv,
-                (c.gdn_k_heads, hv, kd, vd),
-            )? {
+            // the fused conv+split widens with the interleave map; the tiled
+            // lane takes the unfused conv and its own split below
+            if w.tiled_heads
+                || !e.conv_step_slots_split(
+                    win,
+                    d_qkv,
+                    &w.conv.buf,
+                    d_dq,
+                    d_dk,
+                    d_dv,
+                    d_slots,
+                    n,
+                    qkv_rows,
+                    c.gdn_conv,
+                    (c.gdn_k_heads, hv, kd, vd),
+                )?
+            {
                 e.conv_step_slots(
                     win,
                     d_qkv,
@@ -2800,17 +2841,36 @@ fn gdn_pass(
         }
     }
     if !split_done {
-        e.q4x_gdn_split_widen(
-            &sc.d_conv,
-            &mut sc.d_dq,
-            &mut sc.d_dk,
-            &mut sc.d_dv,
-            n,
-            c.gdn_k_heads,
-            hv,
-            kd,
-            vd,
-        )?;
+        if w.tiled_heads {
+            if !e.has_q4x_gdn_split_widen_tiled() {
+                return Err(GpuModelError::Unsupported(
+                    "kernel pack has no q4x_gdn_split_widen_tiled (slot 540) - rebuild packs/cuda".into(),
+                ));
+            }
+            e.q4x_gdn_split_widen_tiled(
+                &sc.d_conv,
+                &mut sc.d_dq,
+                &mut sc.d_dk,
+                &mut sc.d_dv,
+                n,
+                c.gdn_k_heads,
+                hv,
+                kd,
+                vd,
+            )?;
+        } else {
+            e.q4x_gdn_split_widen(
+                &sc.d_conv,
+                &mut sc.d_dq,
+                &mut sc.d_dk,
+                &mut sc.d_dv,
+                n,
+                c.gdn_k_heads,
+                hv,
+                kd,
+                vd,
+            )?;
+        }
     }
     // Join before the recurrence: it is the first consumer of both branches.
     if forked {
@@ -3788,8 +3848,17 @@ impl Scratch {
                 // flags a 4-byte write 1 past a 64-float y here, which fails
                 // the whole load under compute-sanitizer. Slack, not 64.
                 let mut yd: CudaSlice<f32> = e.alloc(256)?;
-                let _ = e.lowm_warmup(&w, &xd, &mut yd)?;
-                e.synchronize()?;
+                // The lane is opt-in (PADDOCK_Q38FN_LOWM) and bf16-only; a
+                // card that refuses its cluster launch (sm_120 consumer
+                // Blackwell answers cudaErrorNotSupported) must not lose the
+                // whole model over a warm-up for a lane it will never take.
+                match e.lowm_warmup(&w, &xd, &mut yd) {
+                    Ok(_) => e.synchronize()?,
+                    Err(err) => {
+                        tracing::warn!("qwen4exp: low-M cluster warm-up refused ({err}) - lane off");
+                        eprintln!("[q4x] low-M cluster warm-up refused ({err}) - lane off");
+                    }
+                }
                 yd
             },
             d_zero_bias: e.alloc(c.n_expert)?,

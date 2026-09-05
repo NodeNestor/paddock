@@ -532,6 +532,7 @@ pub fn load_layer(
                 dt_bias: f32_dt(exec, st, &format!("{g}.dt_bias"), vec![c.gdn_v_heads])?,
                 norm: f32_dt(exec, st, &format!("{g}.norm.weight"), vec![c.gdn_v_dim])?,
                 out: dense(exec, st, &format!("{g}.out_proj.weight"), h, c.gdn_z_rows())?,
+                tiled_heads: false,
             })
         }
         Qwen4ExpBlock::Attention => {

@@ -557,6 +557,7 @@ extern "C" int pd_q4x_conv_dil(const void*, const void*, void*, uint32_t, uint32
 extern "C" int pd_q4x_conv_dil_step(const void*, const void*, const void*, void*, uint32_t, uint32_t, uint32_t, void*);
 extern "C" int pd_q4x_gdn_gated_norm(const void*, const void*, const void*, void*, void*, uint32_t, uint32_t, float, void*);
 extern "C" int pd_q4x_gdn_split_widen(const void*, void*, void*, void*, uint32_t, uint32_t, uint32_t, uint32_t, uint32_t, void*);
+extern "C" int pd_q4x_gdn_split_widen_tiled(const void*, void*, void*, void*, uint32_t, uint32_t, uint32_t, uint32_t, uint32_t, void*);
 extern "C" int pd_q4x_add_gated_row(void*, const void*, const void*, uint32_t, uint32_t, void*);
 extern "C" int pd_q4x_add_gated_row_s(void*, const void*, const void*, uint32_t, uint32_t, uint32_t, void*);
 extern "C" int pd_moe_topk_batch_s(const void*, const void*, uint32_t, uint32_t, uint32_t, void*, void*, uint32_t, void*);
@@ -1485,6 +1486,7 @@ static const KernelTableV1 PD_KERNELS = {
     pd_moe_cache_fill,
     pd_kquant_iq,
     pd_kquant_iq_dense,
+    pd_q4x_gdn_split_widen_tiled,
 };
 
 PD_EXPORT const PackInfo* paddock_pack_info(void) {

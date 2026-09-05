@@ -6149,6 +6149,11 @@ pub struct KernelTableV1 {
     /// the i-quant family + IQ4_NL (quant/iquant_dense.cuh). Without it a
     /// dense i-quant tensor is refused at load.
     pub kquant_iq_dense: Option<unsafe extern "C" fn() -> i32>,
+    /// 541: the GDN conv split with the GGUF lane's TILED value-head order
+    /// (key head `vh % hk` serves value head `vh` - what llama.cpp's
+    /// converter writes); `q4x_gdn_split_widen` keeps the raw-safetensors
+    /// interleave map. Same signature.
+    pub q4x_gdn_split_widen_tiled: Option<Q4xGdnSplitWidenFn>,
 }
 
 /// MoE expert-offload cache resolve (see `KernelTableV1::moe_cache_resolve`).
@@ -6526,7 +6531,7 @@ pub type AddRmsnormQ8XnFn = unsafe extern "C" fn(
 /// the copy to the smaller of declared and expected, so an old pack against a
 /// new engine (or the reverse) reads missing entries as None rather than a
 /// shifted slot.
-pub const KERNEL_TABLE_SLOTS: usize = 564;
+pub const KERNEL_TABLE_SLOTS: usize = 565;
 
 const _: () = assert!(
     core::mem::size_of::<KernelTableV1>() == 8 + KERNEL_TABLE_SLOTS * 8,
