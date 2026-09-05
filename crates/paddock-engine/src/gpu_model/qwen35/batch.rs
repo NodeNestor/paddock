@@ -218,6 +218,21 @@ impl GpuQwen35 {
     /// slot i. Returns the enabled capacity.
     pub fn enable_batch(&mut self, max_batch: usize) -> Result<usize, GpuModelError> {
         assert!(max_batch >= 1);
+        let r = self.enable_batch_sized(max_batch);
+        if r.is_err() {
+            // A failed attempt leaves what it already seated (BatchState with
+            // its pool + tier, per-layer MoE caches, overlap stream, dflash
+            // device state, scratch) holding VRAM. The width ladder then reads
+            // "0.0 GB free after weights" and every halved retry refuses
+            // regardless of width - measured on an 8 GB card (RTX 3070):
+            // enable_batch(32) OOM mid-way, 32->16->1 all dead, startup fatal.
+            // Release the attempt before the error reaches the ladder.
+            self.release_batch_attempt();
+        }
+        r
+    }
+
+    fn enable_batch_sized(&mut self, max_batch: usize) -> Result<usize, GpuModelError> {
         let (max_batch, spec_live_cap) = self.width_by_vram(max_batch);
         // spec live degraded to buy width (see width_by_vram) - ensure_serve_spec
         // allocates at this cap instead of the env default
