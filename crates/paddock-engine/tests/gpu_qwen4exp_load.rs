@@ -128,7 +128,11 @@ fn qwen4exp_layer_planes_round_trip() {
 
         // MoE gate plane: concatenated nibbles equal per-expert checkpoint
         // views at both ends of the expert range; scale2 array matches
-        let plane = &layer.moe.gate;
+        let paddock_engine::gpu_model::qwen4exp::ExpertSeats::Nvf4 { gate: plane, .. } =
+            &layer.moe.seats
+        else {
+            panic!("{p}: the safetensors lane seats NVFP4 experts");
+        };
         assert_eq!(
             (plane.n_expert, plane.ff, plane.in_dim),
             (c.n_expert, c.moe_ff, c.hidden)

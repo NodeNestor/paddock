@@ -16,7 +16,7 @@ use paddock_models::safetensors::{ShardedSafetensors, StDtype};
 use super::*;
 use super::{DenseClass, DensePlane, dense_class_from_env};
 
-fn dt(exec: &GpuExecutor, v: Vec<f32>, dims: Vec<usize>) -> Result<DeviceTensor, GpuError> {
+pub(super) fn dt(exec: &GpuExecutor, v: Vec<f32>, dims: Vec<usize>) -> Result<DeviceTensor, GpuError> {
     Ok(DeviceTensor {
         buf: exec.to_device(&v)?,
         dims,
@@ -600,9 +600,7 @@ pub fn load_layer(
         // the shared expert's scalar gate rides as row n_expert
         router: dt(exec, router_v, vec![c.n_expert + 1, h])?,
         router16,
-        gate,
-        up,
-        down,
+        seats: super::ExpertSeats::Nvf4 { gate, up, down },
         sh_gate: dense(
             exec,
             st,

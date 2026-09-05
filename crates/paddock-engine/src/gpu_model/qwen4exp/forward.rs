@@ -33,16 +33,17 @@ use std::sync::Arc;
 use cudarc::driver::CudaSlice;
 use cudarc::driver::sys::CUstreamCaptureMode;
 
-use crate::gpu::{DeviceTensor, GpuExecutor, KvDtype, QuantTensor};
+use crate::gpu::{DeviceTensor, ExpertCache, GpuExecutor, KvDtype, QuantTensor};
 use crate::gpu_model::gpt_oss::GpuModelError;
 use crate::gpu_model::st_load::bf16_bytes;
 use paddock_kernels::reference::qwen4exp as rq;
 use paddock_models::ggml_type::GgmlType;
+use paddock_models::mapped::MappedGguf;
 use paddock_models::qwen4exp::{Qwen4ExpBlock, Qwen4ExpConfig};
 use paddock_models::safetensors::{ShardedSafetensors, StDtype};
 
 use super::load::{dense_head, hc_weights, load_layer, load_ple_projections, load_ple_table};
-use super::{DensePlane, DenseStage, HcW, MixerW, PleW, Qwen4ExpLayer};
+use super::{DensePlane, DenseStage, Embed, ExpertSeats, HcW, KqSeat, MixerW, PleW, Qwen4ExpLayer};
 
 /// Attention KV element type. f16 is the narrowest class the pack's attention
 /// lanes take (there is no f32 KV kernel); the rival stores BF16, which carries
@@ -158,13 +159,95 @@ impl std::ops::Deref for Q4xSendGraph {
     }
 }
 
+/// Where the host lane gathers PLE n-gram rows from: the safetensors shards
+/// (e4m3 rows, `weight_scale`), or the GGUF's own table tensor (quantized
+/// 32-wide blocks, decoded per row on the CPU).
+pub enum PleSource {
+    St(ShardedSafetensors),
+    Gguf {
+        map: Arc<MappedGguf>,
+        name: String,
+        ty: GgmlType,
+        /// bytes per table row (`width` elements)
+        row_bytes: usize,
+    },
+}
+
+/// Bytes one `width`-wide row occupies in the host row decoder's types.
+/// `None` for a type it does not decode.
+pub(super) fn ple_row_bytes(ty: GgmlType, width: usize) -> Option<usize> {
+    let blocks32 = |bytes: usize| (width % 32 == 0).then_some(width / 32 * bytes);
+    match ty {
+        GgmlType::F32 => Some(width * 4),
+        GgmlType::F16 | GgmlType::Bf16 => Some(width * 2),
+        GgmlType::Q8_0 => blocks32(34),
+        GgmlType::Q4_0 | GgmlType::Iq4Nl => blocks32(18),
+        _ => None,
+    }
+}
+
+/// The IQ4_NL codebook (ggml-common.h, MIT).
+const KVALUES_IQ4NL: [i8; 16] = [
+    -127, -104, -83, -65, -49, -35, -22, -10, 1, 13, 25, 38, 53, 69, 89, 113,
+];
+
+/// Decode one table row (`row.len() == ple_row_bytes(ty, out.len())`).
+fn ple_row_dequant(ty: GgmlType, row: &[u8], out: &mut [f32]) {
+    match ty {
+        GgmlType::F32 => {
+            for (o, c) in out.iter_mut().zip(row.as_chunks::<4>().0) {
+                *o = f32::from_le_bytes(*c);
+            }
+        }
+        GgmlType::F16 => {
+            for (o, c) in out.iter_mut().zip(row.as_chunks::<2>().0) {
+                *o = half::f16::from_le_bytes(*c).to_f32();
+            }
+        }
+        GgmlType::Bf16 => {
+            for (o, c) in out.iter_mut().zip(row.as_chunks::<2>().0) {
+                *o = f32::from_bits((u16::from_le_bytes(*c) as u32) << 16);
+            }
+        }
+        GgmlType::Q8_0 => {
+            for (blk, o) in row.chunks_exact(34).zip(out.chunks_exact_mut(32)) {
+                let d = half::f16::from_le_bytes([blk[0], blk[1]]).to_f32();
+                for j in 0..32 {
+                    o[j] = (blk[2 + j] as i8) as f32 * d;
+                }
+            }
+        }
+        GgmlType::Q4_0 => {
+            for (blk, o) in row.chunks_exact(18).zip(out.chunks_exact_mut(32)) {
+                let d = half::f16::from_le_bytes([blk[0], blk[1]]).to_f32();
+                for j in 0..16 {
+                    let q = blk[2 + j];
+                    o[j] = ((q & 0xf) as i32 - 8) as f32 * d;
+                    o[j + 16] = ((q >> 4) as i32 - 8) as f32 * d;
+                }
+            }
+        }
+        GgmlType::Iq4Nl => {
+            for (blk, o) in row.chunks_exact(18).zip(out.chunks_exact_mut(32)) {
+                let d = half::f16::from_le_bytes([blk[0], blk[1]]).to_f32();
+                for j in 0..16 {
+                    let q = blk[2 + j];
+                    o[j] = KVALUES_IQ4NL[(q & 0xf) as usize] as f32 * d;
+                    o[j + 16] = KVALUES_IQ4NL[(q >> 4) as usize] as f32 * d;
+                }
+            }
+        }
+        _ => unreachable!("ple_row_bytes gated the type"),
+    }
+}
+
 pub struct Qwen4ExpGpu {
     exec: Arc<GpuExecutor>,
     cfg: Qwen4ExpConfig,
-    /// kept open for the host-side PLE n-gram gather
-    st: ShardedSafetensors,
+    /// where the host-side PLE n-gram gather reads its rows
+    st: PleSource,
     layers: Vec<Qwen4ExpLayer>,
-    embed: QuantTensor,
+    embed: Embed,
     lm_head: DensePlane,
     final_mix: HcW,
     max_tokens: usize,
@@ -299,6 +382,14 @@ struct Scratch {
     d_idx: CudaSlice<u32>,
     d_topw: CudaSlice<f32>,
     d_act: CudaSlice<f32>,
+    /// GGUF expert seats: the int8 block input + per-32 scales, the per-16
+    /// sums (Q4/Q5 min term, sized for the wider of the two stages), and the
+    /// quantized swiglu output the down stage reads
+    d_xq: CudaSlice<i8>,
+    d_xs: CudaSlice<f32>,
+    d_ssums: CudaSlice<f32>,
+    d_fq: CudaSlice<i8>,
+    d_fs: CudaSlice<f32>,
     /// device-sampling scratch (slots 4-wide each): the packed per-row plan,
     /// the truncation params, and the sampled ids. Caller-owned and
     /// address-stable like everything else the decode graph can see.
@@ -421,13 +512,13 @@ impl Qwen4ExpGpu {
             layers.push(layer);
         }
 
-        let embed = bf16_plane(
+        let embed = Embed::Bf16(bf16_plane(
             exec,
             &st,
             "model.language_model.embed_tokens.weight",
             cfg.vocab,
             h,
-        )?;
+        )?);
         let lm_head = dense_head(exec, &st, "lm_head.weight", cfg.vocab, h)?;
         let final_mix = hc_weights(
             exec,
@@ -436,7 +527,191 @@ impl Qwen4ExpGpu {
             "model.language_model.hyper_connection_mixer",
             false,
         )?;
+        Self::from_parts(
+            exec,
+            cfg,
+            PleSource::St(st),
+            layers,
+            embed,
+            lm_head,
+            final_mix,
+            max_tokens,
+            slots,
+        )
+    }
 
+    /// The same model off a llama.cpp `qwen4exp` GGUF (see `load_gguf.rs`):
+    /// dense planes on the k-quant streams, experts as k-quant / i-quant
+    /// seats (host-mapped under `[moe_offload]` - call `enable_moe_cache`
+    /// after the KV plan to seat the slot cache), the PLE table gathered
+    /// from the mmap. `path` is the first shard of a split family or the
+    /// single file.
+    pub fn load_gguf_with_slots(
+        exec: &Arc<GpuExecutor>,
+        path: &std::path::Path,
+        max_tokens: usize,
+        slots: usize,
+    ) -> Result<Self, GpuModelError> {
+        if slots == 0 {
+            return Err(GpuModelError::Unsupported("slots must be >= 1".into()));
+        }
+        if !exec.has_delta_gate_ab() {
+            return Err(GpuModelError::Unsupported(
+                "pack has no delta_gate_ab - the folded GDN a||b plane needs it".into(),
+            ));
+        }
+        if !exec.has_qwen4exp_ops() {
+            return Err(GpuModelError::Unsupported(
+                "kernel pack has no qwen4exp family (slots 506-516) - rebuild packs/cuda".into(),
+            ));
+        }
+        if !exec.has_q4x_conv_dil_step_ring() {
+            return Err(GpuModelError::Unsupported(
+                "kernel pack has no q4x_conv_dil_step_ring (slot 533) - rebuild packs/cuda".into(),
+            ));
+        }
+        let map = Arc::new(
+            MappedGguf::open(path)
+                .map_err(|e| GpuModelError::Unsupported(format!("qwen4exp gguf: {e}")))?,
+        );
+        let cfg = Qwen4ExpConfig::from_gguf(map.gguf())
+            .map_err(|e| GpuModelError::Unsupported(format!("qwen4exp gguf config: {e}")))?;
+        let hash = Qwen4ExpConfig::ple_hash_from_gguf(map.gguf())
+            .map_err(|e| GpuModelError::Unsupported(format!("qwen4exp gguf ple: {e}")))?;
+        let mut layers = Vec::with_capacity(cfg.n_layer);
+        for li in 0..cfg.n_layer {
+            let mut layer = super::load_gguf::load_layer(exec, &map, &cfg, li)?;
+            if cfg.ple_layers.contains(&li) {
+                layer.ple = Some(super::load_gguf::load_ple(exec, &map, &cfg, li, &hash)?);
+                tracing::info!("qwen4exp: PLE n-gram table stays in the GGUF mmap (host lane)");
+            }
+            layers.push(layer);
+        }
+        let embed = super::load_gguf::load_embed(exec, &map, &cfg)?;
+        let lm_head = super::load_gguf::load_head(exec, &map, &cfg)?;
+        let final_mix = super::load_gguf::hc_weights(exec, &map, &cfg, "output_hc", false)?;
+        let src = {
+            let name = super::load_gguf::PLE_TABLE.to_owned();
+            let (info, _) = map
+                .tensor_bytes(&name)
+                .map_err(|e| GpuModelError::Unsupported(format!("{name}: {e}")))?;
+            let width = cfg.ple_embed / cfg.ple_heads();
+            let row_bytes = ple_row_bytes(info.ggml_type, width).ok_or_else(|| {
+                GpuModelError::Unsupported(format!("{name}: type {:?}", info.ggml_type))
+            })?;
+            PleSource::Gguf {
+                ty: info.ggml_type,
+                row_bytes,
+                name,
+                map: map.clone(),
+            }
+        };
+        Self::from_parts(exec, cfg, src, layers, embed, lm_head, final_mix, max_tokens, slots)
+    }
+
+    /// `[moe_offload]`: seat the VRAM slot cache over the host-mapped expert
+    /// planes (`gpu/moe_cache.rs`) inside `budget` bytes. Returns the number
+    /// of layers seated; 0 when no layer is host-mapped, the pack lacks the
+    /// cache kernels, or the budget does not fit 8 slots per layer (the
+    /// experts then serve zero-copy over PCIe). Mirrors qwen35's.
+    pub fn enable_moe_cache(&mut self, budget: u64) -> Result<usize, GpuModelError> {
+        fn host_seats(
+            l: &Qwen4ExpLayer,
+        ) -> Option<(&crate::gpu::HostMappedKq, &crate::gpu::HostMappedKq, &crate::gpu::HostMappedKq)> {
+            match &l.moe.seats {
+                ExpertSeats::Kq {
+                    gate,
+                    up,
+                    down,
+                    cache: None,
+                } => Some((gate.host()?, up.host()?, down.host()?)),
+                _ => None,
+            }
+        }
+        let price: u64 = self
+            .layers
+            .iter()
+            .filter_map(host_seats)
+            .map(|(g, u, d)| ExpertCache::slot_bytes(g, u, d))
+            .sum();
+        if price == 0 || !self.exec.has_moe_cache() {
+            return Ok(0);
+        }
+        let cfg = crate::gpu::moe_offload();
+        let budget = cfg.vram_bytes.map_or(budget, |cap| budget.min(cap));
+        let auto = (budget / price) as usize;
+        let slots = crate::gpu::moe_cache_slots_pin().unwrap_or(auto);
+        let gib = |b: u64| b as f64 / (1u64 << 30) as f64;
+        if slots < 8 {
+            tracing::warn!(
+                slots,
+                budget_gib = gib(budget),
+                "qwen4exp MoE expert offload: no room for a slot cache - experts serve \
+                 zero-copy over PCIe (slow); lower max_ctx or max_batch"
+            );
+            return Ok(0);
+        }
+        let n_expert = self.cfg.n_expert;
+        let slots = slots.min(n_expert);
+        let max_rows = self.max_tokens * self.cfg.n_active;
+        let mut seated = 0usize;
+        let mut vram = 0u64;
+        for l in self.layers.iter_mut() {
+            let cache = match &l.moe.seats {
+                ExpertSeats::Kq {
+                    gate: KqSeat::Host(g),
+                    up: KqSeat::Host(u),
+                    down: KqSeat::Host(d),
+                    cache: None,
+                } => self.exec.new_expert_cache(g, u, d, slots, max_rows)?,
+                _ => continue,
+            };
+            vram += cache.vram_bytes();
+            if let ExpertSeats::Kq { cache: c, .. } = &mut l.moe.seats {
+                *c = Some(cache);
+            }
+            seated += 1;
+        }
+        tracing::info!(
+            layers = seated,
+            slots,
+            vram_gib = gib(vram),
+            budget_gib = gib(budget),
+            "qwen4exp MoE expert offload: slot cache seated"
+        );
+        eprintln!(
+            "[q4x-moe] slot cache: {seated} layers x {slots} slots, {:.2} GiB of {:.2} GiB budget",
+            gib(vram),
+            gib(budget)
+        );
+        Ok(seated)
+    }
+
+    /// Host bytes the expert planes hold (device-mapped), for the load log.
+    pub fn expert_host_bytes(&self) -> u64 {
+        self.layers
+            .iter()
+            .map(|l| match &l.moe.seats {
+                ExpertSeats::Kq { gate, up, down, .. } => {
+                    gate.bytes().1 + up.bytes().1 + down.bytes().1
+                }
+                ExpertSeats::Nvf4 { .. } => 0,
+            })
+            .sum()
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn from_parts(
+        exec: &Arc<GpuExecutor>,
+        cfg: Qwen4ExpConfig,
+        st: PleSource,
+        layers: Vec<Qwen4ExpLayer>,
+        embed: Embed,
+        lm_head: DensePlane,
+        final_mix: HcW,
+        max_tokens: usize,
+        slots: usize,
+    ) -> Result<Self, GpuModelError> {
         let (recur, kv_k, kv_v) = alloc_state(exec, &cfg, max_tokens, slots)?;
         let mut gdn_win = Vec::with_capacity(cfg.n_layer);
         for li in 0..cfg.n_layer {
@@ -457,6 +732,8 @@ impl Qwen4ExpGpu {
         let stage = DenseStage {
             q: exec.alloc_i8(max_tokens * cfg.hc_width())?,
             rs: exec.alloc(max_tokens)?,
+            xs: exec.alloc(max_tokens * cfg.hc_width() / 32)?,
+            ssums: exec.alloc(max_tokens * cfg.hc_width() / 16)?,
             // the widest activation any dense plane reads is the 4-stream state
             x16: exec.alloc_f16(max_tokens * cfg.hc_width())?,
             xb16: exec.stream_alloc_bf16(max_tokens * cfg.hc_width())?,
@@ -1453,7 +1730,10 @@ impl Qwen4ExpGpu {
         let dump = Dump::arm();
 
         // ---- embed -> the 4-stream hyper-connection state -----------------
-        e.embed_gather_bf16(embed, &sc.d_tok, &mut sc.d_x, h, n, 1.0)?;
+        match embed {
+            Embed::Bf16(t) => e.embed_gather_bf16(t, &sc.d_tok, &mut sc.d_x, h, n, 1.0)?,
+            Embed::Kq(t) => e.kquant_gather(t, &sc.d_tok, &mut sc.d_x, h, n)?,
+        }
         for t in 0..n {
             for s in 0..hc {
                 e.copy_region(&sc.d_x, t * h, &mut sc.d_h, t * hw + s * h, h)?;
@@ -2179,7 +2459,7 @@ fn ple_device_table(exec: &Arc<GpuExecutor>, c: &Qwen4ExpConfig) -> bool {
 }
 
 fn gather_ple_rows(
-    st: &ShardedSafetensors,
+    src: &PleSource,
     c: &Qwen4ExpConfig,
     ple: &PleW,
     li: usize,
@@ -2187,6 +2467,15 @@ fn gather_ple_rows(
     first: usize,
     n: usize,
 ) -> Result<Vec<f32>, GpuModelError> {
+    let st = match src {
+        PleSource::St(st) => st,
+        PleSource::Gguf {
+            map,
+            name,
+            ty,
+            row_bytes,
+        } => return gather_ple_rows_gguf(map, name, *ty, *row_bytes, c, ple, stream, first, n),
+    };
     let width = c.ple_embed / c.ple_heads();
     let emb_p = format!("model.language_model.layers.{li}.ple.ple_embedding");
     // take the shard row split from shard 0's own shape, so a re-sharded
@@ -2236,6 +2525,51 @@ fn gather_ple_rows(
 }
 
 /// Gated DeltaNet mixer. Writes `d_mix` `[n, hidden]` and advances `state`.
+/// The GGUF twin of `gather_ple_rows`: the same hashed row ids, rows read
+/// straight out of the mmapped table tensor and decoded per 32-wide block.
+#[allow(clippy::too_many_arguments)]
+fn gather_ple_rows_gguf(
+    map: &MappedGguf,
+    name: &str,
+    ty: GgmlType,
+    row_bytes: usize,
+    c: &Qwen4ExpConfig,
+    ple: &PleW,
+    stream: &[i64],
+    first: usize,
+    n: usize,
+) -> Result<Vec<f32>, GpuModelError> {
+    let width = c.ple_embed / c.ple_heads();
+    let (_, table) = map
+        .tensor_bytes(name)
+        .map_err(|e| GpuModelError::Unsupported(format!("{name}: {e}")))?;
+    let rows = table.len() / row_bytes;
+    let eos = c.bos_id as i64;
+    let mut out = vec![0f32; n * c.ple_embed];
+    for t in 0..n {
+        let w3 = rq::ple_window(stream, first + t, eos);
+        let row_ids = rq::ple_ngram_ids(
+            &w3,
+            &ple.multipliers,
+            &ple.head_vocab,
+            &ple.head_offset,
+            c.heads_per_ngram,
+        );
+        for (hh, &rid) in row_ids.iter().enumerate() {
+            let rid = rid as usize;
+            if rid >= rows {
+                return Err(GpuModelError::Unsupported(format!(
+                    "{name}: n-gram row {rid} past the table's {rows} rows"
+                )));
+            }
+            let row = &table[rid * row_bytes..(rid + 1) * row_bytes];
+            let dst = t * c.ple_embed + hh * width;
+            ple_row_dequant(ty, row, &mut out[dst..dst + width]);
+        }
+    }
+    Ok(out)
+}
+
 #[allow(clippy::too_many_arguments)]
 fn gdn_pass(
     e: &GpuExecutor,
@@ -2991,6 +3325,78 @@ fn attn_pass(
     Ok(())
 }
 
+/// The routed pair on GGUF expert seats (k-quant / i-quant streams): the
+/// qwen35 token-batched MoE class - int8 activations per 32 with f32 block
+/// scales, exact int dots - through the `[moe_offload]` slot cache when the
+/// layer carries one and this launch's rows fit it (resolve ids -> slots on
+/// device, fill the misses from the host mirror, run the unchanged pair
+/// over the slot planes with the remapped ids). Otherwise the seats serve
+/// directly - VRAM planes, or host-mapped zero-copy over PCIe. Leaves
+/// `d_mix` = the top-k-weighted routed output `[n, hidden]`, exactly what
+/// the NVFP4 arm leaves.
+#[allow(clippy::too_many_arguments)]
+fn kq_moe_routed(
+    e: &GpuExecutor,
+    c: &Qwen4ExpConfig,
+    gate: &KqSeat,
+    up: &KqSeat,
+    down: &KqSeat,
+    cache: Option<&ExpertCache>,
+    sc: &mut Scratch,
+    n: usize,
+) -> Result<(), GpuModelError> {
+    let (h, k, ff) = (c.hidden, c.n_active, c.moe_ff);
+    let rows = n * k;
+    let cache = cache.filter(|cc| rows <= cc.slots && rows <= cc.max_rows);
+    if let Some(cc) = cache {
+        e.moe_cache_resolve(cc, &sc.d_idx, rows)?;
+        e.moe_cache_fill(cc, rows)?;
+    }
+    let idx: &CudaSlice<u32> = match cache {
+        Some(cc) => cc.idx_slot(),
+        None => &sc.d_idx,
+    };
+    let (g, u, d) = match cache {
+        Some(cc) => (&cc.gate, &cc.up, &cc.down),
+        None => (gate.kq(), up.kq(), down.kq()),
+    };
+    let needs = |t: GgmlType| matches!(t, GgmlType::Q4K | GgmlType::Q5K | GgmlType::Q4_0);
+    // block input -> int8 per 32
+    e.quantize_q8(&sc.d_bi, &mut sc.d_xq, &mut sc.d_xs, n * h)?;
+    let ng = needs(g.ty) || needs(u.ty);
+    if ng {
+        e.q8_sums_strided(&sc.d_xq, &mut sc.d_ssums, h, n)?;
+    }
+    e.kquant_moe_gate_up(
+        g,
+        u,
+        idx,
+        &sc.d_xq,
+        &sc.d_xs,
+        ng.then_some(&sc.d_ssums),
+        &mut sc.d_act,
+        k,
+        n,
+    )?;
+    e.quantize_q8(&sc.d_act, &mut sc.d_fq, &mut sc.d_fs, rows * ff)?;
+    let nd = needs(d.ty);
+    if nd {
+        e.q8_sums_strided(&sc.d_fq, &mut sc.d_ssums, ff, rows)?;
+    }
+    e.kquant_moe_down(
+        d,
+        idx,
+        &sc.d_topw,
+        &sc.d_fq,
+        &sc.d_fs,
+        nd.then_some(&sc.d_ssums),
+        &mut sc.d_mix,
+        k,
+        n,
+    )?;
+    Ok(())
+}
+
 /// 512-expert top-10 NVFP4 MoE + the bf16 sigmoid-gated shared expert.
 #[allow(clippy::too_many_arguments)]
 fn moe_pass(
@@ -3156,35 +3562,45 @@ fn moe_pass(
         )?;
     }
     let fused = false;
-    e.q4x_moe_gu_swiglu(&w.gate, &w.up, &sc.d_idx, &sc.d_bi, &mut sc.d_act, k, n)?;
-    // z-split + deterministic combine (ncu: warp-per-row is CTA-starved;
-    // ascending-z init-fold == the serial walk's exact order)
-    let zs = n <= 64;
-    if zs {
-        e.nvf4_moe_down_acc(
-            &w.down,
-            &sc.d_idx,
-            &sc.d_topw,
-            &sc.d_act,
-            &mut sc.d_mix,
-            Some(&mut sc.d_moe_part),
-            k,
-            n,
-            false,
-        )?;
-        e.moe_slot_combine_init(&sc.d_moe_part, &mut sc.d_mix, h, k.div_ceil(2), n)?;
-    } else {
-        e.nvf4_moe_down_acc(
-            &w.down,
-            &sc.d_idx,
-            &sc.d_topw,
-            &sc.d_act,
-            &mut sc.d_mix,
-            None,
-            k,
-            n,
-            false,
-        )?;
+    match &w.seats {
+        ExpertSeats::Nvf4 { gate, up, down } => {
+            e.q4x_moe_gu_swiglu(gate, up, &sc.d_idx, &sc.d_bi, &mut sc.d_act, k, n)?;
+            // z-split + deterministic combine (ncu: warp-per-row is CTA-starved;
+            // ascending-z init-fold == the serial walk's exact order)
+            let zs = n <= 64;
+            if zs {
+                e.nvf4_moe_down_acc(
+                    down,
+                    &sc.d_idx,
+                    &sc.d_topw,
+                    &sc.d_act,
+                    &mut sc.d_mix,
+                    Some(&mut sc.d_moe_part),
+                    k,
+                    n,
+                    false,
+                )?;
+                e.moe_slot_combine_init(&sc.d_moe_part, &mut sc.d_mix, h, k.div_ceil(2), n)?;
+            } else {
+                e.nvf4_moe_down_acc(
+                    down,
+                    &sc.d_idx,
+                    &sc.d_topw,
+                    &sc.d_act,
+                    &mut sc.d_mix,
+                    None,
+                    k,
+                    n,
+                    false,
+                )?;
+            }
+        }
+        ExpertSeats::Kq {
+            gate,
+            up,
+            down,
+            cache,
+        } => kq_moe_routed(e, c, gate, up, down, cache.as_ref(), sc, n)?,
     }
     if moe_forked {
         e.side_join()?;
@@ -3383,6 +3799,11 @@ impl Scratch {
             d_skp: e.alloc((c.n_expert + 1) * (sk_split().max(2) as usize))?,
             d_skc: e.alloc_u32(c.n_expert + 1)?,
             d_idx: e.alloc_u32(t * c.n_active)?,
+            d_xq: e.alloc_i8(t * h)?,
+            d_xs: e.alloc(t * h / 32)?,
+            d_ssums: e.alloc(t * h.max(c.n_active * c.moe_ff) / 16)?,
+            d_fq: e.alloc_i8(t * c.n_active * c.moe_ff)?,
+            d_fs: e.alloc(t * c.n_active * c.moe_ff / 32)?,
             d_topw: e.alloc(t * c.n_active)?,
             d_act: e.alloc(t * c.n_active * c.moe_ff)?,
             d_par: e.alloc_u32(t.max(1) * 4)?,
