@@ -139,6 +139,6 @@
 # default is sized for 16-48 GB cards; on an 8 GB card it alone eats the whole
 # grant - and the moe_offload slot cache is sized from what the plan leaves.
 # Lower it on small cards (the engine still refuses loudly if the real
-# prefill/graph scratch does not fit). Set --graph-scratch-mib / env
-# PADDOCK_GRAPH_SCRATCH_MIB the same way.
+# prefill/graph scratch does not fit).
+# Env: PADDOCK_GRAPH_SCRATCH_MIB   CLI: --graph-scratch-mib
 # graph_scratch_mib = 512
