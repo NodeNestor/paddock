@@ -1186,12 +1186,22 @@ fn load_hf_dir(
                 .map_err(|e| ServeError::Open(dir.to_path_buf(), e.to_string()))?;
             "granite".to_owned()
         }
+        // Qwen3.8-Flash-Next: NVFP4 safetensors only (no GGUF exists for this
+        // arch, and the FP8 checkpoint does not fit the disk). Serving it is
+        // what turns this lane's bare-loop numbers into board cells - before
+        // this arm, `qwen4_exp` appeared in gpu_model/ and nowhere else.
+        "qwen4_exp" => {
+            paddock_models::qwen4exp::Qwen4ExpConfig::read(dir)
+                .map_err(|e| ServeError::Open(dir.to_path_buf(), e.to_string()))?;
+            "qwen4exp".to_owned()
+        }
         other => {
             return Err(ServeError::Open(
                 dir.to_path_buf(),
                 format!(
                     "no safetensors-primary lane for model_type {other:?} - this lane serves \
-                     checkpoint directories, and only nemotron_h and granite have one"
+                     checkpoint directories, and only nemotron_h, granite and qwen4_exp \
+                     have one"
                 ),
             ));
         }
@@ -1301,6 +1311,7 @@ fn build_engine(
             gpu,
             pack.as_deref(),
             max_ctx,
+            max_batch,
             mmproj.as_deref(),
             mtp.as_deref(),
             fp8_native.as_deref(),
@@ -1318,6 +1329,10 @@ fn build_generator(
     gpu: usize,
     pack: Option<&Path>,
     max_ctx: usize,
+    // qwen4exp sizes its GDN recurrent state, both conv windows and every
+    // scratch plane by the SLOT COUNT at load, so unlike the families that
+    // allocate lazily in `enable_batch` it needs the serve width here.
+    max_batch: usize,
     mmproj: Option<&Path>,
     mtp: Option<&Path>,
     fp8_native: Option<&Path>,
@@ -1367,6 +1382,16 @@ fn build_generator(
                     paddock_engine::gpu_model::granite::GpuGranite::load_dir(exec, path, max_ctx)
                         .map_err(|e| e.to_string())?;
                 apply_kv_dtype(|d| model.set_kv_dtype(d));
+                Ok(Box::new(model) as Box<dyn Generator>)
+            }
+            "qwen4exp" => {
+                let model = paddock_engine::gpu_model::qwen4exp::Qwen4ExpGpu::load_with_slots(
+                    &exec,
+                    path,
+                    max_ctx,
+                    max_batch.max(1),
+                )
+                .map_err(|e| e.to_string())?;
                 Ok(Box::new(model) as Box<dyn Generator>)
             }
             other => Err(format!("{other}: no safetensors-primary lane")),

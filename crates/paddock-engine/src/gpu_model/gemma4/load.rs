@@ -1328,13 +1328,13 @@ impl GpuGemma4 {
                     // DEFAULT-ON at cc-10 (batch-gated at m>=16 in
                     // f8t_gemm_off) - it wins the wide nospec tick; low rungs
                     // stay tc5 under the gate. Kill: PADDOCK_NO_F8CUT.
-                    let f8cut = exec.compute_capability().0 == 10
+                    let _f8cut = exec.compute_capability().0 == 10
                         && paddock_models::dev_var_os!("PADDOCK_NO_F8CUT").is_none();
                     // The GLOBAL f8cut floor is 8, lowered for qwen3.8's
                     // thin-m tile ladder. gemma4/muse were measured at 16 and
                     // are not re-measured here, so this plane pins its own
                     // floor and stays where it was.
-                    let mut pgu = crate::gpu::F8TilePlane {
+                    let pgu = crate::gpu::F8TilePlane {
                         tiles,
                         scale,
                         flat: None,
@@ -1342,35 +1342,6 @@ impl GpuGemma4 {
                         flat_gui: false,
                         scale_il: None,
                     };
-                    if f8cut {
-                        // gluq DEFAULT on (acceptance parity, verify_ms down,
-                        // stream-PPL delta in the ulp class): the gu flat is
-                        // built gate/up-INTERLEAVED and the fused geglu+quantize
-                        // epilogue replaces the standalone glu2 quantize at
-                        // cutlass widths. flat_gui makes every plain-cutlass
-                        // intercept skip this plane, so the fallback is the
-                        // classic tc5 tile route - never a scrambled y.
-                        // Kill: PADDOCK_NO_G4_GLUQ. The silu twin (act=1)
-                        // serves muse-glimmer, opt-in until its own A/B
-                        // gates run: PADDOCK_MUSE_GLUQ=1.
-                        let gluq = paddock_models::dev_var_os!("PADDOCK_NO_G4_GLUQ").is_none()
-                            && exec.has_f8cut_gemm_gluq()
-                            && match super::glu_act_of(arch) {
-                                crate::gpu::GluAct::Gelu => true,
-                                crate::gpu::GluAct::Silu => {
-                                    paddock_models::dev_var_os!("PADDOCK_MUSE_GLUQ").is_some()
-                                }
-                            };
-                        if gluq {
-                            exec.f8t_flatten_gui(&mut pgu, gi, go * 2).map_err(|e| {
-                                LoadError::Tensor("f8t_gu gui flat".into(), e.to_string())
-                            })?;
-                        } else {
-                            exec.f8t_flatten(&mut pgu, gi, go * 2).map_err(|e| {
-                                LoadError::Tensor("f8t_gu flat".into(), e.to_string())
-                            })?;
-                        }
-                    }
                     lw.f8t_gu = Some(pgu);
                 } else {
                     let g = exec.q8_0_to_f8row(&lw.ffn_gate)?;
@@ -1380,16 +1351,7 @@ impl GpuGemma4 {
                 }
                 let (di, dn) = (lw.ffn_down.dims[0], lw.ffn_down.dims[1]);
                 let d = exec.q8_0_to_f8row(&lw.ffn_down)?;
-                let mut pdown = exec.f8_repack_tiles(d, di, dn)?;
-                if exec.compute_capability().0 == 10
-                    && paddock_models::dev_var_os!("PADDOCK_NO_F8CUT").is_none()
-                {
-                    // this build site predates the mk closure and
-                    // never flattened - the down GEMM was the 38ms tc5r
-                    // band of the c32 burst pass (18-way K-split at m=4600)
-                    exec.f8t_flatten(&mut pdown, di, dn)
-                        .map_err(|e| LoadError::Tensor("f8t_down flat".into(), e.to_string()))?;
-                }
+                let pdown = exec.f8_repack_tiles(d, di, dn)?;
                 lw.f8t_down = Some(pdown);
             }
             // attn twin: qkv + wo on the same decode class (rowwise e4m3
@@ -1416,15 +1378,12 @@ impl GpuGemma4 {
                     // DEFAULT-ON at cc-10 (batch-gated at m>=16 in
                     // f8t_gemm_off) - it wins the wide nospec tick; low rungs
                     // stay tc5 under the gate. Kill: PADDOCK_NO_F8CUT.
-                    let f8cut = exec.compute_capability().0 == 10
+                    let _f8cut = exec.compute_capability().0 == 10
                         && paddock_models::dev_var_os!("PADDOCK_NO_F8CUT").is_none();
                     let mk = |w: &crate::gpu::RepackedQ8| -> Result<_, LoadError> {
                         let (i, o) = (w.dims[0], w.dims[1]);
                         let r = exec.q8_0_to_f8row(w)?;
-                        let mut p = exec.f8_repack_tiles(r, i, o)?;
-                        if f8cut {
-                            exec.f8t_flatten(&mut p, i, o)?;
-                        }
+                        let p = exec.f8_repack_tiles(r, i, o)?;
                         Ok(p)
                     };
                     // the concat plane needs one operand class across all three
@@ -1470,7 +1429,7 @@ impl GpuGemma4 {
                         // per-plane floor (PADDOCK_F8CUT_QKV_MINB) confines
                         // routing to the wide prefill band where the
                         // 128x128 cutlass arm wins (decode/chunk stay tc5).
-                        let mut pqkv = crate::gpu::F8TilePlane {
+                        let pqkv = crate::gpu::F8TilePlane {
                             tiles,
                             scale,
                             flat: None,
@@ -1478,22 +1437,6 @@ impl GpuGemma4 {
                             flat_gui: false,
                             scale_il: None,
                         };
-                        let f8cut_qkv = exec.compute_capability().0 == 10
-                            && crate::envset::env_on("PADDOCK_F8CUT")
-                            && crate::envset::env_on("PADDOCK_F8CUT_QKV");
-                        if f8cut_qkv {
-                            let qkv_rows = spos;
-                            exec.f8t_flatten(&mut pqkv, n_embd, qkv_rows).map_err(|e| {
-                                LoadError::Tensor("f8t_qkv flat".into(), e.to_string())
-                            })?;
-                            // same as the gu plane above: 16 was this plane's
-                            // effective floor before moved the global
-                            // default, so spell it rather than inherit 8.
-                            pqkv.flat_minb = std::env::var("PADDOCK_F8CUT_QKV_MINB")
-                                .ok()
-                                .and_then(|v| v.parse().ok())
-                                .unwrap_or(16);
-                        }
                         lw.f8t_qkv = Some(pqkv);
                     } else {
                         lw.f8t_wq = Some(mk(&lw.wq)?);

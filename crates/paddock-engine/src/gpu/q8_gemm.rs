@@ -402,6 +402,71 @@ impl GpuExecutor {
         })
     }
 
+    /// `f16_gemm` over a ROW SEGMENT of the plane: rows `[first_row,
+    /// first_row + out_dim)` of a `[*, in_dim]` f16 plane. The kernel takes a
+    /// base pointer and a row count, so the segment is a pointer offset - the
+    /// same trick `bf16_gemm_rows` uses on the bf16 twin.
+    #[allow(clippy::too_many_arguments)]
+    pub fn f16_gemm_rows(
+        &self,
+        w16: &CudaSlice<f16>,
+        first_row: usize,
+        in_dim: usize,
+        out_dim: usize,
+        x16: &CudaSlice<f16>,
+        y: &mut CudaSlice<f32>,
+        batch: usize,
+    ) -> Result<(), GpuError> {
+        let f = self
+            .kernels
+            .f16_gemm
+            .ok_or(GpuError::MissingOp("f16_gemm"))?;
+        let (wp, _g1) = w16.device_ptr(&self.stream);
+        let (xp, _g2) = x16.device_ptr(&self.stream);
+        let (yp, _g3) = y.device_ptr_mut(&self.stream);
+        let wp = wp + (first_row * in_dim * std::mem::size_of::<f16>()) as u64;
+        // SAFETY: ABI contract (slot 383); the segment stays inside the plane
+        check(unsafe {
+            f(
+                wp as *const _,
+                xp as *const _,
+                yp as *mut _,
+                0.0f32,
+                in_dim as u32,
+                out_dim as u32,
+                batch as u32,
+                self.stream_ptr(),
+            )
+        })
+    }
+
+    /// Declare whether another kernel may be RESIDENT while the f16 tensor-core
+    /// lane runs (slot 535). `false` clamps the tc5g/tc5gp K-split to 1.
+    ///
+    /// That split is a cross-CTA producer/consumer - slice 0 stores, slices >0
+    /// spin on a device flag - and its factor is elected from `2*nsm / U0`,
+    /// i.e. on the assumption that the launch owns the machine. A caller with a
+    /// forked side stream breaks that assumption and the device hangs at 100%
+    /// with no error. Every flag access is guarded by `KS > 1`, so clamping
+    /// makes the protocol unreachable rather than merely unlikely.
+    ///
+    /// Read at DISPATCH time, so a graph captured while it is `false` bakes the
+    /// KS=1 election - which is what makes it safe to set once per walk.
+    /// No-op on a pack without the slot; the caller checks `has_f16_ksplit_set`
+    /// before enabling the lane in a forked walk.
+    pub fn f16_ksplit_set(&self, on: bool) -> Result<(), GpuError> {
+        let f = self
+            .kernels
+            .f16_ksplit_set
+            .ok_or(GpuError::MissingOp("f16_ksplit_set"))?;
+        // SAFETY: ABI contract (slot 535) - a plain atomic store, no buffers
+        check(unsafe { f(if on { 1 } else { 0 }) })
+    }
+
+    pub fn has_f16_ksplit_set(&self) -> bool {
+        self.kernels.f16_ksplit_set.is_some()
+    }
+
     pub fn has_f16_gemm(&self) -> bool {
         self.kernels.f16_gemm.is_some()
     }

@@ -12,11 +12,6 @@ use cudarc::driver::{CudaSlice, DevicePtr, DevicePtrMut};
 /// because a paddock process serves one model/policy.
 static F8CUT_SPEC_OFF: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
-/// Whether the F8CUT intercept is disabled for this process (spec lane).
-fn f8cut_spec_off() -> bool {
-    F8CUT_SPEC_OFF.load(std::sync::atomic::Ordering::Relaxed)
-}
-
 /// Width floor for the F8CUT intercept in a SPEC process. The regression
 /// that motivated it is an ~18-row c4-spec verify; the c32-spec 96-row
 /// verify measured cutlass AHEAD (-1.2ms/tick, acceptance-matched). 32
@@ -30,10 +25,6 @@ static F8CUT_SPEC_MINB: std::sync::atomic::AtomicUsize = std::sync::atomic::Atom
 /// Whether the kt lin arm can actually launch here. Set false on the first
 /// 801 (its rowwise kernel is compiled for cc 12 only); see f8d_gemm_mma_ks.
 static LIN_KT_OK: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(true);
-
-fn f8cut_spec_minb() -> usize {
-    F8CUT_SPEC_MINB.load(std::sync::atomic::Ordering::Relaxed)
-}
 
 impl GpuExecutor {
     /// Ride tc5r instead of the vendored-cutlass F8CUT intercept, process-wide.
@@ -753,30 +744,6 @@ impl GpuExecutor {
         out_dim: usize,
         batch: usize,
     ) -> Result<(), GpuError> {
-        // The vendored cutlass route: a flat twin on the plane wins
-        // every measured width (m=32 decode through m=232 chunks: gu 40.2us
-        // vs ~55, o 8.2 vs ~52). f32-accumulation ORDER differs from the tc5
-        // chains - acceptance-gated class change, not bit parity. y is final.
-        // Debug discriminator: PADDOCK_F8CUT_MINB restricts the
-        // cutlass intercept to batch >= MINB so chunk-only / decode-only
-        // routing can be probed; below the floor the classic route runs.
-        fn f8cut_minb() -> usize {
-            static MINB: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
-            // This floor was 16 because pd_f8cut_gemm elected one tile
-            // (Narrow, 64x64x128 cluster 1x1) for every m, and that tile is
-            // right only from m=32 up - at m=8 it lost to tc5r on every shape
-            // (a blanket m>=1 regressed c1 and c4). Giving the intercept a
-            // thin-m tile ladder moved the floor to 8: c8 gained and c1/c4
-            // are untouched, because they sit below 8.
-            // Per-plane flat_minb still RAISES it: gemma4/muse keep 16 there.
-            // PADDOCK_F8CUT_MINB overrides (max'd with each plane's flat_minb).
-            *MINB.get_or_init(|| {
-                paddock_models::dev_var!("PADDOCK_F8CUT_MINB")
-                    .ok()
-                    .and_then(|v| v.parse().ok())
-                    .unwrap_or(8)
-            })
-        }
         if paddock_models::dev_var_os!("PADDOCK_F8CUT_DBG").is_some() && batch >= 1024 {
             eprintln!(
                 "[f8cut-dbg] off={} out={} in={} m={} flat={} minb={}",
@@ -787,42 +754,6 @@ impl GpuExecutor {
                 w.flat.is_some(),
                 w.flat_minb
             );
-        }
-        if let (Some(flat), Some(fc)) = (&w.flat, self.kernels.f8cut_gemm) {
-            if w.flat_gui
-                || f8cut_spec_off()
-                || batch < f8cut_minb().max(w.flat_minb).max(f8cut_spec_minb())
-            {
-                // fall through to the classic route below (spec lane, or below
-                // the wide-batch dispatch floor)
-            } else {
-                // The flat twin is [out][in] row-major, so the sub-view offset
-                // is row_tile_off*128 ROWS into flat and scale - the
-                // corruption was this intercept reading row 0 (Q weights) for
-                // the K/V sub-views.
-                debug_assert!((row_tile_off * 128 + out_dim) * in_dim <= flat.len());
-                let (wp, _g1) = flat.device_ptr(&self.stream);
-                let (sp, _g2) = w.scale.device_ptr(&self.stream);
-                let (xp, _g3) = xq.device_ptr(&self.stream);
-                let (rp, _g4) = xrs.device_ptr(&self.stream);
-                let (yp, _g5) = y.device_ptr_mut(&self.stream);
-                let wf = wp + (row_tile_off * 128 * in_dim) as u64;
-                let sf = sp + (row_tile_off * 128 * 4) as u64;
-                // SAFETY: ABI contract (slots 372-373); sub-view bounds asserted
-                return check(unsafe {
-                    fc(
-                        wf as *const _,
-                        sf as *const _,
-                        xp as *const _,
-                        rp as *const _,
-                        yp as *mut _,
-                        in_dim as u32,
-                        out_dim as u32,
-                        batch as u32,
-                        self.stream_ptr(),
-                    )
-                });
-            }
         }
         let f = self
             .kernels
@@ -952,175 +883,6 @@ impl GpuExecutor {
         })
     }
 
-    /// build the flat k-major e4m3 twin of a tile plane for the
-    /// vendored cutlass route (pd_f8t_detile inverts the SW128 tile image;
-    /// the rowwise scale vector is shared). ~in*out extra bytes per plane.
-    pub fn f8t_flatten(
-        &self,
-        p: &mut F8TilePlane,
-        in_dim: usize,
-        out_dim: usize,
-    ) -> Result<(), GpuError> {
-        let f = self
-            .kernels
-            .f8t_detile
-            .ok_or(GpuError::MissingOp("f8t_detile"))?;
-        let mut flat = self.alloc_u8(in_dim * out_dim)?;
-        {
-            let (sp, _g1) = p.tiles.device_ptr(&self.stream);
-            let (dp, _g2) = flat.device_ptr_mut(&self.stream);
-            // SAFETY: ABI contract (slot 373); 128-multiple dims
-            check(unsafe {
-                f(
-                    sp as *const _,
-                    dp as *mut _,
-                    in_dim as u32,
-                    out_dim as u32,
-                    self.stream_ptr(),
-                )
-            })?;
-        }
-        p.flat = Some(flat);
-        Ok(())
-    }
-
-    /// P62 gluq: gate/up-INTERLEAVED flat twin (row 2f = gate f, 2f+1 =
-    /// up f/out2 half) + the matching interleaved scale vector. Marks the
-    /// plane `flat_gui` so every plain-cutlass intercept skips it - only
-    /// the gluq export understands this layout; classic tile-image routes
-    /// never read `flat` and are unaffected.
-    pub fn f8t_flatten_gui(
-        &self,
-        p: &mut F8TilePlane,
-        in_dim: usize,
-        out_dim: usize,
-    ) -> Result<(), GpuError> {
-        let f = self
-            .kernels
-            .f8t_detile_gui
-            .ok_or(GpuError::MissingOp("f8t_detile_gui"))?;
-        let mut flat = self.alloc_u8(in_dim * out_dim)?;
-        {
-            let (sp, _g1) = p.tiles.device_ptr(&self.stream);
-            let (dp, _g2) = flat.device_ptr_mut(&self.stream);
-            // SAFETY: ABI contract (slot 433); 128-multiple dims, out even
-            check(unsafe {
-                f(
-                    sp as *const _,
-                    dp as *mut _,
-                    in_dim as u32,
-                    out_dim as u32,
-                    self.stream_ptr(),
-                )
-            })?;
-        }
-        let mut host = vec![0f32; out_dim];
-        self.stream
-            .memcpy_dtoh(&p.scale, &mut host)
-            .map_err(|e| GpuError::Driver(e.to_string()))?;
-        self.stream
-            .synchronize()
-            .map_err(|e| GpuError::Driver(e.to_string()))?;
-        let half = out_dim / 2;
-        let mut il = vec![0f32; out_dim];
-        for i in 0..half {
-            il[2 * i] = host[i];
-            il[2 * i + 1] = host[half + i];
-        }
-        p.scale_il = Some(
-            self.stream
-                .clone_htod(&il)
-                .map_err(|e| GpuError::Driver(e.to_string()))?,
-        );
-        p.flat = Some(flat);
-        p.flat_gui = true;
-        Ok(())
-    }
-
-    pub fn has_f8cut_gemm_gluq(&self) -> bool {
-        self.kernels.f8cut_gemm_gluq.is_some() && self.kernels.f8t_detile_gui.is_some()
-    }
-
-    /// P62 gluq chain: gu GEMM with fused geglu+per-fragment quantize, then
-    /// the row-scale fixup - produces the down GEMM's (q, rscale) in one
-    /// call; the standalone glu2 quantize launch is gone. `scratch` holds
-    /// the {act, scale} byte pairs (batch * 2 * n_ff bytes; the caller
-    /// reuses the f32 gu buffer, which is 4x that). Ok(false) = the export
-    /// declined the shape/act (rc -2) and the caller keeps the classic
-    /// chain - the tc5 tile route, not the plain-cutlass one (this plane's
-    /// flat is interleaved).
-    /// `xq_q` is both the GEMM's activation input ([batch][in_dim] head)
-    /// and the fixup's q output ([batch][n_ff]) - the canonical pf_e4q
-    /// in-place pattern the standalone quantize kernels already use; the
-    /// two launches are stream-serialized, so the read completes before
-    /// the write. Same for `xrs_rs` (xrs in, rscale out).
-    #[allow(clippy::too_many_arguments)]
-    pub fn f8cut_gemm_gluq(
-        &self,
-        w: &F8TilePlane,
-        xq_q: &mut CudaSlice<i8>,
-        xrs_rs: &mut CudaSlice<f32>,
-        scratch: &mut CudaSlice<f32>,
-        in_dim: usize,
-        n_ff: usize,
-        batch: usize,
-        act: u32,
-    ) -> Result<bool, GpuError> {
-        let f = self
-            .kernels
-            .f8cut_gemm_gluq
-            .ok_or(GpuError::MissingOp("f8cut_gemm_gluq"))?;
-        let flat = w.flat.as_ref().ok_or(GpuError::MissingOp("gluq flat"))?;
-        let wrs = w
-            .scale_il
-            .as_ref()
-            .ok_or(GpuError::MissingOp("gluq scale_il"))?;
-        debug_assert!(w.flat_gui);
-        debug_assert!(2 * n_ff * in_dim <= flat.len());
-        debug_assert!(batch * 2 * n_ff <= scratch.len() * 4);
-        debug_assert!(batch * n_ff.max(in_dim) <= xq_q.len());
-        debug_assert!(batch <= xrs_rs.len());
-        let (wp, _g1) = flat.device_ptr(&self.stream);
-        let (sp, _g2) = wrs.device_ptr(&self.stream);
-        let (xp, _g3) = xq_q.device_ptr_mut(&self.stream);
-        let (rp, _g4) = xrs_rs.device_ptr_mut(&self.stream);
-        let (cp, _g5) = scratch.device_ptr_mut(&self.stream);
-        // SAFETY: ABI contract (slot 432); bounds asserted above; in-place
-        // xq/q and xrs/rscale are stream-serialized inside the export
-        let rc = unsafe {
-            f(
-                wp as *const _,
-                sp as *const _,
-                xp as *const _,
-                rp as *const _,
-                cp as *mut _,
-                xp as *mut _,
-                rp as *mut _,
-                in_dim as u32,
-                n_ff as u32,
-                batch as u32,
-                act,
-                self.stream_ptr(),
-            )
-        };
-        if rc == -2 {
-            return Ok(false);
-        }
-        drop(_g1);
-        drop(_g2);
-        drop(_g3);
-        drop(_g4);
-        drop(_g5);
-        check(rc)?;
-        // one-shot engagement witness per width class (A/B protocol: every
-        // arm leg must PROVE the lane ran; grep "[gluq] elected")
-        static WITNESS: std::sync::OnceLock<()> = std::sync::OnceLock::new();
-        WITNESS.get_or_init(|| {
-            eprintln!("[gluq] elected: batch={batch} n_ff={n_ff} in={in_dim}");
-        });
-        Ok(true)
-    }
-
     pub fn f8t_gemm(
         &self,
         w: &F8TilePlane,
@@ -1153,61 +915,6 @@ impl GpuExecutor {
         out_dim: usize,
         batch: usize,
     ) -> Result<u32, GpuError> {
-        // The vendored cutlass route: a flat twin on the plane wins
-        // every measured width (m=32 decode through m=232 chunks: gu 40.2us
-        // vs ~55, o 8.2 vs ~52). f32-accumulation ORDER differs from the tc5
-        // chains - acceptance-gated class change, not bit parity. y is final.
-        // Debug discriminator: PADDOCK_F8CUT_MINB restricts the
-        // cutlass intercept to batch >= MINB so chunk-only / decode-only
-        // routing can be probed; below the floor the classic route runs.
-        fn f8cut_minb() -> usize {
-            static MINB: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
-            // This floor was 16 because pd_f8cut_gemm elected one tile
-            // (Narrow, 64x64x128 cluster 1x1) for every m, and that tile is
-            // right only from m=32 up - at m=8 it lost to tc5r on every shape
-            // (a blanket m>=1 regressed c1 and c4). Giving the intercept a
-            // thin-m tile ladder moved the floor to 8: c8 gained and c1/c4
-            // are untouched, because they sit below 8.
-            // Per-plane flat_minb still RAISES it: gemma4/muse keep 16 there.
-            // PADDOCK_F8CUT_MINB overrides (max'd with each plane's flat_minb).
-            *MINB.get_or_init(|| {
-                paddock_models::dev_var!("PADDOCK_F8CUT_MINB")
-                    .ok()
-                    .and_then(|v| v.parse().ok())
-                    .unwrap_or(8)
-            })
-        }
-        if let (Some(flat), Some(fc)) = (&w.flat, self.kernels.f8cut_gemm) {
-            if w.flat_gui
-                || f8cut_spec_off()
-                || batch < f8cut_minb().max(w.flat_minb).max(f8cut_spec_minb())
-            {
-                // fall through to the classic route below (spec lane, or below
-                // the wide-batch dispatch floor)
-            } else {
-                debug_assert_eq!(flat.len(), out_dim * in_dim);
-                let (wp, _g1) = flat.device_ptr(&self.stream);
-                let (sp, _g2) = w.scale.device_ptr(&self.stream);
-                let (xp, _g3) = xq.device_ptr(&self.stream);
-                let (rp, _g4) = xrs.device_ptr(&self.stream);
-                let (yp, _g5) = y.device_ptr_mut(&self.stream);
-                // SAFETY: ABI contract (slots 372-373)
-                return check(unsafe {
-                    fc(
-                        wp as *const _,
-                        sp as *const _,
-                        xp as *const _,
-                        rp as *const _,
-                        yp as *mut _,
-                        in_dim as u32,
-                        out_dim as u32,
-                        batch as u32,
-                        self.stream_ptr(),
-                    )
-                })
-                .map(|_| 1u32);
-            }
-        }
         let f = self
             .kernels
             .f8t_gemm2
@@ -1337,57 +1044,6 @@ impl GpuExecutor {
             GluAct::Gelu => self.kernels.quantize_e4m3_geglu2_row.is_some(),
             GluAct::Silu => self.kernels.quantize_e4m3_swiglu2_row.is_some(),
         }
-    }
-
-    /// Fused gated-FFN fold + per-ROW e4m3 quant over a [rows][2*n_ff]
-    /// gate|up buffer, compact [rows][n_ff] output - the f8t gu epilogue.
-    /// The b16 pair: wide cutlass GEMM writing bf16 D into an
-    /// f32-typed slice (half occupancy - the p16 convention), and the
-    /// bf16-in whole-row glu2 quantizer that consumes it. Pass-band only
-    /// (m >= 1024); callers guard on both slots being present.
-    pub fn f8cut_gemm_b16(
-        &self,
-        w: &F8TilePlane,
-        row_tile_off: usize,
-        xq: &CudaSlice<i8>,
-        xrs: &CudaSlice<f32>,
-        y: &mut CudaSlice<f32>,
-        in_dim: usize,
-        out_dim: usize,
-        batch: usize,
-    ) -> Result<(), GpuError> {
-        let f = self
-            .kernels
-            .f8cut_gemm_b16
-            .ok_or(GpuError::MissingOp("f8cut_gemm_b16"))?;
-        let flat = w.flat.as_ref().ok_or(GpuError::MissingOp("f8cut flat"))?;
-        debug_assert!((row_tile_off * 128 + out_dim) * in_dim <= flat.len());
-        debug_assert!(out_dim * batch / 2 <= y.len());
-        let (wp, _g1) = flat.device_ptr(&self.stream);
-        let (sp, _g2) = w.scale.device_ptr(&self.stream);
-        let (xp, _g3) = xq.device_ptr(&self.stream);
-        let (rp, _g4) = xrs.device_ptr(&self.stream);
-        let (yp, _g5) = y.device_ptr_mut(&self.stream);
-        let wf = wp + (row_tile_off * 128 * in_dim) as u64;
-        let sf = sp + (row_tile_off * 128 * 4) as u64;
-        // SAFETY: ABI contract (slot 377); sub-view bounds asserted
-        check(unsafe {
-            f(
-                wf as *const _,
-                sf as *const _,
-                xp as *const _,
-                rp as *const _,
-                yp as *mut _,
-                in_dim as u32,
-                out_dim as u32,
-                batch as u32,
-                self.stream_ptr(),
-            )
-        })
-    }
-
-    pub fn has_glu2_b16(&self) -> bool {
-        self.kernels.f8cut_gemm_b16.is_some() && self.kernels.quantize_e4m3_glu2_row_b16.is_some()
     }
 
     pub fn quantize_e4m3_glu2_row_b16(

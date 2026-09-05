@@ -269,6 +269,52 @@ impl GpuExecutor {
     /// `matvec_f32_batch` over a bare buffer + explicit dims - the k-quant
     /// prefill interim runs it over a transient dequant scratch that has no
     /// DeviceTensor identity (its dims change per weight).
+    /// Batch-1 split-K twin of `matvec_f32_raw` (slot 519). `partials` is
+    /// `out_dim * split` f32 and `counters` is `out_dim` u32, both caller-owned
+    /// and address-stable; the kernel leaves `counters` zeroed so a captured
+    /// graph replays cleanly. Deterministic: the winning block combines the
+    /// row's partials in index order, so this is bit-stable run to run - it is
+    /// not bit-equal to the single-block kernel, which sums the whole K in one
+    /// tree, hence a separate slot and a call-site election.
+    ///
+    /// `Ok(false)` when the pack predates the slot, so the caller falls back.
+    #[allow(clippy::too_many_arguments)]
+    pub fn matvec_f32_sk(
+        &self,
+        w: &CudaSlice<f32>,
+        in_dim: usize,
+        out_dim: usize,
+        x: &CudaSlice<f32>,
+        y: &mut CudaSlice<f32>,
+        partials: &mut CudaSlice<f32>,
+        counters: &mut CudaSlice<u32>,
+        split: u32,
+    ) -> Result<bool, GpuError> {
+        let Some(f) = self.kernels.matvec_f32_sk else {
+            return Ok(false);
+        };
+        let (wp, _g1) = w.device_ptr(&self.stream);
+        let (xp, _g2) = x.device_ptr(&self.stream);
+        let (yp, _g3) = y.device_ptr_mut(&self.stream);
+        let (pp, _g4) = partials.device_ptr_mut(&self.stream);
+        let (cp, _g5) = counters.device_ptr_mut(&self.stream);
+        // SAFETY: ABI contract; scratch is sized by the caller for out_dim*split
+        check(unsafe {
+            f(
+                wp as *const _,
+                xp as *const _,
+                yp as *mut _,
+                pp as *mut _,
+                cp as *mut _,
+                in_dim as u32,
+                out_dim as u32,
+                split,
+                self.stream_ptr(),
+            )
+        })?;
+        Ok(true)
+    }
+
     pub fn matvec_f32_raw(
         &self,
         w: &CudaSlice<f32>,

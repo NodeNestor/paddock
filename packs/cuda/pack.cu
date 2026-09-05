@@ -16,7 +16,9 @@
 #include "src/attn/lagd.cuh"        // hd128 v5-class decode partial (needs decode's ldm/mma/cpa helpers; f32_qkv launches it)
 #include "src/gemm/f32_qkv.cuh"
 #include "src/qwen4exp.cuh"   // qwen4_exp (Qwen3.8-Flash-Next) new math: grouped (1+w) norm, hyper-connection mix/combine, PLE gate, dilated conv, GDN sigmoid gated-norm + repeat-interleave split; plain CUDA, needs f32_qkv's pd_launch_status
-#include "src/gemm/bf16_dense.cuh"  // bf16 weight planes (mixed UD files); abi.cuh helpers only
+#include "src/gemm/bf16_dense.cuh"
+#include "src/gemm/exp_lt.cuh"
+#include "src/gemm/lowm.cuh"  // bf16 weight planes (mixed UD files); abi.cuh helpers only
 #include "src/attn/fmha16.cuh"      // Q16xKv128 tensor-core decode attention, muse hd128/G16 (needs bf16_dense's pd_bf16m_ldm/mma)
 #include "src/deltanet/core.cuh"
 #include "src/vision.cuh"

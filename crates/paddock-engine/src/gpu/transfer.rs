@@ -46,6 +46,13 @@ impl GpuExecutor {
         self.stream.clone_dtoh(buf).map_err(drv)
     }
 
+    /// Device -> host copy of `n` bytes (weight-prep self-checks read bf16
+    /// planes, which live as byte slices).
+    pub fn to_host_u8_len(&self, buf: &CudaSlice<u8>, n: usize) -> Result<Vec<u8>, GpuError> {
+        self.stream.synchronize().map_err(drv)?;
+        self.stream.clone_dtoh(&buf.slice(0..n)).map_err(drv)
+    }
+
     /// Sync then copy the first `n` elements of a device buffer to host -
     /// for scratch planes sized to a high-water mark, where copying the whole
     /// allocation would move megabytes of stale tail per call.
@@ -144,6 +151,11 @@ impl GpuExecutor {
 
     /// Upload a u32 host slice (position/index buffers).
     pub fn to_device_u32(&self, host: &[u32]) -> Result<CudaSlice<u32>, GpuError> {
+        self.stream.clone_htod(host).map_err(drv)
+    }
+
+    /// Upload an i32 host slice (trtllm repack index arrays).
+    pub fn to_device_i32(&self, host: &[i32]) -> Result<CudaSlice<i32>, GpuError> {
         self.stream.clone_htod(host).map_err(drv)
     }
 
@@ -354,6 +366,11 @@ impl GpuExecutor {
         self.stream.alloc_zeros(n).map_err(drv)
     }
 
+    /// bf16 twin of `alloc_f16` (TGV activation staging).
+    pub fn stream_alloc_bf16(&self, n: usize) -> Result<CudaSlice<half::bf16>, GpuError> {
+        self.stream.alloc_zeros(n).map_err(drv)
+    }
+
     /// Upload host f32 values as an f16 device plane, checked for overflow.
     ///
     /// The counterpart to [`Self::upload_f16`] for weights a loader BUILDS
@@ -362,6 +379,13 @@ impl GpuExecutor {
     /// GGUF tensor, so they cannot go through the map-based path, but they want
     /// exactly the same storage class. `what` names the plane in the overflow
     /// error, since the caller's slice has no name of its own.
+    /// Upload an f16 slice a loader has already narrowed. `to_device_f16`
+    /// widens through f32 first, which is four minutes of load on a 3.2G-element
+    /// dense set; a caller that converts bit-level hands the result straight in.
+    pub fn f16_to_device(&self, host: &[f16]) -> Result<CudaSlice<f16>, GpuError> {
+        self.stream.clone_htod(host).map_err(drv)
+    }
+
     pub fn to_device_f16(&self, host: &[f32], what: &str) -> Result<CudaSlice<f16>, GpuError> {
         let h = narrow_to_f16(host, what)?;
         self.stream.clone_htod(&h).map_err(drv)
@@ -370,6 +394,23 @@ impl GpuExecutor {
     /// Convert `n` f32 elements into an f16 destination (`dst[i] = f16(src[i])`).
     /// Used to write one post-rope K/V row into the fp16 cache on the single-stream
     /// path (the batched path converts inside kv_append_batch).
+    /// f32 -> bf16 twin (slot 548): stages activations for the TGV GEMM.
+    pub fn convert_f32_bf16(
+        &self,
+        src: &CudaSlice<f32>,
+        dst: &mut CudaSlice<half::bf16>,
+        n: usize,
+    ) -> Result<(), GpuError> {
+        let f = self
+            .kernels
+            .convert_f32_bf16
+            .ok_or(GpuError::MissingOp("convert_f32_bf16"))?;
+        let (sp, _g1) = src.device_ptr(&self.stream);
+        let (dp, _g2) = dst.device_ptr_mut(&self.stream);
+        // SAFETY: ABI contract; both buffers hold >= n elements
+        check(unsafe { f(sp as *const _, dp as *mut _, n as u64, self.stream_ptr()) })
+    }
+
     pub fn convert_f32_f16(
         &self,
         src: &CudaSlice<f32>,

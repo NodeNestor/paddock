@@ -117,6 +117,222 @@ impl GpuExecutor {
         })
     }
 
+    pub fn has_attn_decode_batch_ps(&self) -> bool {
+        self.kernels.attn_decode_batch_ps.is_some()
+    }
+
+    pub fn has_attn_decode_fmha(&self) -> bool {
+        self.kernels.attn_decode_fmha.is_some()
+    }
+
+    /// `attn_decode_batch` with the PARALLEL-SCORE walk (slot 536).
+    ///
+    /// Same arguments, same result class, different summation order in the
+    /// score: the shipped walk gives the per-key dot product to `n_t` threads
+    /// (16 of 256 at head_dim 256) and parks the other seven warps at the next
+    /// barrier for its whole 256-step serial loop. ncu on the shipped kernel
+    /// at c32: stall_barrier is 41.5% of the 23.0 cycles between issued
+    /// instructions, DRAM throughput 1.23%, achieved occupancy 58.9% - the
+    /// idle warps bind it, not bandwidth and not occupancy.
+    #[allow(clippy::too_many_arguments)]
+    pub fn attn_decode_batch_ps(
+        &self,
+        q: &CudaSlice<f32>,
+        kc: &CudaSlice<u8>,
+        vc: &CudaSlice<u8>,
+        sinks: &CudaSlice<f32>,
+        out: &mut CudaSlice<f32>,
+        positions: &CudaSlice<u32>,
+        slots: Option<&CudaSlice<u32>>,
+        n_heads: usize,
+        n_kv_heads: usize,
+        head_dim: usize,
+        max_ctx: usize,
+        kv_dim: usize,
+        swa_window: usize,
+        batch: usize,
+        scale: f32,
+        kv_dtype: KvDtype,
+    ) -> Result<(), GpuError> {
+        let f = self
+            .kernels
+            .attn_decode_batch_ps
+            .ok_or(GpuError::MissingOp("attn_decode_batch_ps"))?;
+        let (qp, _g1) = q.device_ptr(&self.stream);
+        let (kp, _g2) = kc.device_ptr(&self.stream);
+        let (vp, _g3) = vc.device_ptr(&self.stream);
+        let (sp, _g4) = sinks.device_ptr(&self.stream);
+        let (op, _g5) = out.device_ptr_mut(&self.stream);
+        let (pp, _g6) = positions.device_ptr(&self.stream);
+        let slot_guard = slots.map(|s| s.device_ptr(&self.stream));
+        let slp = match &slot_guard {
+            Some((p, _)) => *p as *const core::ffi::c_void,
+            None => std::ptr::null(),
+        };
+        // SAFETY: ABI contract; per-sequence caches sized [batch, max_ctx, kv_dim]
+        check(unsafe {
+            f(
+                qp as *const _,
+                kp as *const _,
+                vp as *const _,
+                sp as *const _,
+                op as *mut _,
+                pp as *const _,
+                slp,
+                n_heads as u32,
+                n_kv_heads as u32,
+                head_dim as u32,
+                max_ctx as u32,
+                kv_dim as u32,
+                swa_window as u32,
+                batch as u32,
+                scale,
+                kv_dtype as u32,
+                self.stream_ptr(),
+            )
+        })
+    }
+
+    /// Paged KV append: scatter each row's kv into the shared block pool
+    /// `[n_blocks, 16, kv_dim]` at `block_tables[slot*blocks_per_slot + pos/16]`,
+    /// intra-block row `pos%16`. Paged twin of [`Self::kv_append_batch`].
+    #[allow(clippy::too_many_arguments)]
+    /// Row-window twin of [`Self::kv_append_batch_paged`] (offset pointers,
+    /// the `_rows` pattern): appends rows [row_off, row_off+rows) of the
+    /// staged kv/positions/slots buffers. The SWA ring-shrink sub-spans ride
+    /// this - append+attend advance one sub-span at a time so the ring only
+    /// has to absorb a sub-span, not a whole prefill chunk.
+    #[allow(clippy::too_many_arguments)]
+    /// SPLIT-KV fmha decode (slot 545): `part` is caller-owned scratch of
+    /// batch*n_heads*split*(head_dim+2) f32; own numeric class, env-gated.
+    #[allow(clippy::too_many_arguments)]
+    pub fn attn_decode_fmha_sp(
+        &self,
+        q: &CudaSlice<f32>,
+        kc: &CudaSlice<u8>,
+        vc: &CudaSlice<u8>,
+        sinks: &CudaSlice<f32>,
+        out: &mut CudaSlice<f32>,
+        part: &mut CudaSlice<f32>,
+        positions: &CudaSlice<u32>,
+        slots: Option<&CudaSlice<u32>>,
+        n_heads: usize,
+        n_kv_heads: usize,
+        head_dim: usize,
+        max_ctx: usize,
+        kv_dim: usize,
+        swa_window: usize,
+        batch: usize,
+        split: usize,
+        scale: f32,
+        kv_dtype: KvDtype,
+    ) -> Result<(), GpuError> {
+        let f = self
+            .kernels
+            .attn_decode_fmha_sp
+            .ok_or(GpuError::MissingOp("attn_decode_fmha_sp"))?;
+        debug_assert!(part.len() >= batch * n_heads * split * (head_dim + 2));
+        let (qp, _g1) = q.device_ptr(&self.stream);
+        let (kp, _g2) = kc.device_ptr(&self.stream);
+        let (vp, _g3) = vc.device_ptr(&self.stream);
+        let (sp, _g4) = sinks.device_ptr(&self.stream);
+        let (op, _g5) = out.device_ptr_mut(&self.stream);
+        let (ptp, _g6) = part.device_ptr_mut(&self.stream);
+        let (pp, _g7) = positions.device_ptr(&self.stream);
+        let slot_guard = slots.map(|s| s.device_ptr(&self.stream));
+        let slp = match &slot_guard {
+            Some((p, _)) => *p as *const core::ffi::c_void,
+            None => std::ptr::null(),
+        };
+        // SAFETY: ABI contract (slot 545); scratch size checked above
+        check(unsafe {
+            f(
+                qp as *const _,
+                kp as *const _,
+                vp as *const _,
+                sp as *const _,
+                op as *mut _,
+                ptp as *mut _,
+                pp as *const _,
+                slp,
+                n_heads as u32,
+                n_kv_heads as u32,
+                head_dim as u32,
+                max_ctx as u32,
+                kv_dim as u32,
+                swa_window as u32,
+                batch as u32,
+                split as u32,
+                scale,
+                kv_dtype as u32,
+                self.stream_ptr(),
+            )
+        })
+    }
+
+    pub fn has_attn_decode_fmha_sp(&self) -> bool {
+        self.kernels.attn_decode_fmha_sp.is_some()
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn attn_decode_fmha(
+        &self,
+        q: &CudaSlice<f32>,
+        kc: &CudaSlice<u8>,
+        vc: &CudaSlice<u8>,
+        sinks: &CudaSlice<f32>,
+        out: &mut CudaSlice<f32>,
+        positions: &CudaSlice<u32>,
+        slots: Option<&CudaSlice<u32>>,
+        n_heads: usize,
+        n_kv_heads: usize,
+        head_dim: usize,
+        max_ctx: usize,
+        kv_dim: usize,
+        swa_window: usize,
+        batch: usize,
+        scale: f32,
+        kv_dtype: KvDtype,
+    ) -> Result<(), GpuError> {
+        let f = self
+            .kernels
+            .attn_decode_fmha
+            .ok_or(GpuError::MissingOp("attn_decode_fmha"))?;
+        let (qp, _g1) = q.device_ptr(&self.stream);
+        let (kp, _g2) = kc.device_ptr(&self.stream);
+        let (vp, _g3) = vc.device_ptr(&self.stream);
+        let (sp, _g4) = sinks.device_ptr(&self.stream);
+        let (op, _g5) = out.device_ptr_mut(&self.stream);
+        let (pp, _g6) = positions.device_ptr(&self.stream);
+        let slot_guard = slots.map(|s| s.device_ptr(&self.stream));
+        let slp = match &slot_guard {
+            Some((p, _)) => *p as *const core::ffi::c_void,
+            None => std::ptr::null(),
+        };
+        // SAFETY: ABI contract; per-sequence caches sized [batch, max_ctx, kv_dim]
+        check(unsafe {
+            f(
+                qp as *const _,
+                kp as *const _,
+                vp as *const _,
+                sp as *const _,
+                op as *mut _,
+                pp as *const _,
+                slp,
+                n_heads as u32,
+                n_kv_heads as u32,
+                head_dim as u32,
+                max_ctx as u32,
+                kv_dim as u32,
+                swa_window as u32,
+                batch as u32,
+                scale,
+                kv_dtype as u32,
+                self.stream_ptr(),
+            )
+        })
+    }
+
     /// Paged KV append: scatter each row's kv into the shared block pool
     /// `[n_blocks, 16, kv_dim]` at `block_tables[slot*blocks_per_slot + pos/16]`,
     /// intra-block row `pos%16`. Paged twin of [`Self::kv_append_batch`].

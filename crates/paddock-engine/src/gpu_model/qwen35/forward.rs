@@ -1613,8 +1613,6 @@ impl GpuQwen35 {
         let v_scratch0 = cudarc::driver::result::mem_get_info()
             .map(|(f, _)| f)
             .unwrap_or(0);
-        // the nv4cut activation planes exist only where a gate|up plane did
-        let nv4cut_lane = self.bs_nv4_gu.iter().any(|o| o.is_some());
         // the f8row FFN lane stages per-row e4m3 at the wave's own row count
         // through the same pair (d_f8t_q/d_f8t_rs), so it sizes them to cap too
         let f8row_lane = self.bs_f8row_ffn.iter().any(|o| o.is_some());
@@ -1727,12 +1725,11 @@ impl GpuQwen35 {
             // activations here at the wave's own row count, not the decode
             // band's - so the buffer has to follow cap the way d_pxq already
             // does. Same magnitude as d_pxq (cap * qw), and it is only taken
-            // when the nv4cut lane built its planes.
             d_f8t_q: e.alloc_i8(
                 super::batch::f8t_chunk_rmax()
                     .next_multiple_of(256)
                     .max(64)
-                    .max(if nv4cut_lane || f8row_lane {
+                    .max(if f8row_lane {
                         cap.next_multiple_of(256)
                     } else {
                         0
@@ -1743,26 +1740,12 @@ impl GpuQwen35 {
                 super::batch::f8t_chunk_rmax()
                     .next_multiple_of(256)
                     .max(64)
-                    .max(if nv4cut_lane || f8row_lane {
+                    .max(if f8row_lane {
                         cap.next_multiple_of(256)
                     } else {
                         0
                     }),
             )?,
-            // nv4cut activations. The blocked SF layout tiles to 128 rows, so
-            // the plane is sized by the pack's own query at the PADDED row
-            // count, never by hand (m*k/16 is short whenever cap % 128 != 0).
-            // Both are 1-byte stubs off the NVFP4 lane.
-            d_nv4_aq: e.alloc_u8(if nv4cut_lane {
-                cap.next_multiple_of(128) * self.embd / 2
-            } else {
-                1
-            })?,
-            d_nv4_asf: e.alloc_u8(if nv4cut_lane {
-                e.nv4cut_sf_bytes(cap.next_multiple_of(128), self.embd)?
-            } else {
-                1
-            })?,
             d_pxs: e.alloc(cap * qw / 32)?,
             d_exs: e.alloc_u8(cap * qw / 32)?,
             d_nvs: e.alloc_u8(cap * qw / 16)?,

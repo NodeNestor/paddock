@@ -129,6 +129,460 @@ impl GpuExecutor {
         })
     }
 
+    /// `bf16_gemv` with a fused `silu(v * inv)` epilogue over the first
+    /// `silu_rows` output rows (slot 520). Bit-identical to the GEMV followed
+    /// by a separate scale+silu pass: same dot, same two f32 ops on the same
+    /// value. `Ok(false)` when the pack predates the slot.
+    pub fn bf16_gemv_silu(
+        &self,
+        w: &QuantTensor,
+        x: &CudaSlice<f32>,
+        y: &mut CudaSlice<f32>,
+        mirror: Option<&mut CudaSlice<half::bf16>>,
+        silu_rows: usize,
+        inv: f32,
+    ) -> Result<bool, GpuError> {
+        let Some(f) = self.kernels.bf16_gemv_silu_f32 else {
+            return Ok(false);
+        };
+        let w = self.bf16_plane(w, "bf16_gemv_silu")?;
+        let (in_dim, out_dim) = (w.dims[0], w.dims[1]);
+        let (wp, _g1) = w.bytes.device_ptr(&self.stream);
+        let (xp, _g2) = x.device_ptr(&self.stream);
+        let (yp, _g3) = y.device_ptr_mut(&self.stream);
+        let m_guard = mirror.map(|m| m.device_ptr_mut(&self.stream));
+        let mp = match &m_guard {
+            Some((p, _)) => *p as *mut core::ffi::c_void,
+            None => std::ptr::null_mut(),
+        };
+        // SAFETY: ABI contract; shapes come from the plane's own dims
+        check(unsafe {
+            f(
+                wp as *const _,
+                core::ptr::null(),
+                xp as *const _,
+                yp as *mut _,
+                mp,
+                in_dim as u32,
+                out_dim as u32,
+                silu_rows as u32,
+                inv,
+                self.stream_ptr(),
+            )
+        })?;
+        Ok(true)
+    }
+
+    /// Multi-row narrow-K GEMV (slot 522) - the batch > 1 arm of
+    /// `bf16_gemv_nk`. `x` is `[batch, in_dim]`, `y` is `[batch, out_dim]`.
+    /// `Ok(false)` when the pack predates the slot.
+    pub fn bf16_gemv_nk_mr(
+        &self,
+        w: &QuantTensor,
+        x: &CudaSlice<f32>,
+        y: &mut CudaSlice<f32>,
+        batch: usize,
+    ) -> Result<bool, GpuError> {
+        let Some(f) = self.kernels.bf16_gemv_nk_mr_f32 else {
+            return Ok(false);
+        };
+        let w = self.bf16_plane(w, "bf16_gemv_nk_mr")?;
+        let (in_dim, out_dim) = (w.dims[0], w.dims[1]);
+        let (wp, _g1) = w.bytes.device_ptr(&self.stream);
+        let (xp, _g2) = x.device_ptr(&self.stream);
+        let (yp, _g3) = y.device_ptr_mut(&self.stream);
+        // SAFETY: ABI contract; shapes come from the plane's own dims
+        check(unsafe {
+            f(
+                wp as *const _,
+                core::ptr::null(),
+                xp as *const _,
+                yp as *mut _,
+                in_dim as u32,
+                out_dim as u32,
+                batch as u32,
+                self.stream_ptr(),
+            )
+        })?;
+        Ok(true)
+    }
+
+    /// Narrow-K twin of `bf16_gemv` (slot 518): one warp per output row, 8
+    /// rows per block. Same contract and same f32 product class; the
+    /// reduction is a 32-lane shuffle instead of the 128-thread two-level
+    /// tree, so it is a separate slot and is elected by SHAPE at the call
+    /// site rather than swapped in under `bf16_gemv`.
+    ///
+    /// Returns `Ok(false)` when the pack predates the slot, so a caller can
+    /// fall back without the plane's shape deciding whether the model runs.
+    /// slot 562: the HC `up` plane with `hc_mix` fused into its epilogue -
+    /// one warp owns the `hc` gate rows of a hidden index, so the gate plane
+    /// never round-trips. `Ok(false)` = not taken (caller runs the pair).
+    #[allow(clippy::too_many_arguments)]
+    pub fn bf16_gemv_up_hcmix(
+        &self,
+        w: &QuantTensor,
+        x: &CudaSlice<f32>,
+        xn: &CudaSlice<f32>,
+        out: &mut CudaSlice<f32>,
+        out16: Option<&mut CudaSlice<half::bf16>>,
+        hidden: usize,
+        hc: usize,
+    ) -> Result<bool, GpuError> {
+        let Some(f) = self.kernels.bf16_gemv_up_hcmix else {
+            return Ok(false);
+        };
+        let w = self.bf16_plane(w, "bf16_gemv_up_hcmix")?;
+        let (in_dim, out_dim) = (w.dims[0], w.dims[1]);
+        if hc != 4 || out_dim != hc * hidden {
+            return Ok(false);
+        }
+        let (wp, _g1) = w.bytes.device_ptr(&self.stream);
+        let (xp, _g2) = x.device_ptr(&self.stream);
+        let (np, _g3) = xn.device_ptr(&self.stream);
+        let (op, _g4) = out.device_ptr_mut(&self.stream);
+        let mp = match out16 {
+            Some(m) => {
+                let (p, _g) = m.device_ptr_mut(&self.stream);
+                p as *mut core::ffi::c_void
+            }
+            None => core::ptr::null_mut(),
+        };
+        // SAFETY: ABI contract (slot 562); shapes come from the plane's dims
+        check(unsafe {
+            f(
+                wp as *const _,
+                xp as *const _,
+                np as *const _,
+                op as *mut _,
+                mp,
+                in_dim as u32,
+                hidden as u32,
+                hc as u32,
+                self.stream_ptr(),
+            )
+        })?;
+        Ok(true)
+    }
+
+    /// slot 573: pad a bf16 plane's rows with zeros (weight prep).
+    pub fn bf16_pad_rows(
+        &self,
+        src: &CudaSlice<u8>,
+        dst: &mut CudaSlice<u8>,
+        rows_src: usize,
+        rows_dst: usize,
+        cols: usize,
+    ) -> Result<(), GpuError> {
+        let f = self
+            .kernels
+            .bf16_pad_rows
+            .ok_or(GpuError::MissingOp("bf16_pad_rows"))?;
+        let (sp, _g1) = src.device_ptr(&self.stream);
+        let (dp, _g2) = dst.device_ptr_mut(&self.stream);
+        // SAFETY: ABI contract (slot 573)
+        check(unsafe {
+            f(
+                sp as *const _,
+                dp as *mut _,
+                rows_src as u32,
+                rows_dst as u32,
+                cols as u32,
+                self.stream_ptr(),
+            )
+        })
+    }
+
+    /// slot 574: up plane in the gate epilogue's row order, padded.
+    #[allow(clippy::too_many_arguments)]
+    pub fn bf16_hc_perm_pad(
+        &self,
+        src: &CudaSlice<u8>,
+        dst: &mut CudaSlice<u8>,
+        hidden: usize,
+        hc: usize,
+        lr: usize,
+        kpad: usize,
+    ) -> Result<(), GpuError> {
+        let f = self
+            .kernels
+            .bf16_hc_perm_pad
+            .ok_or(GpuError::MissingOp("bf16_hc_perm_pad"))?;
+        let (sp, _g1) = src.device_ptr(&self.stream);
+        let (dp, _g2) = dst.device_ptr_mut(&self.stream);
+        // SAFETY: ABI contract (slot 574)
+        check(unsafe {
+            f(
+                sp as *const _,
+                dp as *mut _,
+                hidden as u32,
+                hc as u32,
+                lr as u32,
+                kpad as u32,
+                self.stream_ptr(),
+            )
+        })
+    }
+
+    /// slot 568: bf16 -> f32 cast.
+    pub fn convert_bf16_f32(
+        &self,
+        src: &CudaSlice<half::bf16>,
+        dst: &mut CudaSlice<f32>,
+        n: usize,
+    ) -> Result<(), GpuError> {
+        let f = self
+            .kernels
+            .convert_bf16_f32
+            .ok_or(GpuError::MissingOp("convert_bf16_f32"))?;
+        let (sp, _g1) = src.device_ptr(&self.stream);
+        let (dp, _g2) = dst.device_ptr_mut(&self.stream);
+        // SAFETY: ABI contract (slot 568)
+        check(unsafe { f(sp as *const _, dp as *mut _, n as u64, self.stream_ptr()) })
+    }
+
+    /// slot 569: strided bf16 -> f32, unpadding a padded-N plane.
+    pub fn convert_bf16_f32_rows(
+        &self,
+        src: &CudaSlice<half::bf16>,
+        dst: &mut CudaSlice<f32>,
+        rows: usize,
+        cols: usize,
+        src_rs: usize,
+        dst_rs: usize,
+    ) -> Result<bool, GpuError> {
+        let Some(f) = self.kernels.convert_bf16_f32_rows else {
+            return Ok(false);
+        };
+        let (sp, _g1) = src.device_ptr(&self.stream);
+        let (dp, _g2) = dst.device_ptr_mut(&self.stream);
+        // SAFETY: ABI contract (slot 569)
+        check(unsafe {
+            f(
+                sp as *const _,
+                dp as *mut _,
+                rows as u32,
+                cols as u32,
+                src_rs as u32,
+                dst_rs as u32,
+                self.stream_ptr(),
+            )
+        })?;
+        Ok(true)
+    }
+
+    /// [`Self::convert_bf16_f32_rows`] starting at a source COLUMN offset -
+    /// the second segment of a padded two-segment gemm output.
+    #[allow(clippy::too_many_arguments)]
+    pub fn convert_bf16_f32_rows_at(
+        &self,
+        src: &CudaSlice<half::bf16>,
+        src_col0: usize,
+        dst: &mut CudaSlice<f32>,
+        rows: usize,
+        cols: usize,
+        src_rs: usize,
+        dst_rs: usize,
+    ) -> Result<bool, GpuError> {
+        let Some(f) = self.kernels.convert_bf16_f32_rows else {
+            return Ok(false);
+        };
+        let (sp0, _g1) = src.device_ptr(&self.stream);
+        let (dp, _g2) = dst.device_ptr_mut(&self.stream);
+        let sp = sp0 + (src_col0 * 2) as u64;
+        // SAFETY: ABI contract (slot 569); offset stays inside `src` by
+        // construction (src_col0 + cols <= src_rs).
+        check(unsafe {
+            f(
+                sp as *const _,
+                dp as *mut _,
+                rows as u32,
+                cols as u32,
+                src_rs as u32,
+                dst_rs as u32,
+                self.stream_ptr(),
+            )
+        })?;
+        Ok(true)
+    }
+
+    /// slot 565: batched block-per-row gemv. One block per output row with
+    /// BT accumulators, so the weight row is read once for the whole batch -
+    /// the narrow-output planes that the tiled MMA arm starves (the hc down
+    /// plane tiles to ELEVEN CTAs at batch 8). `ya`/`yb` are the two output
+    /// segments (pass `yb = None` for a single [batch, out_dim] plane).
+    #[allow(clippy::too_many_arguments)]
+    pub fn bf16_gemv_mrow(
+        &self,
+        w: &QuantTensor,
+        x: &CudaSlice<f32>,
+        ya: &mut CudaSlice<f32>,
+        yb: Option<&mut CudaSlice<f32>>,
+        y16: Option<&mut CudaSlice<half::bf16>>,
+        batch: usize,
+        split: usize,
+        silu_rows: usize,
+        inv: f32,
+    ) -> Result<bool, GpuError> {
+        let Some(f) = self.kernels.bf16_gemv_mrow_f32 else {
+            return Ok(false);
+        };
+        let w = self.bf16_plane(w, "bf16_gemv_mrow")?;
+        let (in_dim, out_dim) = (w.dims[0], w.dims[1]);
+        if batch == 0 || batch > 8 {
+            return Ok(false);
+        }
+        let (wp, _g1) = w.bytes.device_ptr(&self.stream);
+        let (xp, _g2) = x.device_ptr(&self.stream);
+        let (ap, _g3) = ya.device_ptr_mut(&self.stream);
+        let bp = match yb {
+            Some(b) => {
+                let (p, _g) = b.device_ptr_mut(&self.stream);
+                p as *mut core::ffi::c_void
+            }
+            None => core::ptr::null_mut(),
+        };
+        let mp = match y16 {
+            Some(m) => {
+                let (p, _g) = m.device_ptr_mut(&self.stream);
+                p as *mut core::ffi::c_void
+            }
+            None => core::ptr::null_mut(),
+        };
+        // SAFETY: ABI contract (slot 565); the pack declines batch > 8 with -1
+        let rc = unsafe {
+            f(
+                wp as *const _,
+                core::ptr::null(),
+                xp as *const _,
+                ap as *mut _,
+                mp,
+                in_dim as u32,
+                out_dim as u32,
+                batch as u32,
+                silu_rows as u32,
+                inv,
+                bp,
+                split as u32,
+                self.stream_ptr(),
+            )
+        };
+        if rc == -1 {
+            return Ok(false);
+        }
+        check(rc)?;
+        Ok(true)
+    }
+
+    /// Block-per-row bf16 gemv for a plane (the silu export with
+    /// `silu_rows = 0`, i.e. no epilogue - it carries the tuned block size).
+    pub fn bf16_gemv_t(
+        &self,
+        w: &QuantTensor,
+        x: &CudaSlice<f32>,
+        y: &mut CudaSlice<f32>,
+    ) -> Result<bool, GpuError> {
+        let Some(f) = self.kernels.bf16_gemv_silu_f32 else {
+            return Ok(false);
+        };
+        let w = self.bf16_plane(w, "bf16_gemv_t")?;
+        let (in_dim, out_dim) = (w.dims[0], w.dims[1]);
+        let (wp, _g1) = w.bytes.device_ptr(&self.stream);
+        let (xp, _g2) = x.device_ptr(&self.stream);
+        let (yp, _g3) = y.device_ptr_mut(&self.stream);
+        // SAFETY: ABI contract; silu_rows = 0 disables the epilogue
+        check(unsafe {
+            f(
+                wp as *const _,
+                core::ptr::null(),
+                xp as *const _,
+                yp as *mut _,
+                core::ptr::null_mut(),
+                in_dim as u32,
+                out_dim as u32,
+                0u32,
+                1.0f32,
+                self.stream_ptr(),
+            )
+        })?;
+        Ok(true)
+    }
+
+    /// CTA-per-row bf16 gemv over a RAW bf16 plane (the model's own bf16
+    /// twin buffers, which are byte slices rather than QuantTensors). Uses the
+    /// silu export with `silu_rows = 0`, i.e. no epilogue - that entry is the
+    /// one carrying the tuned block size.
+    #[allow(clippy::too_many_arguments)]
+    pub fn bf16_gemv_bytes(
+        &self,
+        w: &CudaSlice<u8>,
+        x: &CudaSlice<f32>,
+        y: &mut CudaSlice<f32>,
+        in_dim: usize,
+        out_dim: usize,
+    ) -> Result<bool, GpuError> {
+        let Some(f) = self.kernels.bf16_gemv_silu_f32 else {
+            return Ok(false);
+        };
+        let (wp, _g1) = w.device_ptr(&self.stream);
+        let (xp, _g2) = x.device_ptr(&self.stream);
+        let (yp, _g3) = y.device_ptr_mut(&self.stream);
+        // SAFETY: ABI contract; silu_rows = 0 disables the epilogue entirely
+        check(unsafe {
+            f(
+                wp as *const _,
+                core::ptr::null(),
+                xp as *const _,
+                yp as *mut _,
+                core::ptr::null_mut(),
+                in_dim as u32,
+                out_dim as u32,
+                0u32,
+                1.0f32,
+                self.stream_ptr(),
+            )
+        })?;
+        Ok(true)
+    }
+
+    pub fn bf16_gemv_nk(
+        &self,
+        w: &QuantTensor,
+        bias: Option<&CudaSlice<f32>>,
+        x: &CudaSlice<f32>,
+        y: &mut CudaSlice<f32>,
+    ) -> Result<bool, GpuError> {
+        let Some(f) = self.kernels.bf16_gemv_nk_f32 else {
+            return Ok(false);
+        };
+        let w = self.bf16_plane(w, "bf16_gemv_nk")?;
+        let (in_dim, out_dim) = (w.dims[0], w.dims[1]);
+        let (wp, _g1) = w.bytes.device_ptr(&self.stream);
+        let (xp, _g2) = x.device_ptr(&self.stream);
+        let (yp, _g3) = y.device_ptr_mut(&self.stream);
+        let (bias_ptr, _gb);
+        let bp: *const core::ffi::c_void = match bias {
+            Some(b) => {
+                (bias_ptr, _gb) = b.device_ptr(&self.stream);
+                bias_ptr as *const _
+            }
+            None => core::ptr::null(),
+        };
+        // SAFETY: ABI contract; shapes come from the plane's own dims
+        check(unsafe {
+            f(
+                wp as *const _,
+                bp,
+                xp as *const _,
+                yp as *mut _,
+                in_dim as u32,
+                out_dim as u32,
+                self.stream_ptr(),
+            )
+        })?;
+        Ok(true)
+    }
+
     /// `bf16_gemv` writing at an output-row offset inside `y` - the twin of
     /// `q8_0_gemv_repacked_at`, for the fused `[q|k|v]` decode row.
     pub fn bf16_gemv_at(
@@ -172,7 +626,7 @@ impl GpuExecutor {
         batch: usize,
     ) -> Result<(), GpuError> {
         let out_dim = w.dims[1];
-        self.bf16_gemm_dispatch(w, 0, out_dim, bias, x, y, batch)
+        self.bf16_gemm_dispatch(w, 0, out_dim, bias, x, y, batch, true)
     }
 
     /// `bf16_gemm` over a row segment of a fused plane (see
@@ -191,9 +645,32 @@ impl GpuExecutor {
         if batch == 1 {
             return self.bf16_gemv_rows(w, first_row, out_dim, x, y);
         }
-        self.bf16_gemm_dispatch(w, first_row, out_dim, None, x, y, batch)
+        self.bf16_gemm_dispatch(w, first_row, out_dim, None, x, y, batch, true)
     }
 
+    /// `bf16_gemm` with the 2..=8 multi-row GEMV band SKIPPED - the caller
+    /// wants the tensor-core tile there.
+    ///
+    /// Measured on qwen4_exp (same-load width sweep, ms/step, GEMV band ->
+    /// tile): c4 16.31 -> 13.77, c8 24.09 -> 16.70 (+44%), c1/c16/c32
+    /// unchanged. The band's own kernel streams the plane at DRAM pace with
+    /// one launch per plane; the tile splits K and fills the die. Which one
+    /// wins is a per-FAMILY question - the multi-row GEMV was measured to own
+    /// this band on paddleocr-vl's square planes - so this is an
+    /// entry, not a flipped default.
+    pub fn bf16_gemm_tile(
+        &self,
+        w: &QuantTensor,
+        bias: Option<&CudaSlice<f32>>,
+        x: &CudaSlice<f32>,
+        y: &mut CudaSlice<f32>,
+        out_dim: usize,
+        batch: usize,
+    ) -> Result<(), GpuError> {
+        self.bf16_gemm_dispatch(w, 0, out_dim, bias, x, y, batch, false)
+    }
+
+    #[allow(clippy::too_many_arguments)]
     fn bf16_gemm_dispatch(
         &self,
         w: &QuantTensor,
@@ -203,6 +680,7 @@ impl GpuExecutor {
         x: &CudaSlice<f32>,
         y: &mut CudaSlice<f32>,
         batch: usize,
+        mr_ok: bool,
     ) -> Result<(), GpuError> {
         if batch == 1 {
             debug_assert_eq!(first_row, 0, "gemv segment goes via bf16_gemv_rows");
@@ -228,7 +706,17 @@ impl GpuExecutor {
         // die-filling tile grids (out/32 CTAs), so they take the tile; the
         // mr class keeps the small-out planes it was built for (256-wide
         // K/V heads = 4-CTA tile grids).
-        let mr_band = (2..=8).contains(&batch) && !(batch >= 5 && out_dim >= 8192);
+        //
+        // The window is a knob as well. On the qwen4_exp decode planes the
+        // tile is ~2x better per row even inside it (c8 4.9 ms/row on this arm
+        // against c16's 2.5 ms/row on the tile), so `PADDOCK_BF16_MR=0` hands
+        // the whole 2..=8 window to the tile, and `mr_ok` lets a caller that
+        // knows its plane decline without the environment.
+        static MR_ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+        let mr_on = *MR_ON
+            .get_or_init(|| !matches!(std::env::var("PADDOCK_BF16_MR").ok().as_deref(), Some("0")));
+        let mr_band =
+            mr_ok && mr_on && (2..=8).contains(&batch) && !(batch >= 5 && out_dim >= 8192);
         if mr_band
             && in_dim % 16 == 0
             && let Some(f) = self.kernels.bf16_gemv_mr_f32
@@ -372,6 +860,160 @@ impl GpuExecutor {
                 self.stream_ptr(),
             )
         })
+    }
+
+    /// TWO-segment twin of [`Self::bf16_qkv_gemm`] - one launch over a plane
+    /// that folds exactly two projections, storing rows `[0, oq)` to `ya` and
+    /// `[oq, oq + ob)` to `yb`.
+    ///
+    /// The kernel is the same one the q|k|v arm uses; only the row-routing
+    /// arithmetic differs, and its third segment is simply never reached
+    /// because the plane has no row at or beyond `oq + ob`. That is why `yb`
+    /// is passed twice: the `yv` pointer is dereferenced only by a row that
+    /// cannot exist here, so it needs to be valid, not distinct.
+    ///
+    /// Why this exists: the hyper-connection down plane folds the low-rank
+    /// projection and the block-inject rows into one residency, and at batch 1
+    /// the engine already reads both in one launch (the inject comes out in the
+    /// low-rank output's tail). Above batch 1 that tail is not contiguous, so
+    /// the lane fell back to two `matmul_rows` calls - measured at c32, 2.02 +
+    /// 2.00 launches per layer and 0.944 + 0.801 ms/step, i.e. a third of the
+    /// whole dense launch count for one projection pair.
+    #[allow(clippy::too_many_arguments)]
+    pub fn bf16_gemm_2seg(
+        &self,
+        w: &QuantTensor,
+        x: &CudaSlice<f32>,
+        ya: &mut CudaSlice<f32>,
+        yb: &mut CudaSlice<f32>,
+        oq: usize,
+        ob: usize,
+        batch: usize,
+    ) -> Result<bool, GpuError> {
+        if batch < 2 {
+            return Ok(false);
+        }
+        let w = self.bf16_plane(w, "bf16_gemm_2seg")?;
+        let in_dim = w.dims[0];
+        if oq + ob != w.dims[1] || in_dim % 16 != 0 {
+            return Ok(false);
+        }
+        let Some(f) = self.kernels.bf16_seg2_gemm_mma else {
+            return Ok(false);
+        };
+        let (wp, _g1) = w.bytes.device_ptr(&self.stream);
+        let (xp, _g2) = x.device_ptr(&self.stream);
+        let (ap, _g3) = ya.device_ptr_mut(&self.stream);
+        let (bp, _g4) = yb.device_ptr_mut(&self.stream);
+        // SAFETY: ABI contract (slot 529). The 2-segment launcher computes the
+        // fused row count as oq + ob, so it reads exactly the plane it was
+        // given. NOTE: the q|k|v launcher cannot be reused here - it computes
+        // oq + 2*okv and would read `ob` rows past the end; that was a real
+        // gate failure, not a hypothetical.
+        let rc = unsafe {
+            f(
+                wp as *const _,
+                xp as *const _,
+                ap as *mut _,
+                bp as *mut _,
+                in_dim as u32,
+                oq as u32,
+                ob as u32,
+                batch as u32,
+                self.stream_ptr(),
+            )
+        };
+        if rc == -2 {
+            return Ok(false);
+        }
+        check(rc)?;
+        Ok(true)
+    }
+
+    /// Build the permuted twin of a hyper-connection up plane (slot 530).
+    ///
+    /// The fused mix epilogue needs the four `hc` branches of one output
+    /// element to land in one thread's registers. At `RG=2` the m16n8k16
+    /// fragment gives a thread rows `{r, r+8, r+16, r+24}`, so the permute is
+    /// `permuted_row(d, s) = (d/8)*32 + s*8 + (d%8)` - a verified bijection.
+    /// Run once at load; the permuted plane is all the mix arm reads.
+    pub fn bf16_hcmix_permute(
+        &self,
+        w: &QuantTensor,
+        hidden: usize,
+        hc: usize,
+    ) -> Result<Option<CudaSlice<u8>>, GpuError> {
+        let Some(f) = self.kernels.bf16_hcmix_permute else {
+            return Ok(None);
+        };
+        let p = self.bf16_plane(w, "bf16_hcmix_permute")?;
+        let in_dim = p.dims[0];
+        if p.dims[1] != hidden * hc || hc != 4 || !hidden.is_multiple_of(8) {
+            return Ok(None);
+        }
+        let mut dst = self.alloc_u8(p.bytes.len())?;
+        {
+            let (sp, _g1) = p.bytes.device_ptr(&self.stream);
+            let (dp, _g2) = dst.device_ptr_mut(&self.stream);
+            // SAFETY: ABI contract (slot 530); dst is the same size as src
+            check(unsafe {
+                f(
+                    sp as *const _,
+                    dp as *mut _,
+                    hidden as u32,
+                    hc as u32,
+                    in_dim as u32,
+                    self.stream_ptr(),
+                )
+            })?;
+        }
+        self.synchronize()?;
+        Ok(Some(dst))
+    }
+
+    /// Up-GEMM with the hyper-connection mix tail fused in (slot 531).
+    /// `Ok(false)` means "not taken, do it yourself".
+    #[allow(clippy::too_many_arguments)]
+    pub fn bf16_hcmix_gemm(
+        &self,
+        wperm: &CudaSlice<u8>,
+        x: &CudaSlice<f32>,
+        xn: &CudaSlice<f32>,
+        out: &mut CudaSlice<f32>,
+        in_dim: usize,
+        hidden: usize,
+        hc: usize,
+        batch: usize,
+    ) -> Result<bool, GpuError> {
+        let Some(f) = self.kernels.bf16_hcmix_gemm else {
+            return Ok(false);
+        };
+        if batch < 2 || hc != 4 || !in_dim.is_multiple_of(16) || !hidden.is_multiple_of(8) {
+            return Ok(false);
+        }
+        let (wp, _g1) = wperm.device_ptr(&self.stream);
+        let (xp, _g2) = x.device_ptr(&self.stream);
+        let (np, _g3) = xn.device_ptr(&self.stream);
+        let (op, _g4) = out.device_ptr_mut(&self.stream);
+        // SAFETY: ABI contract (slot 531)
+        let rc = unsafe {
+            f(
+                wp as *const _,
+                xp as *const _,
+                np as *const _,
+                op as *mut _,
+                in_dim as u32,
+                hidden as u32,
+                hc as u32,
+                batch as u32,
+                self.stream_ptr(),
+            )
+        };
+        if rc == -2 {
+            return Ok(false);
+        }
+        check(rc)?;
+        Ok(true)
     }
 
     /// Embedding gather that picks its kernel from the TABLE's own class -

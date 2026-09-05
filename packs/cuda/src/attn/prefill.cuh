@@ -620,6 +620,30 @@ __global__ void __launch_bounds__(256) pd_attn_prefill_batch_kernel(
     }
 }
 
+template<typename KV, uint32_t HD>
+static int pd_attn_prefill_batch_launch(
+        const void* q, const void* kc, const void* vc, const void* sinks, void* out,
+        const void* positions, const void* slots, const void* tile_row0,
+        const void* tile_slot, uint32_t n_qtiles, uint32_t n_heads,
+        uint32_t n_kv_heads, uint32_t max_ctx, uint32_t kv_dim, uint32_t swa_window,
+        uint32_t n_rows, float scale, cudaStream_t st) {
+    constexpr uint32_t TK = HD == 128u ? 32u : 16u;
+    constexpr uint32_t QPAD = HD + 4u;
+    constexpr uint32_t SMEM =
+        (PD_APF_TQ * QPAD + HD * (TK + 1u) + TK * QPAD + PD_APF_TQ) * 4u;
+    static cudaError_t attr = cudaFuncSetAttribute(
+        (const void*)pd_attn_prefill_batch_kernel<KV, HD>,
+        cudaFuncAttributeMaxDynamicSharedMemorySize, (int)SMEM);
+    if (attr != cudaSuccess) return attr;
+    dim3 grid(n_heads, n_qtiles);
+    pd_attn_prefill_batch_kernel<KV, HD><<<grid, 256, SMEM, st>>>(
+        (const float*)q, (const KV*)kc, (const KV*)vc, (const float*)sinks,
+        (float*)out, (const unsigned int*)positions, (const unsigned int*)slots,
+        (const unsigned int*)tile_row0, (const unsigned int*)tile_slot,
+        n_heads, n_kv_heads, max_ctx, kv_dim, swa_window, n_rows, scale);
+    return pd_launch_status();
+}
+
 PD_EXPORT
 int pd_attn_prefill_batch(const void* q, const void* kc, const void* vc, const void* sinks,
                           void* out, const void* positions, const void* slots,
@@ -628,34 +652,32 @@ int pd_attn_prefill_batch(const void* q, const void* kc, const void* vc, const v
                           uint32_t max_ctx, uint32_t kv_dim, uint32_t swa_window,
                           uint32_t n_rows, float scale, uint32_t kv_dtype, void* stream) {
     if (n_heads == 0 || n_qtiles == 0 || n_rows == 0) return 0;
-    if (head_dim != 128u) return cudaErrorInvalidValue;  // encoder is head_dim 128
-    constexpr uint32_t HD = 128u, TK = 32u, QPAD = HD + 4u;
-    constexpr uint32_t SMEM = (PD_APF_TQ * QPAD + HD * (TK + 1u) + TK * QPAD + PD_APF_TQ) * 4u;
+    // 128 is the encoder's geometry (the original caller); 256 is qwen4_exp's,
+    // whose batched-runs PREFILL wave needs a per-TILE slot - the single-slot
+    // twin reads slots[0] for every row, which silently attends every run in
+    // the wave to the first run's cache. 512 rides along for symmetry with
+    // pd_attn_prefill's own dispatch.
+    if (head_dim != 128u && head_dim != 256u && head_dim != 512u)
+        return cudaErrorInvalidValue;
     auto st = (cudaStream_t)stream;
-    dim3 grid(n_heads, n_qtiles);
-    if (kv_dtype == PD_KV_FP8_E4M3) {
-        static cudaError_t a8 = cudaFuncSetAttribute(
-            (const void*)pd_attn_prefill_batch_kernel<__nv_fp8_e4m3, HD>,
-            cudaFuncAttributeMaxDynamicSharedMemorySize, (int)SMEM);
-        if (a8 != cudaSuccess) return a8;
-        pd_attn_prefill_batch_kernel<__nv_fp8_e4m3, HD><<<grid, 256, SMEM, st>>>(
-            (const float*)q, (const __nv_fp8_e4m3*)kc, (const __nv_fp8_e4m3*)vc,
-            (const float*)sinks, (float*)out, (const unsigned int*)positions,
-            (const unsigned int*)slots, (const unsigned int*)tile_row0,
-            (const unsigned int*)tile_slot, n_heads, n_kv_heads, max_ctx, kv_dim,
-            swa_window, n_rows, scale);
-        return pd_launch_status();
-    }
-    static cudaError_t a16 = cudaFuncSetAttribute(
-        (const void*)pd_attn_prefill_batch_kernel<__half, HD>,
-        cudaFuncAttributeMaxDynamicSharedMemorySize, (int)SMEM);
-    if (a16 != cudaSuccess) return a16;
-    pd_attn_prefill_batch_kernel<__half, HD><<<grid, 256, SMEM, st>>>(
-        (const float*)q, (const __half*)kc, (const __half*)vc, (const float*)sinks,
-        (float*)out, (const unsigned int*)positions, (const unsigned int*)slots,
-        (const unsigned int*)tile_row0, (const unsigned int*)tile_slot,
-        n_heads, n_kv_heads, max_ctx, kv_dim, swa_window, n_rows, scale);
-    return pd_launch_status();
+#define PD_APB(KVT)                                                            \
+    return head_dim == 128u                                                    \
+        ? pd_attn_prefill_batch_launch<KVT, 128u>(                             \
+              q, kc, vc, sinks, out, positions, slots, tile_row0, tile_slot,   \
+              n_qtiles, n_heads, n_kv_heads, max_ctx, kv_dim, swa_window,      \
+              n_rows, scale, st)                                               \
+        : head_dim == 256u                                                     \
+        ? pd_attn_prefill_batch_launch<KVT, 256u>(                             \
+              q, kc, vc, sinks, out, positions, slots, tile_row0, tile_slot,   \
+              n_qtiles, n_heads, n_kv_heads, max_ctx, kv_dim, swa_window,      \
+              n_rows, scale, st)                                               \
+        : pd_attn_prefill_batch_launch<KVT, 512u>(                             \
+              q, kc, vc, sinks, out, positions, slots, tile_row0, tile_slot,   \
+              n_qtiles, n_heads, n_kv_heads, max_ctx, kv_dim, swa_window,      \
+              n_rows, scale, st)
+    if (kv_dtype == PD_KV_FP8_E4M3) { PD_APB(__nv_fp8_e4m3); }
+    PD_APB(__half);
+#undef PD_APB
 }
 
 // ------------------------------------------------------- attn prefill f16

@@ -443,7 +443,7 @@ fn nvf4_moe_kernels_match_host_reference() {
     let mut d_y = exec.alloc(embd).expect("y");
     exec.nvf4_moe_up_relu2(&up, &d_idx, &d_x, &mut d_up, k, 1)
         .expect("up gemv");
-    exec.nvf4_moe_down_acc(&dn, &d_idx, &d_w, &d_up, &mut d_y, k, 1, false)
+    exec.nvf4_moe_down_acc(&dn, &d_idx, &d_w, &d_up, &mut d_y, None, k, 1, false)
         .expect("down gemv");
     let up_out = exec.to_host(&d_up).expect("up host");
     let y = exec.to_host(&d_y).expect("y host");
@@ -1480,7 +1480,7 @@ fn nvf4_moe_mt_chain_matches_gemv_pair() {
         .expect("up pair");
     exec.nvf4_moe_up_relu2(&sh_up, &d_sh_idx, &d_x, &mut d_shu_o, 1, 1)
         .expect("sh up pair");
-    exec.nvf4_moe_down_acc(&dn, &d_idx, &d_w, &d_up_o, &mut d_proj, k, 1, false)
+    exec.nvf4_moe_down_acc(&dn, &d_idx, &d_w, &d_up_o, &mut d_proj, None, k, 1, false)
         .expect("dn pair");
     exec.nvf4_moe_down_acc(
         &sh_dn,
@@ -1488,6 +1488,7 @@ fn nvf4_moe_mt_chain_matches_gemv_pair() {
         &d_sh_w,
         &d_shu_o,
         &mut d_proj,
+        None,
         1,
         1,
         true,
@@ -1545,7 +1546,7 @@ fn nvf4_moe_mt_chain_matches_gemv_pair() {
         let d_w1 = exec.to_device(&[wt]).expect("w1");
         let d_xr = exec.to_device(xr).expect("xr");
         let mut d_ref = exec.alloc(embd).expect("ref");
-        exec.nvf4_moe_down_acc(plane, &d_i1, &d_w1, &d_xr, &mut d_ref, 1, 1, false)
+        exec.nvf4_moe_down_acc(plane, &d_i1, &d_w1, &d_xr, &mut d_ref, None, 1, 1, false)
             .expect("k1 ref");
         let href = exec.to_host(&d_ref).expect("ref host");
         let _ = kk;
@@ -2165,7 +2166,7 @@ fn batched_decode_steps_match_serial_loops() {
     // ---- row-batched nvf4 GEMV (cc12-gated) --------------------------------
     // n=64 exercises the mr twin's BN=1 (thin) arm; n=4232 crosses the
     // launcher's >=4096 width gate into the BN=4 wide arm with a ragged
-    // 8-not-32 output tail  - both must stay bit-exact vs serial.
+    // 8-not-32 output tail - both must stay bit-exact vs serial.
     if exec.has_nvf4_ckpt() {
         for n in [64usize, 4232] {
             let k = 256usize;

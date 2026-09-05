@@ -4454,6 +4454,7 @@ __global__ void pd_gated_delta_recurrent_slots_kernel(
         const float* __restrict__ beta, const unsigned int* __restrict__ slots,
         ST* __restrict__ states, float* __restrict__ out,
         uint32_t n_heads, uint32_t D) {
+    PD_PDL_ARM();  // consumer-safe for early PDL launches (2026-08-31)
     const uint32_t h = blockIdx.x;
     const uint32_t b = blockIdx.y;
     const uint32_t j = threadIdx.x;
@@ -4504,16 +4505,155 @@ __global__ void pd_gated_delta_recurrent_slots_kernel(
     out[base + j] = o;
 }
 
-PD_EXPORT
-int pd_gated_delta_recurrent_slots(const void* q, const void* k, const void* v,
+// Compile-time-D twin (rung 5: the GDN spill). The runtime-D kernel above
+// declares `float col[PD_DN_MAX_D]` = 512 B per thread; ncu measures 32
+// registers/thread, so it cannot be in registers - it spills to local memory,
+// which is DRAM-backed. Measured on the live c32 tick:
+//   DRAM read 202.6 MB + write 243.1 MB = 445.7 MB per launch
+//   the algorithm's minimum (state 100.7 MB, read once + written once) = 201.3
+//   spill accounts for the rest: 128 floats x 4 B x (w+r) x 128 thr x 1536 blk
+//                                = 201.3 MB, predicted total 402.7 vs 445.7
+// It is not coalescing (load sectors/request 3.93 of 4.00) and not occupancy
+// (58.8% achieved of a 100% theoretical); the loop already touches the state
+// exactly once. It is one local array.
+//
+// For scale: the rival's fused_recurrent_gated_delta_rule_packed_decode moves
+// the same 201 MB in 35.1 us = 5.74 TB/s = 72% of roof; we move 445.7 MB at
+// 29%, which is the whole 3.11 vs 1.25 ms/step band gap.
+//
+// With D a template parameter the array is indexable at compile time and stays
+// in registers. That costs occupancy - the single-sequence twin
+// (pd_gated_delta_recurrent_kernel_t) lands at 255 reg/thread and 2 blocks/SM -
+// so this is elected by MEASUREMENT, not by the byte argument alone:
+// PADDOCK_DN_SLOTS_GENERIC=1 reverts to the runtime-D kernel for an A/B.
+template <typename ST, uint32_t D>
+__global__ __launch_bounds__(D) void pd_gated_delta_recurrent_slots_kernel_t(
+        const float* __restrict__ q, const float* __restrict__ k,
+        const float* __restrict__ v, const float* __restrict__ g,
+        const float* __restrict__ beta, const unsigned int* __restrict__ slots,
+        ST* __restrict__ states, float* __restrict__ out, uint32_t n_heads,
+        // slot 564: the qwen4_exp gated norm fused into this epilogue. The
+        // norm's row is this block's head output (grid (heads, batch), D
+        // threads), so its reduction is block-local. Same tree, same
+        // 1/sqrt(sum/D + eps), same w[j]*(x*inv)*sigmoid(z) => bit-identical.
+        // gn_w == nullptr keeps the plain `out[base+j] = o` store.
+        const float* __restrict__ gn_z = nullptr,
+        const float* __restrict__ gn_w = nullptr,
+        __nv_bfloat16* __restrict__ gn_out16 = nullptr,
+        float gn_eps = 0.0f) {
+    const uint32_t h = blockIdx.x;
+    const uint32_t b = blockIdx.y;
+    const uint32_t j = threadIdx.x;
+    if (h >= n_heads) return;
+
+    extern __shared__ float smem[];
+    float* q_sh = smem;
+    float* k_sh = smem + D;
+    float* red  = smem + 2 * D;
+    const float scale = rsqrtf((float)D);
+
+    ST* s_head = states + ((size_t)slots[b] * n_heads + h) * (size_t)D * D;
+    const size_t base = ((size_t)b * n_heads + h) * (size_t)D;
+    const float qj = q[base + j];
+    const float kj = k[base + j];
+    const float vj = v[base + j];
+
+    q_sh[j] = qj * qj;
+    k_sh[j] = kj * kj;
+    __syncthreads();
+    #pragma unroll
+    for (uint32_t s = D >> 1; s > 0; s >>= 1) {
+        if (j < s) { q_sh[j] += q_sh[j + s]; k_sh[j] += k_sh[j + s]; }
+        __syncthreads();
+    }
+    if (j == 0) { red[0] = rsqrtf(q_sh[0] + 1e-6f); red[1] = rsqrtf(k_sh[0] + 1e-6f); }
+    __syncthreads();
+    q_sh[j] = qj * red[0] * scale;
+    k_sh[j] = kj * red[1];
+    __syncthreads();
+
+    const float g_t = expf(g[(size_t)b * n_heads + h]);
+    const float beta_t = beta[(size_t)b * n_heads + h];
+
+    // identical arithmetic to the runtime-D kernel, in the identical order -
+    // only col[]'s storage class changes, so this is bit-exact by construction
+    float u = 0.0f;
+    float col[D];
+    #pragma unroll
+    for (uint32_t i = 0; i < D; ++i) {
+        col[i] = pd_dns_ld(s_head + (size_t)i * D + j) * g_t;
+        u += col[i] * k_sh[i];
+    }
+    const float delta = beta_t * (vj - u);
+    float o = 0.0f;
+    #pragma unroll
+    for (uint32_t i = 0; i < D; ++i) {
+        col[i] += k_sh[i] * delta;
+        o += col[i] * q_sh[i];
+        pd_dns_st(s_head + (size_t)i * D + j, col[i]);
+    }
+    if (gn_w == nullptr) {
+        out[base + j] = o;
+        return;
+    }
+    __syncthreads();
+    q_sh[j] = o * o;
+    __syncthreads();
+    #pragma unroll
+    for (uint32_t s = D >> 1; s > 0; s >>= 1) {
+        if (j < s) q_sh[j] += q_sh[j + s];
+        __syncthreads();
+    }
+    const float gn_inv = 1.0f / sqrtf(q_sh[0] / (float)D + gn_eps);
+    const float y = gn_w[j] * (o * gn_inv) *
+                    (1.0f / (1.0f + expf(-gn_z[base + j])));
+    out[base + j] = y;
+    if (gn_out16) gn_out16[base + j] = __float2bfloat16(y);
+}
+
+static bool pd_dn_slots_generic_env() {
+    static const bool v = pd_env("PADDOCK_DN_SLOTS_GENERIC") != nullptr;
+    return v;
+}
+
+static int pd_gdrs_impl(const void* q, const void* k, const void* v,
                                    const void* g, const void* beta, const void* slots,
                                    void* states, void* out, uint32_t batch,
-                                   uint32_t n_heads, uint32_t head_dim, void* stream) {
+                                   uint32_t n_heads, uint32_t head_dim, const void* gn_z, const void* gn_w,
+                        void* gn_out16, float gn_eps, void* stream) {
     if (batch == 0 || n_heads == 0 || head_dim == 0) return 0;
     if (head_dim > PD_DN_MAX_D) return cudaErrorInvalidValue;
     size_t shmem = ((size_t)2 * head_dim + 2) * sizeof(float);
     dim3 grid(n_heads, batch);
     const int dns_cls = pd_dns_state_class();
+    // compile-time-D arm first: same arithmetic in the same order, only col[]'s
+    // storage class changes (local-memory spill -> registers), which is worth
+    // 2.21x the kernel's DRAM traffic. See the kernel's header note.
+#define PD_DNS_T(TY, CAST, DD)                                                 \
+    do {                                                                       \
+        pd_gated_delta_recurrent_slots_kernel_t<TY, (DD)>                      \
+            <<<grid, (DD), shmem, (cudaStream_t)stream>>>(                     \
+                (const float*)q, (const float*)k, (const float*)v,             \
+                (const float*)g, (const float*)beta,                           \
+                (const unsigned int*)slots, (CAST*)states, (float*)out,        \
+                n_heads, (const float*)gn_z, (const float*)gn_w,               \
+                (__nv_bfloat16*)gn_out16, gn_eps);                             \
+        return pd_launch_status();                                             \
+    } while (0)
+    if (!pd_dn_slots_generic_env() && (head_dim == 128u || head_dim == 64u)) {
+        if (head_dim == 128u) {
+            if (dns_cls == 3) PD_DNS_T(__nv_fp8_e4m3, __nv_fp8_e4m3, 128u);
+            if (dns_cls == 2) PD_DNS_T(__half, __half, 128u);
+            if (dns_cls == 1) PD_DNS_T(__nv_bfloat16, __nv_bfloat16, 128u);
+            PD_DNS_T(float, float, 128u);
+        } else {
+            if (dns_cls == 3) PD_DNS_T(__nv_fp8_e4m3, __nv_fp8_e4m3, 64u);
+            if (dns_cls == 2) PD_DNS_T(__half, __half, 64u);
+            if (dns_cls == 1) PD_DNS_T(__nv_bfloat16, __nv_bfloat16, 64u);
+            PD_DNS_T(float, float, 64u);
+        }
+    }
+#undef PD_DNS_T
     if (dns_cls == 3)
         pd_gated_delta_recurrent_slots_kernel<__nv_fp8_e4m3><<<grid, head_dim, shmem, (cudaStream_t)stream>>>(
         (const float*)q, (const float*)k, (const float*)v, (const float*)g,
@@ -4537,6 +4677,39 @@ int pd_gated_delta_recurrent_slots(const void* q, const void* k, const void* v,
     return pd_launch_status();
 }
 
+PD_EXPORT
+int pd_gated_delta_recurrent_slots(const void* q, const void* k, const void* v,
+                                   const void* g, const void* beta, const void* slots,
+                                   void* states, void* out, uint32_t batch,
+                                   uint32_t n_heads, uint32_t head_dim, void* stream) {
+    return pd_gdrs_impl(q, k, v, g, beta, slots, states, out, batch, n_heads,
+                        head_dim, nullptr, nullptr, nullptr, 0.0f, stream);
+}
+
+// slot 564: the same recurrence with qwen4_exp's gated norm folded into its
+// epilogue (2.2 us a layer on the critical branch of 36 of 48 layers). Only
+// the compile-time-D arm carries the fold, so an unsupported geometry declines
+// with -1 and the caller runs the pair.
+PD_EXPORT
+int pd_gated_delta_recurrent_slots_gn(const void* q, const void* k, const void* v,
+                                      const void* g, const void* beta,
+                                      const void* slots, void* states, void* out,
+                                      const void* gn_z, const void* gn_w,
+                                      void* gn_out16, float gn_eps, uint32_t batch,
+                                      uint32_t n_heads, uint32_t head_dim,
+                                      void* stream) {
+    static const bool off = [] {
+        const char* e = pd_env("PADDOCK_Q38FN_GDN_GN");
+        return e && e[0] == '0';
+    }();
+    if (off || gn_w == nullptr || pd_dn_slots_generic_env() ||
+        !(head_dim == 128u || head_dim == 64u)) {
+        return -1;
+    }
+    return pd_gdrs_impl(q, k, v, g, beta, slots, states, out, batch, n_heads,
+                        head_dim, gn_z, gn_w, gn_out16, gn_eps, stream);
+}
+
 // Slot-indexed single-token conv+silu: B sequences advance their own persistent
 // window. wins [n_slots, (k-1), conv_dim]; x_new/out [B, conv_dim].
 __global__ void pd_conv_step_slots_kernel(float* __restrict__ wins,
@@ -4546,6 +4719,7 @@ __global__ void pd_conv_step_slots_kernel(float* __restrict__ wins,
                                           const unsigned int* __restrict__ slots,
                                           uint32_t conv_dim, uint32_t k,
                                           uint32_t x_stride) {
+    PD_PDL_ARM();  // consumer-safe for early PDL launches (2026-08-31)
     uint32_t c = blockIdx.x * blockDim.x + threadIdx.x;
     uint32_t b = blockIdx.y;
     if (c >= conv_dim) return;
@@ -4598,6 +4772,86 @@ __global__ void pd_conv_step_slots_k4v4_kernel(float* __restrict__ wins,
     win[c4] = v1;
     win[n4 + c4] = v2;
     win[2u * n4 + c4] = v3;
+}
+
+// SPLIT-FUSED twin of the k=4 float4 kernel (slot 563). The GDN conv output is
+// consumed by exactly one kernel -- q4x_gdn_split_widen, which re-reads the
+// whole row and scatters it into q, k (repeat-interleave widened from hk key
+// heads to hv value heads) and v. Writing those destinations straight from the
+// conv epilogue retires that launch (2.7 us on the CRITICAL branch of every
+// GDN layer, 36 of 48 layers) and the conv row's 40 KB round-trip. Values are
+// the k4v4 kernel's verbatim, so q/k/v are bit-identical.
+//
+// Region map (channel base cb of a float4, all boundaries 4-aligned by the
+// launcher's guard): cb < kdim -> q head cb/kd, replicated to the R = hv/hk
+// value heads it serves; cb < 2*kdim -> k, same replication; else -> v, 1:1.
+__global__ void pd_conv_step_slots_k4v4_split_kernel(
+        float* __restrict__ wins, const float* __restrict__ x_new,
+        const float* __restrict__ w, float* __restrict__ q,
+        float* __restrict__ kk, float* __restrict__ v,
+        const unsigned int* __restrict__ slots, uint32_t n4, uint32_t xs4,
+        uint32_t kdim, uint32_t hk, uint32_t hv, uint32_t kd, uint32_t vd) {
+    PD_PDL_ARM();
+    uint32_t c4 = blockIdx.x * blockDim.x + threadIdx.x;
+    uint32_t b = blockIdx.y;
+    if (c4 >= n4) return;
+    float4* win = (float4*)wins + (size_t)slots[b] * 3u * n4;
+    float4 v0 = win[c4];
+    float4 v1 = win[n4 + c4];
+    float4 v2 = win[2u * n4 + c4];
+    float4 v3 = ((const float4*)x_new + (size_t)b * xs4)[c4];
+    const float4* w4 = (const float4*)w;
+    float4 w0 = w4[c4 * 4 + 0], w1 = w4[c4 * 4 + 1], w2 = w4[c4 * 4 + 2], w3 = w4[c4 * 4 + 3];
+    float4 o;
+    o.x = __fmaf_rn(w0.w, v3.x, __fmaf_rn(w0.z, v2.x, __fmaf_rn(w0.y, v1.x, w0.x * v0.x)));
+    o.y = __fmaf_rn(w1.w, v3.y, __fmaf_rn(w1.z, v2.y, __fmaf_rn(w1.y, v1.y, w1.x * v0.y)));
+    o.z = __fmaf_rn(w2.w, v3.z, __fmaf_rn(w2.z, v2.z, __fmaf_rn(w2.y, v1.z, w2.x * v0.z)));
+    o.w = __fmaf_rn(w3.w, v3.w, __fmaf_rn(w3.z, v2.w, __fmaf_rn(w3.y, v1.w, w3.x * v0.w)));
+    o.x = o.x / (1.0f + expf(-o.x));
+    o.y = o.y / (1.0f + expf(-o.y));
+    o.z = o.z / (1.0f + expf(-o.z));
+    o.w = o.w / (1.0f + expf(-o.w));
+    win[c4] = v1;
+    win[n4 + c4] = v2;
+    win[2u * n4 + c4] = v3;
+    const uint32_t cb = c4 * 4u;
+    const uint32_t R = hv / hk;
+    if (cb < 2u * kdim) {
+        float* dst = (cb < kdim) ? q : kk;
+        const uint32_t base = (cb < kdim) ? cb : cb - kdim;
+        const uint32_t kh = base / kd, off = base - kh * kd;
+        for (uint32_t j = 0; j < R; ++j) {
+            const uint32_t vh = kh * R + j;
+            *(float4*)(dst + ((size_t)b * hv + vh) * kd + off) = o;
+        }
+    } else {
+        const uint32_t off = cb - 2u * kdim;
+        *(float4*)(v + (size_t)b * hv * vd + off) = o;
+    }
+}
+
+PD_EXPORT
+int pd_conv_step_slots_split(void* wins, const void* x_new, const void* w,
+                             void* q, void* k_out, void* v_out, const void* slots,
+                             uint32_t batch, uint32_t conv_dim, uint32_t kconv,
+                             uint32_t x_stride, uint32_t hk, uint32_t hv,
+                             uint32_t kd, uint32_t vd, void* stream) {
+    if (batch == 0 || conv_dim == 0) return 0;
+    static const bool off = [] { return pd_env("PADDOCK_Q38FN_CONV_SPLIT") &&
+                                        pd_env("PADDOCK_Q38FN_CONV_SPLIT")[0] == '0'; }();
+    // geometry guard: float4 units must stay inside one region and one head
+    if (off || kconv != 4u || hk == 0u || hv % hk != 0u || (kd & 3u) != 0u ||
+        (vd & 3u) != 0u || (conv_dim & 3u) != 0u || (x_stride & 3u) != 0u ||
+        conv_dim != 2u * hk * kd + hv * vd) {
+        return -1;
+    }
+    const uint32_t threads = 256u, n4 = conv_dim >> 2;
+    dim3 grid((n4 + threads - 1u) / threads, batch);
+    pd_conv_step_slots_k4v4_split_kernel<<<grid, threads, 0, (cudaStream_t)stream>>>(
+        (float*)wins, (const float*)x_new, (const float*)w, (float*)q,
+        (float*)k_out, (float*)v_out, (const unsigned int*)slots, n4,
+        x_stride >> 2, hk * kd, hk, hv, kd, vd);
+    return pd_launch_status();
 }
 
 static int pd_conv_step_slots_impl(void* wins, const void* x_new, const void* w,

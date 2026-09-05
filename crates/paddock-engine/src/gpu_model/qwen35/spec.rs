@@ -2175,7 +2175,6 @@ impl GpuQwen35 {
         let bs_f8row = &self.bs_f8row_ffn;
         // the Nvf4Dense verify arm's own planes - see the FFN match
         // below. Bound here with the others because `sc` takes &mut self next.
-        let bs_nv4_gu = &self.bs_nv4_gu;
         let bs_f8t_ffn = &self.bs_f8t_ffn;
         // the ATTENTION projections' tile planes. The verify
         // walk ran them on f8d/mmq - the f8 mma and k-quant dp4a classes - while
@@ -2881,12 +2880,9 @@ impl GpuQwen35 {
             )?;
             match &layer.ffn {
                 Ffn::Dense { gate, up, down } => {
-                    // the tile lane, ahead of the f8d arm -
-                    // the third and last place in this walk still electing a
-                    // class the decode path abandoned. A kernel census:
-                    // pd_f8_gemm_mma runs these at 30.66 us where CUTLASS_f8cut
-                    // runs the same class of projection at 17.01 beside it,
-                    // 9.1% of the die. Same shape as the Nvf4Dense arm below.
+                    // the tile lane, ahead of the f8d arm - the third and last
+                    // place in this walk still electing a class the decode
+                    // path abandoned. Same shape as the Nvf4Dense arm below.
                     let f8t_d = bs_f8t_ffn
                         .get(li)
                         .and_then(|o| o.as_ref())
@@ -2932,38 +2928,24 @@ impl GpuQwen35 {
                             embd,
                             r,
                         )?;
-                        let gluq_done = gu_t.flat_gui
-                            && r >= 16
-                            && exec.f8cut_gemm_gluq(
-                                gu_t,
-                                &mut sc.d_f8t_q,
-                                &mut sc.d_f8t_rs,
-                                &mut sc.d_ffn_gate,
-                                embd,
-                                ff,
-                                r,
-                                1,
-                            )?;
-                        if !gluq_done {
-                            exec.f8t_gemm(
-                                gu_t,
-                                &sc.d_f8t_q,
-                                &sc.d_f8t_rs,
-                                &mut bs.d_ks_part,
-                                &mut sc.d_ffn_gate,
-                                embd,
-                                2 * ff,
-                                r,
-                            )?;
-                            exec.swiglu_fused(&sc.d_ffn_gate, &mut sc.d_ffn_up, ff, r)?;
-                            exec.quantize_e4m3_row(
-                                &sc.d_ffn_up,
-                                &mut sc.d_f8t_q,
-                                &mut sc.d_f8t_rs,
-                                ff,
-                                r,
-                            )?;
-                        }
+                        exec.f8t_gemm(
+                            gu_t,
+                            &sc.d_f8t_q,
+                            &sc.d_f8t_rs,
+                            &mut bs.d_ks_part,
+                            &mut sc.d_ffn_gate,
+                            embd,
+                            2 * ff,
+                            r,
+                        )?;
+                        exec.swiglu_fused(&sc.d_ffn_gate, &mut sc.d_ffn_up, ff, r)?;
+                        exec.quantize_e4m3_row(
+                            &sc.d_ffn_up,
+                            &mut sc.d_f8t_q,
+                            &mut sc.d_f8t_rs,
+                            ff,
+                            r,
+                        )?;
                         exec.f8t_gemm(
                             dn_t,
                             &sc.d_f8t_q,
@@ -3079,42 +3061,7 @@ impl GpuQwen35 {
                         .get(li)
                         .and_then(|o| o.as_ref())
                         .filter(|_| spec_nv4 && r <= 64);
-                    let nv4 = bs_nv4_gu
-                        .get(li)
-                        .and_then(|o| o.as_ref())
-                        .filter(|_| r <= sc.cap && exec.has_glu2_b16());
-                    if let (Some(gu4), Some([_, dn_t])) = (nv4, f8t4) {
-                        static W: std::sync::Once = std::sync::Once::new();
-                        W.call_once(|| {
-                            eprintln!("[spec-nv4] engaged: verify FFN on nv4cut+f8t (rows={r})")
-                        });
-                        exec.nv4cut_quant_a(
-                            &sc.d_xn,
-                            &mut sc.d_nv4_aq,
-                            &mut sc.d_nv4_asf,
-                            embd,
-                            r,
-                        )?;
-                        exec.nv4cut_gemm(gu4, &sc.d_nv4_aq, &sc.d_nv4_asf, &mut sc.d_ffn_gate, r)?;
-                        exec.quantize_e4m3_glu2_row_b16(
-                            &sc.d_ffn_gate,
-                            &mut sc.d_f8t_q,
-                            &mut sc.d_f8t_rs,
-                            ff,
-                            r,
-                            crate::gpu::GluAct::Silu,
-                        )?;
-                        exec.f8t_gemm(
-                            dn_t,
-                            &sc.d_f8t_q,
-                            &sc.d_f8t_rs,
-                            &mut bs.d_ks_part,
-                            &mut sc.d_proj,
-                            ff,
-                            embd,
-                            r,
-                        )?;
-                    } else if let Some([gu_t, dn_t]) = f8t4 {
+                    if let Some([gu_t, dn_t]) = f8t4 {
                         exec.quantize_e4m3_row(
                             &sc.d_xn,
                             &mut sc.d_f8t_q,

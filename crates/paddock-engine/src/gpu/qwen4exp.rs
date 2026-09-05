@@ -125,6 +125,7 @@ impl GpuExecutor {
         inj_off: usize,
         norm_w: &CudaSlice<f32>,
         xn: &mut CudaSlice<f32>,
+        xn16: Option<&mut CudaSlice<half::bf16>>,
         rows: usize,
         hc: usize,
         hidden: usize,
@@ -139,6 +140,13 @@ impl GpuExecutor {
         let (wp, _g4) = norm_w.device_ptr(&self.stream);
         let (hp, _g1) = h.device_ptr_mut(&self.stream);
         let (op, _g5) = xn.device_ptr_mut(&self.stream);
+        let mp = match xn16 {
+            Some(m) => {
+                let (p, _g) = m.device_ptr_mut(&self.stream);
+                p as *mut core::ffi::c_void
+            }
+            None => core::ptr::null_mut(),
+        };
         // SAFETY: ABI contract; the inject offset is inside `inj` by
         // construction (the caller owns the fused layout that put it there)
         check(unsafe {
@@ -152,6 +160,7 @@ impl GpuExecutor {
                 hc as u32,
                 hidden as u32,
                 eps,
+                mp,
                 self.stream_ptr(),
             )
         })
@@ -161,6 +170,179 @@ impl GpuExecutor {
     /// offset inside `s` - the folded MoE router writes the shared expert's
     /// scalar gate as row `n_expert` of its own logits.
     #[allow(clippy::too_many_arguments)]
+    /// One-launch batched router + shared-gate: topk over a [n, ne+1] logits
+    /// plane (row stride ne+1), selection bit-identical to the packed form.
+    /// Returns false when the pack lacks the strided slots.
+    #[allow(clippy::too_many_arguments)]
+    pub fn moe_topk_batch_s(
+        &self,
+        logits: &CudaSlice<f32>,
+        bias: &CudaSlice<f32>,
+        n_expert: usize,
+        row_stride: usize,
+        k: usize,
+        idx: &mut CudaSlice<u32>,
+        w: &mut CudaSlice<f32>,
+        batch: usize,
+    ) -> Result<bool, GpuError> {
+        let Some(f) = self.kernels.moe_topk_batch_s else {
+            return Ok(false);
+        };
+        let (lp, _g1) = logits.device_ptr(&self.stream);
+        let (bp, _g2) = bias.device_ptr(&self.stream);
+        let (ip, _g3) = idx.device_ptr_mut(&self.stream);
+        let (wp, _g4) = w.device_ptr_mut(&self.stream);
+        // SAFETY: ABI contract
+        check(unsafe {
+            f(
+                lp as *const _,
+                bp as *const _,
+                n_expert as u32,
+                row_stride as u32,
+                k as u32,
+                ip as *mut _,
+                wp as *mut _,
+                batch as u32,
+                self.stream_ptr(),
+            )
+        })?;
+        Ok(true)
+    }
+
+    /// Strided twin of [`Self::q4x_add_gated_row_at`]: gate for row r read at
+    /// `s[s_off + r*rs]` - the fused router plane's own layout.
+    #[allow(clippy::too_many_arguments)]
+    pub fn q4x_add_gated_row_s(
+        &self,
+        y: &mut CudaSlice<f32>,
+        x: &CudaSlice<f32>,
+        s: &CudaSlice<f32>,
+        s_off: usize,
+        rs: usize,
+        rows: usize,
+        n: usize,
+    ) -> Result<bool, GpuError> {
+        let Some(f) = self.kernels.q4x_add_gated_row_s else {
+            return Ok(false);
+        };
+        let (xp, _g2) = x.device_ptr(&self.stream);
+        let (sp, _g3) = s.device_ptr(&self.stream);
+        let (yp, _g1) = y.device_ptr_mut(&self.stream);
+        // SAFETY: ABI contract; offset inside `s` by construction
+        check(unsafe {
+            f(
+                yp as *mut _,
+                xp as *const _,
+                (sp + (s_off * 4) as u64) as *const _,
+                rs as u32,
+                rows as u32,
+                n as u32,
+                self.stream_ptr(),
+            )
+        })?;
+        Ok(true)
+    }
+
+    /// slot 543: low-M cluster GEMM over a Dual plane's f16 twin. Returns
+    /// false when the pack lacks the slot or the launcher declines.
+    pub fn lowm_gemm(
+        &self,
+        w16: &CudaSlice<half::f16>,
+        x: &CudaSlice<f32>,
+        y: &mut CudaSlice<f32>,
+        in_dim: usize,
+        out_dim: usize,
+        batch: usize,
+    ) -> Result<bool, GpuError> {
+        let Some(f) = self.kernels.lowm_gemm else {
+            return Ok(false);
+        };
+        let (wp, _g1) = w16.device_ptr(&self.stream);
+        let (xp, _g2) = x.device_ptr(&self.stream);
+        let (yp, _g3) = y.device_ptr_mut(&self.stream);
+        // SAFETY: ABI contract (slot 543)
+        let rc = unsafe {
+            f(
+                wp as *const _,
+                xp as *const _,
+                yp as *mut _,
+                in_dim as u32,
+                out_dim as u32,
+                batch as u32,
+                self.stream_ptr(),
+            )
+        };
+        // cudaErrorInvalidValue = 1: launcher declined the shape
+        if rc == 1 {
+            return Ok(false);
+        }
+        check(rc)?;
+        Ok(true)
+    }
+
+    /// slot 544: run the low-M kernel's cluster warmup on a quiet context.
+    pub fn lowm_warmup(
+        &self,
+        w_dummy: &CudaSlice<half::f16>,
+        x_dummy: &CudaSlice<f32>,
+        y_dummy: &mut CudaSlice<f32>,
+    ) -> Result<bool, GpuError> {
+        let Some(f) = self.kernels.lowm_warmup else {
+            return Ok(false);
+        };
+        let (wp, _g1) = w_dummy.device_ptr(&self.stream);
+        let (xp, _g2) = x_dummy.device_ptr(&self.stream);
+        let (yp, _g3) = y_dummy.device_ptr_mut(&self.stream);
+        // SAFETY: ABI contract (slot 544)
+        check(unsafe {
+            f(
+                wp as *const _,
+                xp as *const _,
+                yp as *mut _,
+                self.stream_ptr(),
+            )
+        })?;
+        Ok(true)
+    }
+
+    /// EXPERIMENT (slot 542): cuBLASLt route for a bf16 plane. Returns false
+    /// when the pack carries the stub. Never elected outside the
+    /// PADDOCK_EXP_CUBLASLT probe legs.
+    pub fn exp_lt_gemm(
+        &self,
+        w: &CudaSlice<u8>,
+        x: &CudaSlice<f32>,
+        y: &mut CudaSlice<f32>,
+        in_dim: usize,
+        out_dim: usize,
+        batch: usize,
+    ) -> Result<bool, GpuError> {
+        let Some(f) = self.kernels.exp_lt_gemm else {
+            return Ok(false);
+        };
+        let (wp, _g1) = w.device_ptr(&self.stream);
+        let (xp, _g2) = x.device_ptr(&self.stream);
+        let (yp, _g3) = y.device_ptr_mut(&self.stream);
+        // SAFETY: ABI contract (slot 542)
+        let rc = unsafe {
+            f(
+                wp as *const _,
+                xp as *const _,
+                yp as *mut _,
+                in_dim as u32,
+                out_dim as u32,
+                batch as u32,
+                self.stream_ptr(),
+            )
+        };
+        // cudaErrorNotSupported = 801: the stub pack (no PD_EXP_LT build)
+        if rc == 801 {
+            return Ok(false);
+        }
+        check(rc)?;
+        Ok(true)
+    }
+
     pub fn q4x_add_gated_row_at(
         &self,
         y: &mut CudaSlice<f32>,
@@ -226,14 +408,43 @@ impl GpuExecutor {
         })
     }
 
-    /// NVFP4 MoE gate+up GEMV with a fused swiglu: `y[slot,:] =
-    /// silu(gate_e·x) * (up_e·x)` for every (token, pick) slot. The pack's
-    /// other nvf4 expert consumers are nemotron's `relu(up·x)^2` and have no
-    /// gate plane at all.
-    ///
-    /// `idx` is `[batch*k]` expert ids, `x` is `[batch, in_dim]`, `y` is
-    /// `[batch*k, ff]` - the layout `nvf4_moe_down_acc` consumes next.
-    #[allow(clippy::too_many_arguments)]
+    pub fn bf16_gemv2_swiglu(
+        &self,
+        wg: &CudaSlice<u8>,
+        wu: &CudaSlice<u8>,
+        x: &CudaSlice<f32>,
+        y: &mut CudaSlice<f32>,
+        in_dim: usize,
+        out_dim: usize,
+        batch: usize,
+    ) -> Result<bool, GpuError> {
+        let Some(f) = self.kernels.bf16_gemv2_swiglu else {
+            return Ok(false);
+        };
+        let (gp, _g1) = wg.device_ptr(&self.stream);
+        let (up, _g2) = wu.device_ptr(&self.stream);
+        let (xp, _g3) = x.device_ptr(&self.stream);
+        let (yp, _g4) = y.device_ptr_mut(&self.stream);
+        // SAFETY: ABI contract (slot 546)
+        let rc = unsafe {
+            f(
+                gp as *const _,
+                up as *const _,
+                xp as *const _,
+                yp as *mut _,
+                in_dim as u32,
+                out_dim as u32,
+                batch as u32,
+                self.stream_ptr(),
+            )
+        };
+        if rc == 1 {
+            return Ok(false);
+        }
+        check(rc)?;
+        Ok(true)
+    }
+
     pub fn q4x_moe_gu_swiglu(
         &self,
         gate: &Nvf4MoePlane,
@@ -248,8 +459,12 @@ impl GpuExecutor {
             .kernels
             .q4x_moe_gu_swiglu
             .ok_or(GpuError::MissingOp("q4x_moe_gu_swiglu"))?;
+        // dual-resident layouts: a CutBlk plane still serves this Row-reader
+        // through its retained row_scale copy (the n=1 election).
         for (w, who) in [(gate, "gate"), (up, "up")] {
-            if w.layout != Nvf4MoeLayout::Row {
+            if w.layout != Nvf4MoeLayout::Row
+                && !(w.layout == Nvf4MoeLayout::CutBlk && w.row_scale.is_some())
+            {
                 return Err(GpuError::Unsupported(format!(
                     "q4x_moe_gu_swiglu: {who} plane is {:?}, this kernel reads Row",
                     w.layout
@@ -262,10 +477,12 @@ impl GpuExecutor {
             ));
         }
         let (gd, _a1) = gate.data.device_ptr(&self.stream);
-        let (gs, _a2) = gate.scale.device_ptr(&self.stream);
+        let gate_sc = gate.row_scale.as_ref().unwrap_or(&gate.scale);
+        let (gs, _a2) = gate_sc.device_ptr(&self.stream);
         let (g2, _a3) = gate.scale2.device_ptr(&self.stream);
         let (ud, _a4) = up.data.device_ptr(&self.stream);
-        let (us, _a5) = up.scale.device_ptr(&self.stream);
+        let up_sc = up.row_scale.as_ref().unwrap_or(&up.scale);
+        let (us, _a5) = up_sc.device_ptr(&self.stream);
         let (u2, _a6) = up.scale2.device_ptr(&self.stream);
         let (ip, _a7) = idx.device_ptr(&self.stream);
         let (xp, _a8) = x.device_ptr(&self.stream);
@@ -301,6 +518,7 @@ impl GpuExecutor {
         x: &CudaSlice<f32>,
         w: &CudaSlice<f32>,
         out: &mut CudaSlice<f32>,
+        mirror: Option<&mut CudaSlice<half::bf16>>,
         rows: usize,
         groups: usize,
         gd: usize,
@@ -313,12 +531,18 @@ impl GpuExecutor {
         let (xp, _g1) = x.device_ptr(&self.stream);
         let (wp, _g2) = w.device_ptr(&self.stream);
         let (op, _g3) = out.device_ptr_mut(&self.stream);
+        let m_guard = mirror.map(|m| m.device_ptr_mut(&self.stream));
+        let mp = match &m_guard {
+            Some((p, _)) => *p as *mut core::ffi::c_void,
+            None => std::ptr::null_mut(),
+        };
         // SAFETY: ABI contract; shapes are the caller's, buffers sized by it
         check(unsafe {
             f(
                 xp as *const _,
                 wp as *const _,
                 op as *mut _,
+                mp,
                 rows as u32,
                 groups as u32,
                 gd as u32,
@@ -336,6 +560,7 @@ impl GpuExecutor {
         xn: &CudaSlice<f32>,
         gate: &CudaSlice<f32>,
         out: &mut CudaSlice<f32>,
+        mirror: Option<&mut CudaSlice<half::bf16>>,
         rows: usize,
         hc: usize,
         hidden: usize,
@@ -347,12 +572,18 @@ impl GpuExecutor {
         let (xp, _g1) = xn.device_ptr(&self.stream);
         let (gp, _g2) = gate.device_ptr(&self.stream);
         let (op, _g3) = out.device_ptr_mut(&self.stream);
+        let m_guard = mirror.map(|m| m.device_ptr_mut(&self.stream));
+        let mp = match &m_guard {
+            Some((p, _)) => *p as *mut core::ffi::c_void,
+            None => std::ptr::null_mut(),
+        };
         // SAFETY: ABI contract
         check(unsafe {
             f(
                 xp as *const _,
                 gp as *const _,
                 op as *mut _,
+                mp,
                 rows as u32,
                 hc as u32,
                 hidden as u32,
@@ -413,6 +644,101 @@ impl GpuExecutor {
     /// sqrt(hidden))) * value[r,:]`. `kn`/`qn` must already be group-normalized
     /// (`q4x_group_norm_1p` with the key/query norm weights).
     #[allow(clippy::too_many_arguments)]
+    /// True when the pack carries the ring-window conv step (slot 533).
+    pub fn has_q4x_conv_dil_step_ring(&self) -> bool {
+        self.kernels.q4x_conv_dil_step_ring.is_some()
+    }
+
+    /// Per-slot dilated conv step over a POSITION-indexed ring window, window
+    /// advance fused in (slot 533). `pos[r]` is the position of row r's token;
+    /// the pre-conv row for position `q` lives at ring row `q % ((k-1)*dil)`.
+    #[allow(clippy::too_many_arguments)]
+    pub fn q4x_conv_dil_step_ring(
+        &self,
+        x: &CudaSlice<f32>,
+        win: &mut CudaSlice<f32>,
+        w: &CudaSlice<f32>,
+        out: &mut CudaSlice<f32>,
+        slots: &CudaSlice<u32>,
+        pos: &CudaSlice<u32>,
+        dim: usize,
+        k: usize,
+        dil: usize,
+        rows: usize,
+    ) -> Result<(), GpuError> {
+        let f = self
+            .kernels
+            .q4x_conv_dil_step_ring
+            .ok_or(GpuError::MissingOp("q4x_conv_dil_step_ring"))?;
+        let (xp, _g1) = x.device_ptr(&self.stream);
+        let (wp, _g2) = w.device_ptr(&self.stream);
+        let (sp, _g3) = slots.device_ptr(&self.stream);
+        let (pp, _g4) = pos.device_ptr(&self.stream);
+        let (np, _g5) = win.device_ptr_mut(&self.stream);
+        let (op, _g6) = out.device_ptr_mut(&self.stream);
+        // SAFETY: ABI contract (slot 533)
+        check(unsafe {
+            f(
+                xp as *const _,
+                np as *mut _,
+                wp as *const _,
+                op as *mut _,
+                sp as *const _,
+                pp as *const _,
+                dim as u32,
+                k as u32,
+                dil as u32,
+                rows as u32,
+                self.stream_ptr(),
+            )
+        })
+    }
+
+    /// True when the pack carries the device PLE gather (slot 532).
+    pub fn has_q4x_ple_gather(&self) -> bool {
+        self.kernels.q4x_ple_gather.is_some()
+    }
+
+    /// PLE n-gram row gather off the DEVICE-RESIDENT fp8 table (slot 532).
+    ///
+    /// `ids` is `[rows, heads]` GLOBAL row ids; `out` is `[rows,
+    /// heads*width]` f32, the same layout the host gather produced. The whole
+    /// point is that the 51.2 GB table is read on the device: the host twin
+    /// is a uniform random read over a 51.2 GB mmap at 160 useful bytes per
+    /// 4 KB page, which is what put 0.9-48 s prefill ticks on the ladder.
+    #[allow(clippy::too_many_arguments)]
+    pub fn q4x_ple_gather(
+        &self,
+        table: &CudaSlice<u8>,
+        ids: &CudaSlice<u32>,
+        out: &mut CudaSlice<f32>,
+        scale: f32,
+        rows: usize,
+        heads: usize,
+        width: usize,
+    ) -> Result<(), GpuError> {
+        let f = self
+            .kernels
+            .q4x_ple_gather
+            .ok_or(GpuError::MissingOp("q4x_ple_gather"))?;
+        let (tp, _g1) = table.device_ptr(&self.stream);
+        let (ip, _g2) = ids.device_ptr(&self.stream);
+        let (op, _g3) = out.device_ptr_mut(&self.stream);
+        // SAFETY: ABI contract (slot 532)
+        check(unsafe {
+            f(
+                tp as *const _,
+                ip as *const _,
+                op as *mut _,
+                scale,
+                rows as u32,
+                heads as u32,
+                width as u32,
+                self.stream_ptr(),
+            )
+        })
+    }
+
     pub fn q4x_ple_gate(
         &self,
         kn: &CudaSlice<f32>,
@@ -450,6 +776,46 @@ impl GpuExecutor {
     /// state. `w` is `[dim, k]`; `src` and `out` must be distinct buffers
     /// (every output row reads earlier input rows).
     #[allow(clippy::too_many_arguments)]
+    /// Offset-aware dilated conv (the `causal_conv1d_silu_at` contract): the
+    /// span starts at row `row_off` of both `src` and `out`, and the kernel's
+    /// own left-pad guard is relative to that base, so rows before it are
+    /// never read. That is exactly a fresh sequence's zero left-pad, which is
+    /// what makes a batched-runs prefill legal without a runs table here.
+    #[allow(clippy::too_many_arguments)]
+    pub fn q4x_conv_dil_at(
+        &self,
+        src: &CudaSlice<f32>,
+        w: &CudaSlice<f32>,
+        out: &mut CudaSlice<f32>,
+        row_off: usize,
+        n: usize,
+        dim: usize,
+        k: usize,
+        dil: usize,
+    ) -> Result<(), GpuError> {
+        let f = self
+            .kernels
+            .q4x_conv_dil
+            .ok_or(GpuError::MissingOp("q4x_conv_dil"))?;
+        let (sp, _g1) = src.device_ptr(&self.stream);
+        let (wp, _g2) = w.device_ptr(&self.stream);
+        let (op, _g3) = out.device_ptr_mut(&self.stream);
+        let byte_off = (row_off * dim * std::mem::size_of::<f32>()) as u64;
+        // SAFETY: ABI contract
+        check(unsafe {
+            f(
+                (sp + byte_off) as *const _,
+                wp as *const _,
+                (op + byte_off) as *mut _,
+                n as u32,
+                dim as u32,
+                k as u32,
+                dil as u32,
+                self.stream_ptr(),
+            )
+        })
+    }
+
     pub fn q4x_conv_dil(
         &self,
         src: &CudaSlice<f32>,
@@ -486,6 +852,48 @@ impl GpuExecutor {
     /// `win` is `[(k-1)*dil, dim]` OLDEST-FIRST, holding pre-conv rows; the
     /// caller advances it (a device row shift), so this stays graph-safe.
     #[allow(clippy::too_many_arguments)]
+    /// Per-slot dilated conv window step (slot 521): `rows` sequences, row `r`
+    /// against the window at `slots[r]`. Same expression and order as the
+    /// single-row form.
+    #[allow(clippy::too_many_arguments)]
+    pub fn q4x_conv_dil_step_slots(
+        &self,
+        x: &CudaSlice<f32>,
+        win: &CudaSlice<f32>,
+        w: &CudaSlice<f32>,
+        out: &mut CudaSlice<f32>,
+        slots: &CudaSlice<u32>,
+        dim: usize,
+        k: usize,
+        dil: usize,
+        rows: usize,
+    ) -> Result<(), GpuError> {
+        let f = self
+            .kernels
+            .q4x_conv_dil_step_slots
+            .ok_or(GpuError::MissingOp("q4x_conv_dil_step_slots"))?;
+        let (xp, _g1) = x.device_ptr(&self.stream);
+        let (wp, _g2) = win.device_ptr(&self.stream);
+        let (cp, _g3) = w.device_ptr(&self.stream);
+        let (op, _g4) = out.device_ptr_mut(&self.stream);
+        let (sp, _g5) = slots.device_ptr(&self.stream);
+        // SAFETY: ABI contract; `win` is slots * (k-1)*dil * dim
+        check(unsafe {
+            f(
+                xp as *const _,
+                wp as *const _,
+                cp as *const _,
+                op as *mut _,
+                sp as *const _,
+                dim as u32,
+                k as u32,
+                dil as u32,
+                rows as u32,
+                self.stream_ptr(),
+            )
+        })
+    }
+
     pub fn q4x_conv_dil_step(
         &self,
         x: &CudaSlice<f32>,
@@ -529,6 +937,7 @@ impl GpuExecutor {
         z: &CudaSlice<f32>,
         w: &CudaSlice<f32>,
         out: &mut CudaSlice<f32>,
+        mirror: Option<&mut CudaSlice<half::bf16>>,
         n_rows: usize,
         d: usize,
         eps: f32,
@@ -541,6 +950,11 @@ impl GpuExecutor {
         let (zp, _g2) = z.device_ptr(&self.stream);
         let (wp, _g3) = w.device_ptr(&self.stream);
         let (op, _g4) = out.device_ptr_mut(&self.stream);
+        let m_guard = mirror.map(|mm| mm.device_ptr_mut(&self.stream));
+        let mp = match &m_guard {
+            Some((p, _)) => *p as *mut core::ffi::c_void,
+            None => std::ptr::null_mut(),
+        };
         // SAFETY: ABI contract
         check(unsafe {
             f(
@@ -548,6 +962,7 @@ impl GpuExecutor {
                 zp as *const _,
                 wp as *const _,
                 op as *mut _,
+                mp,
                 n_rows as u32,
                 d as u32,
                 eps,

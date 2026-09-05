@@ -5,7 +5,7 @@
 // same numeric class as llama's prefill). This replaces the stage-1 interim
 // (kquant_dequant_rp + pd_gemm_f32) for batch/prefill; the exact-f32 decode
 // GEMV is untouched. QServe-class design point (W4A8-int8 on the existing int8
-// ladder -  quantization strategy); skeleton cloned from gemm/mmq.cuh's
+// ladder - quantization strategy); skeleton cloned from gemm/mmq.cuh's
 // pd_q8_0_gemm_mmq_kernel (same 128x128x256K tile, warp shape, fragment maps),
 // stream-k/fixup deliberately dropped in v1 (prefill tile counts >> #SMs).
 //
@@ -815,7 +815,7 @@ __device__ __forceinline__ void pd_kq_win_unpack(
 
 // ---- W4A8 decode GEMV (the b=1 SERVING class) ---------------------------------
 // The mmvq-class design point (llama.cpp's own decode class; ExLlamaV2 is the
-// tuned reference -  quant strategy: k-quant files -> W4A8-int8
+// tuned reference - quant strategy: k-quant files -> W4A8-int8
 // runtime): int8-quantized activations staged PACKED in shared, integer dp4a
 // dots off the raw nibble streams. Per 32 weights that is ~1 weight LDG.128 +
 // ~10 unpack ops + 2 x LDS.128 + 8 dp4a + a handful of f32 folds (~35 issue

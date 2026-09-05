@@ -1,4 +1,4 @@
-//! Nemotron continuous batching -  stage B:
+//! Nemotron continuous batching - stage B:
 //! the allocation/admission substrate. The batched ticks land in stage C;
 //! until they do, `Generator::enable_batch` keeps returning Err and serving
 //! stays on the serial lane, so nothing here is reachable from a serve yet.

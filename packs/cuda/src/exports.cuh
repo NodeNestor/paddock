@@ -532,15 +532,6 @@ int pd_add_rmsnorm_scaled_from_parts(void* x, const void* part, const void* w,
     return pd_launch_status();
 }
 
-// defined in the separate cutgemm.cu TU (CUTLASS stays out of the
-// multi-arch pack.cu compile); declarations here so the table can carry them.
-extern "C" int pd_f8cut_gemm(const void*, const void*, const void*, const void*,
-                             void*, unsigned int, unsigned int, unsigned int,
-                             void*);
-extern "C" int pd_f8cut_gemm_gluq(const void*, const void*, const void*,
-                                  const void*, void*, void*, void*, unsigned,
-                                  unsigned, unsigned, unsigned, void*);
-extern "C" int pd_f8t_detile_gui(const void*, void*, unsigned, unsigned, void*);
 extern "C" int pd_nvf4_gemv_multi(const void*, const void*, uint32_t, uint32_t, void*);
 extern "C" int pd_moe_head_router_hb(const void*, const void*, const void*, const void*, const void*, void*, void*, void*, void*, void*, uint32_t, uint32_t, uint32_t, float, uint32_t, void*);
 extern "C" int pd_moe_head_xg(const void*, const void*, const void*, void*, void*, void*, void*, uint32_t, float, uint32_t, void*);
@@ -554,32 +545,43 @@ extern "C" int pd_q8_0_moe_gate_up_mma2t_geglu(const void*, const void*, const v
 extern "C" int pd_q8_0_moe_down_mma2t(const void*, const void*, const void*, const void*, const void*, const void*, const void*, const void*, void*, uint32_t, uint32_t, uint32_t, uint32_t, uint32_t, uint32_t, void*);
 extern "C" int pd_q8_0_moe_gate_up_g2_geglu(const void*, const void*, const void*, const void*, const void*, const void*, const void*, const void*, const void*, const void*, void*, void*, uint32_t, uint32_t, uint32_t, uint32_t, uint32_t, uint32_t, void*);
 extern "C" int pd_moe_align_dual(const void*, void*, void*, void*, void*, void*, void*, void*, uint32_t, uint32_t, uint32_t, uint32_t, uint32_t, void*);
-extern "C" int pd_nv4cut_sf_bytes(uint32_t, uint32_t, unsigned long long*);
-extern "C" int pd_nv4cut_sf_repack(const void*, void*, uint32_t, uint32_t, void*);
-extern "C" int pd_nv4cut_quant_a(const void*, void*, void*, uint32_t, uint32_t,
-                                 void*);
-extern "C" int pd_nv4cut_gemm(const void*, const void*, const void*, const void*,
-                              float, void*, uint32_t, uint32_t, uint32_t, void*);
-extern "C" int pd_f8cut_gemm_b16(const void*, const void*, const void*,
-                                 const void*, void*, unsigned int,
-                                 unsigned int, unsigned int, void*);
 extern "C" int pd_quantize_e4m3_glu2_row_b16(const void*, void*, void*,
                                              unsigned int, unsigned int,
                                              unsigned int, void*);
-extern "C" int pd_f8t_detile(const void*, void*, unsigned int, unsigned int,
-                             void*);
-extern "C" int pd_q4x_group_norm_1p(const void*, const void*, void*, uint32_t, uint32_t, uint32_t, float, void*);
-extern "C" int pd_q4x_hc_mix(const void*, const void*, void*, uint32_t, uint32_t, uint32_t, void*);
+extern "C" int pd_q4x_group_norm_1p(const void*, const void*, void*, void*, uint32_t, uint32_t, uint32_t, float, void*);
+extern "C" int pd_q4x_hc_mix(const void*, const void*, void*, void*, uint32_t, uint32_t, uint32_t, void*);
 extern "C" int pd_q4x_hc_combine(void*, const void*, const void*, uint32_t, uint32_t, uint32_t, void*);
 extern "C" int pd_q4x_scale_silu(void*, uint32_t, float, void*);
 extern "C" int pd_q4x_ple_gate(const void*, const void*, const void*, void*, uint32_t, uint32_t, uint32_t, void*);
 extern "C" int pd_q4x_conv_dil(const void*, const void*, void*, uint32_t, uint32_t, uint32_t, uint32_t, void*);
 extern "C" int pd_q4x_conv_dil_step(const void*, const void*, const void*, void*, uint32_t, uint32_t, uint32_t, void*);
-extern "C" int pd_q4x_gdn_gated_norm(const void*, const void*, const void*, void*, uint32_t, uint32_t, float, void*);
+extern "C" int pd_q4x_gdn_gated_norm(const void*, const void*, const void*, void*, void*, uint32_t, uint32_t, float, void*);
 extern "C" int pd_q4x_gdn_split_widen(const void*, void*, void*, void*, uint32_t, uint32_t, uint32_t, uint32_t, uint32_t, void*);
 extern "C" int pd_q4x_add_gated_row(void*, const void*, const void*, uint32_t, uint32_t, void*);
+extern "C" int pd_q4x_add_gated_row_s(void*, const void*, const void*, uint32_t, uint32_t, uint32_t, void*);
+extern "C" int pd_moe_topk_batch_s(const void*, const void*, uint32_t, uint32_t, uint32_t, void*, void*, uint32_t, void*);
+extern "C" int pd_gated_delta_recurrent_runs_pn(const void*, const void*, const void*, const void*, const void*, void*, void*, const void*, const void*, const void*, uint32_t, uint32_t, uint32_t, uint32_t, void*, void*);
+extern "C" int pd_lowm_gemm(const void*, const void*, void*, uint32_t, uint32_t, uint32_t, void*);
+extern "C" int pd_lowm_warmup(const void*, const void*, void*, void*);
+extern "C" int pd_attn_decode_fmha_sp(const void*, const void*, const void*, const void*, void*, void*, const void*, const void*, uint32_t, uint32_t, uint32_t, uint32_t, uint32_t, uint32_t, uint32_t, uint32_t, float, uint32_t, void*);
+extern "C" int pd_bf16_gemv2_swiglu(const void*, const void*, const void*, void*, uint32_t, uint32_t, uint32_t, void*);
+extern "C" int pd_convert_f32_bf16(const void*, void*, uint64_t, void*);
+extern "C" int pd_bf16_gemv_up_hcmix(const void*, const void*, const void*, void*, void*, uint32_t, uint32_t, uint32_t, void*);
+extern "C" int pd_conv_step_slots_split(void*, const void*, const void*, void*, void*, void*, const void*, uint32_t, uint32_t, uint32_t, uint32_t, uint32_t, uint32_t, uint32_t, uint32_t, void*);
+extern "C" int pd_gated_delta_recurrent_slots_gn(const void*, const void*, const void*, const void*, const void*, const void*, void*, void*, const void*, const void*, void*, float, uint32_t, uint32_t, uint32_t, void*);
+extern "C" int pd_bf16_gemv_mrow_f32(const void*, const void*, const void*, void*, void*, uint32_t, uint32_t, uint32_t, uint32_t, float, void*, uint32_t, void*);
+extern "C" int pd_convert_bf16_f32(const void*, void*, uint64_t, void*);
+extern "C" int pd_convert_bf16_f32_rows(const void*, void*, uint32_t, uint32_t, uint32_t, uint32_t, void*);
+extern "C" int pd_swiglu_mir(void*, const void*, void*, uint32_t, void*);
+extern "C" int pd_bf16_pad_rows(const void*, void*, uint32_t, uint32_t, uint32_t, void*);
+extern "C" int pd_bf16_hc_perm_pad(const void*, void*, uint32_t, uint32_t, uint32_t, uint32_t, void*);
 extern "C" int pd_q4x_moe_gu_swiglu(const void*, const void*, const void*, const void*, const void*, const void*, const void*, const void*, void*, uint32_t, uint32_t, uint32_t, uint32_t, void*);
-extern "C" int pd_q4x_combine_norm(void*, const void*, const void*, const void*, void*, uint32_t, uint32_t, uint32_t, float, void*);
+extern "C" int pd_q4x_combine_norm(void*, const void*, const void*, const void*, void*, uint32_t, uint32_t, uint32_t, float, void*, void*);
+extern "C" int pd_bf16_gemv_nk_f32(const void*, const void*, const void*, void*, uint32_t, uint32_t, void*);
+extern "C" int pd_matvec_f32_sk(const void*, const void*, void*, void*, void*, uint32_t, uint32_t, uint32_t, void*);
+extern "C" int pd_bf16_gemv_silu_f32(const void*, const void*, const void*, void*, void*, uint32_t, uint32_t, uint32_t, float, void*);
+extern "C" int pd_bf16_gemv_nk_mr_f32(const void*, const void*, const void*, void*, uint32_t, uint32_t, uint32_t, void*);
+extern "C" int pd_q4x_conv_dil_step_slots(const void*, const void*, const void*, void*, const void*, uint32_t, uint32_t, uint32_t, uint32_t, void*);
 
 static const KernelTableV1 PD_KERNELS = {
     (uint32_t)sizeof(KernelTableV1),
@@ -1121,19 +1123,12 @@ static const KernelTableV1 PD_KERNELS = {
     // rope and the channel-outer pixel-shuffle merge
     pd_rope2d,
     pd_pixel_shuffle_rows,
-    // 372-373:  vendored CUTLASS sm100 fp8 decode GEMM (separate TU,
-    // src/gemm/cutgemm.cu - stubs returning NotSupported when built without
-    // the CUTLASS include path) + the tile-image -> flat k-major detiler
-    pd_f8cut_gemm,
-    pd_f8t_detile,
     // 374:  dim-major twin V pool sync (v9q VD arm)
     pd_vdim_sync,
     // 375: vdim pool registration (engine -> launcher side channel)
     pd_vdim_register,
     // 376: batched-runs prefill attention arm
     pd_pf_runs_register,
-    // 377-378: bf16-D wide cutlass + bf16-in glu2 quantize
-    pd_f8cut_gemm_b16,
     pd_quantize_e4m3_glu2_row_b16,
     // 379: bf16 -> e4m3 + f32 row scale  - the converter a bf16
     // lm_head needs to build an F8RowPlane and ride the f8t tile route
@@ -1239,12 +1234,6 @@ static const KernelTableV1 PD_KERNELS = {
     pd_nvf4_gemm_f4t,
     // 431: tcgen05 decode attention, final-output contract
     pd_attn_decode_tc5_paged,
-    // 432-433: gluq - fused geglu + per-fragment e4m3 quantize cutlass gu
-    // GEMM with row-scale fixup, and the gate/up-interleaved detiler that
-    // builds its flat plane (both cutgemm.cu; NotSupported stubs without
-    // CUTLASS, same as 372-373)
-    pd_f8cut_gemm_gluq,
-    pd_f8t_detile_gui,
     // 434: device top-K prefilter (host-head sampling; deltanet/
     // stage2_sample.cuh)
     pd_topk_rows,
@@ -1313,14 +1302,6 @@ static const KernelTableV1 PD_KERNELS = {
     pd_gated_delta_commit_walk,
     // 464: dflash async-round pick copy into the chain layout - arch-generic
     pd_dflash_chain_picks,
-    // 465-468: checkpoint-native NVFP4 decode GEMM (gemm/nv4cut.cu; the
-    // CUTLASS sm100 block-scaled mainloop, the same class other engines run).
-    // NotSupported stubs without CUTLASS, like 372-373 and 432-433, and
-    // NULLed off cc 10 below because the bodies are sm_100a SASS.
-    pd_nv4cut_sf_bytes,
-    pd_nv4cut_sf_repack,
-    pd_nv4cut_quant_a,
-    pd_nv4cut_gemm,
     // 469: dflash conditioning fold (norm+rope+paged store over written
     // rows, one launch per drafter layer) - arch-generic
     pd_dflash_cond_append,
@@ -1466,6 +1447,40 @@ static const KernelTableV1 PD_KERNELS = {
     pd_swiglu_fused_il,
     pd_swiglu_fused_nvf4_il,
     pd_swiglu_quant_nvf4_from_parts_il,
+    pd_bf16_gemv_nk_f32,
+    pd_matvec_f32_sk,
+    pd_bf16_gemv_silu_f32,
+    pd_bf16_gemv_nk_mr_f32,
+    pd_q4x_conv_dil_step_slots,
+    pd_bf16_seg2_gemm_mma,
+    pd_bf16_hcmix_permute,
+    pd_bf16_hcmix_gemm,
+    pd_q4x_ple_gather,
+    pd_q4x_conv_dil_step_ring,
+    pd_gated_delta_recurrent_runs,
+    pd_f16_ksplit_set,
+    pd_attn_decode_batch_ps,
+    // 537: FMHA-style decode attention - per-warp key streams, no per-tile
+    // barrier, register-resident (m, l, acc). Its own numeric class.
+    pd_attn_decode_fmha,
+    pd_moe_topk_batch_s,
+    pd_q4x_add_gated_row_s,
+    pd_gated_delta_recurrent_runs_pn,
+    pd_exp_lt_gemm,
+    pd_lowm_gemm,
+    pd_lowm_warmup,
+    pd_attn_decode_fmha_sp,
+    pd_bf16_gemv2_swiglu,
+    pd_convert_f32_bf16,
+    pd_bf16_gemv_up_hcmix,
+    pd_conv_step_slots_split,
+    pd_gated_delta_recurrent_slots_gn,
+    pd_bf16_gemv_mrow_f32,
+    pd_convert_bf16_f32,
+    pd_convert_bf16_f32_rows,
+    pd_swiglu_mir,
+    pd_bf16_pad_rows,
+    pd_bf16_hc_perm_pad,
 };
 
 PD_EXPORT const PackInfo* paddock_pack_info(void) {
@@ -1647,13 +1662,6 @@ PD_EXPORT const KernelTableV1* paddock_pack_kernels_v1(void) {
             t.q8_0_moe_gate_up_g2_geglu = NULL;
         }
         if (cma != 10) {
-            // nv4cut is one sm_100a TU (CUTLASS block-scaled NVFP4); its
-            // quantizer/repack kernels have no image on any other die, so
-            // this is a hard launch failure rather than a slow path.
-            t.nv4cut_sf_bytes = NULL;
-            t.nv4cut_sf_repack = NULL;
-            t.nv4cut_quant_a = NULL;
-            t.nv4cut_gemm = NULL;
         }
         resolved = 1;
     }

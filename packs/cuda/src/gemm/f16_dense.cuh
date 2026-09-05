@@ -2165,6 +2165,31 @@ static int pd_f16_gemm_tc5p_elect(const __half* w, const __half* x, float* y,
 // (8KB-granular smem rounding on the 228KB SM: 104KB co-resides, 112KB
 // strands half the grid into a second serial wave) - grids that cannot
 // exceed 1 CTA/SM get the full smem instead (deep ring is free there).
+// Co-residency gate (2026-08-29). The tc5g/tc5gp K-split is a CROSS-CTA
+// producer/consumer: slice 0 stores, slices >0 SPIN on pd_f16ks_flags[t] until
+// it does. The split factor is elected from `2*nsm / U0` - i.e. on the
+// assumption that this launch OWNS the machine. It does not when the caller
+// runs a side stream: a slice>0 CTA then holds an SM waiting for a slice-0 CTA
+// that will never be scheduled, and the device hangs at 100% with no progress
+// and no error.
+//
+// Reproduced on qwen4_exp: batch 32 with every dense plane on this lane hangs
+// forever; `PADDOCK_Q38FN_FORK=0` on the same binary clears it; batches 8 and
+// 16 survive only because they land on the mmaf arm, which has no flag
+// protocol. Not a plane shape (all 14 run clean at b32 in isolation), not
+// graph capture, not the arm election.
+//
+// 0 = "another kernel may be resident, do not create cross-CTA dependencies".
+// The launchers then clamp KS to 1, which is exactly the `KS > 1u` guard on
+// every flag access, so the protocol is not merely avoided but unreachable.
+// Read at DISPATCH time like the mmaf gate above, so a graph captured while it
+// is clear bakes the KS=1 election.
+static std::atomic<int> pd_f16_ks_gate{1};
+PD_EXPORT int pd_f16_ksplit_set(int on) {
+    pd_f16_ks_gate.store(on ? 1 : 0, std::memory_order_relaxed);
+    return 0;
+}
+
 #if !defined(__CUDA_ARCH__) || (__CUDA_ARCH__ >= 900)
 static int pd_f16_gemm_tc5g_launch(const __half* w, const __half* x, float* y,
                                    float beta, unsigned in_dim, unsigned out_dim,
@@ -2199,6 +2224,10 @@ static int pd_f16_gemm_tc5g_launch(const __half* w, const __half* x, float* y,
     if (KS > nk) KS = nk;
     if (KS > 16u) KS = 16u;
     if (KS < 1u) KS = 1u;
+    // Co-resident callers get KS=1: every flag access above is guarded by
+    // `KS > 1u`, so this makes the cross-CTA spin unreachable rather than
+    // merely unlikely. See pd_f16_ksplit_set.
+    if (!pd_f16_ks_gate.load(std::memory_order_relaxed)) KS = 1u;
     CUtensorMap wm, xm, ym;
     if (!pd_f16t_tmap_3d(&wm, w, (uint64_t)in_dim * 2u, out_dim, 128u, 1u) ||
         !pd_f16t_tmap_3d(&xm, x, (uint64_t)in_dim * 2u, batch, nto, 1u))
@@ -2391,7 +2420,13 @@ pd_f16_gemm_mmaf_kernel(
         }
         pd_f16_cpa_commit();
         pd_f16_cpa_waitN<0>();
-        asm volatile("bar.sync 1, 256;");
+        // MEMORY CLOBBER, not decoration. Without it the compiler may move
+        // shared accesses across this barrier: racecheck (bench/mmaf_race.cu,
+        // 2 iters) reported the merge read racing the park stores at 15360
+        // hazards per site in <NSLOT=4,ROWS=64> and 7680 in <8,32>, and the
+        // bit gate failed on 155 of 600 (plane,batch) runs. The bar_wait
+        // helper above already carries the clobber for the same reason.
+        asm volatile("bar.sync 1, 256;" ::: "memory");
     }
 
     const uint32_t g = lane >> 2, t = lane & 3u, l7 = lane & 7u;
@@ -2453,6 +2488,18 @@ pd_f16_gemm_mmaf_kernel(
     // ring slot (they are done with it; the producer never refills past
     // nslab), pair 0 sums and stores. Fragment coords are identical across
     // pairs, so the merge is element-exact register addition.
+    // A pair is two warps (rg=0,1) sharing the pair's ring slot, and the park
+    // below OVERWRITES that slot. The loop's only synchronisation is the
+    // per-slot mbarrier pair, which orders each warp against the PRODUCER --
+    // nothing orders the two sibling warps against each other at loop exit.
+    // So rg=0 could finish its last slab and start parking while rg=1 was
+    // still issuing ldmatrix against the same slot:
+    //   racecheck: Read f16_dense.cuh:2468 vs Writes 2499-2502,
+    //   15360 hazards in <NSLOT=4,ROWS=64>, 7680 in <8,32>.
+    // Worst where the slab walk is shortest and most uneven -- hc up is
+    // K=320/KEXT=128 = 3 slabs across 4 pairs, and failed 31 of 40 at b16.
+    // The barrier costs one CTA-wide sync per launch, off the K loop.
+    asm volatile("bar.sync 1, 256;" ::: "memory");
     const uint32_t r0l = rg * 16u + g;                   // local row, this lane
     float* park = (float*)(wring + pair * (NSLOT / 4u) * SLAB);
     if (pair != 0u) {
@@ -2467,7 +2514,9 @@ pd_f16_gemm_mmaf_kernel(
                 park[(size_t)(rq + 8u) * nto + c0 + 1u] = acc[q][cg][3];
             }
     }
-    asm volatile("bar.sync 1, 256;");
+    // orders the park STORES above against the merge LOADS below -- the pair
+    // that races here writes acc into its ring slot while pair 0 reads it.
+    asm volatile("bar.sync 1, 256;" ::: "memory");
     if (pair != 0u) return;
     #pragma unroll
     for (uint32_t pp = 1; pp < NPAIR; ++pp) {
@@ -2668,7 +2717,13 @@ PD_EXPORT int pd_f16_gemm(const void* w, const void* x, void* y, float beta,
     // tile halves meaningfully full; below that the mma twin wins anyway.
     // A tmap-encode failure (unaligned base) falls through to the mma twin -
     // pd_f16_gemm_tc5d_launch returns before launching anything in that case.
-    if (batch >= 256u && pd_f16_tc5_on()) {
+    // The ::2 duo carries the same cross-CTA flag protocol AND a persistent
+    // cluster grid sized to the machine, so a co-resident caller must not take
+    // it either. Today this is unreachable in that state (batch >= 256 is
+    // prefill, which does not fork), so the guard is belt-and-braces against a
+    // future caller that batches wider.
+    if (batch >= 256u && pd_f16_tc5_on() &&
+        pd_f16_ks_gate.load(std::memory_order_relaxed)) {
         // ping-pong wide arm first (needs in_dim%64, out_dim%4, beta in {0,1}
         // - its launcher declines cleanly otherwise); the duo arm remains the
         // fallback for the %8-but-not-%64 K class.

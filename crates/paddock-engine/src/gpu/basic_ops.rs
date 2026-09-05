@@ -228,6 +228,14 @@ impl GpuExecutor {
         self.stream.alloc_zeros(n).map_err(drv)
     }
 
+    pub fn alloc_i32(&self, n: usize) -> Result<CudaSlice<i32>, GpuError> {
+        self.stream.alloc_zeros(n).map_err(drv)
+    }
+
+    pub fn alloc_u16(&self, n: usize) -> Result<CudaSlice<u16>, GpuError> {
+        self.stream.alloc_zeros(n).map_err(drv)
+    }
+
     /// Partial sectioned M-RoPE in place over `x` [n_tokens, n_heads*head_dim].
     /// `positions` is [4, n_tokens] axis-major (t,h,w,e); `sections` the per-axis
     /// rotary-pair counts. YaRN params in `reference::ops::YarnRope::kernel_params`
@@ -344,6 +352,34 @@ impl GpuExecutor {
         let (gp, _g1) = gate.device_ptr_mut(&self.stream);
         let (up_p, _g2) = up.device_ptr(&self.stream);
         check(unsafe { f(gp as *mut _, up_p as *const _, n as u32, self.stream_ptr()) })
+    }
+
+    /// slot 570: `swiglu` with a bf16 mirror of the result. Same values as
+    /// [`Self::swiglu`]; `Ok(false)` means the slot is absent.
+    pub fn swiglu_mir(
+        &self,
+        gate: &mut CudaSlice<f32>,
+        up: &CudaSlice<f32>,
+        out16: &mut CudaSlice<half::bf16>,
+        n: usize,
+    ) -> Result<bool, GpuError> {
+        let Some(f) = self.kernels.swiglu_mir else {
+            return Ok(false);
+        };
+        let (up_p, _g2) = up.device_ptr(&self.stream);
+        let (mp, _g3) = out16.device_ptr_mut(&self.stream);
+        let (gp, _g1) = gate.device_ptr_mut(&self.stream);
+        // SAFETY: ABI contract (slot 570)
+        check(unsafe {
+            f(
+                gp as *mut _,
+                up_p as *const _,
+                mp as *mut _,
+                n as u32,
+                self.stream_ptr(),
+            )
+        })?;
+        Ok(true)
     }
 
     /// SwiGLU over a fused gate|up GEMM output ([rows, 2*ff] with per-row

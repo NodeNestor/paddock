@@ -4374,34 +4374,6 @@ pub struct KernelTableV1 {
             *mut core::ffi::c_void,
         ) -> i32,
     >,
-    ///  vendored CUTLASS sm100 fp8 decode GEMM (slots 372-373):
-    /// `(w_flat [out][in] k-major e4m3, wrs [out] f32, xq [batch][in] e4m3,
-    ///   xrs [batch] f32, y [batch][out] f32, in_dim, out_dim, batch, stream)`
-    /// - y = (xq . w_flat^T) * wrs[row] * xrs[col], final (no partials).
-    pub f8cut_gemm: Option<
-        unsafe extern "C" fn(
-            *const core::ffi::c_void,
-            *const core::ffi::c_void,
-            *const core::ffi::c_void,
-            *const core::ffi::c_void,
-            *mut core::ffi::c_void,
-            u32,
-            u32,
-            u32,
-            *mut core::ffi::c_void,
-        ) -> i32,
-    >,
-    /// flat k-major e4m3 plane from the SW128 tile image:
-    /// `(tiles, flat, in_dim, out_dim, stream)`
-    pub f8t_detile: Option<
-        unsafe extern "C" fn(
-            *const core::ffi::c_void,
-            *mut core::ffi::c_void,
-            u32,
-            u32,
-            *mut core::ffi::c_void,
-        ) -> i32,
-    >,
     ///  (slot 374) dim-major twin V pool sync:
     /// `(pool, vdim, positions, slots, block_tables, blocks_per_slot,
     ///   kv_dim, rows, stream)`
@@ -4424,21 +4396,6 @@ pub struct KernelTableV1 {
     /// (device u32 prefix array [n_runs+1], n_runs, max run rows); null
     /// disarms
     pub pf_runs_register: Option<unsafe extern "C" fn(*const core::ffi::c_void, u32, u32) -> i32>,
-    /// slot 377: bf16-D wide cutlass GEMM (w_flat, wrs, xq, xrs, y_bf16,
-    /// in, out, batch, stream)
-    pub f8cut_gemm_b16: Option<
-        unsafe extern "C" fn(
-            *const core::ffi::c_void,
-            *const core::ffi::c_void,
-            *const core::ffi::c_void,
-            *const core::ffi::c_void,
-            *mut core::ffi::c_void,
-            u32,
-            u32,
-            u32,
-            *mut core::ffi::c_void,
-        ) -> i32,
-    >,
     /// slot 378: bf16-in whole-row glu2 quantize (gu_bf16, q, rscale, n_ff,
     /// rows, act 0=gelu 1=silu, stream)
     pub quantize_e4m3_glu2_row_b16: Option<
@@ -5058,43 +5015,6 @@ pub struct KernelTableV1 {
             *mut core::ffi::c_void,
         ) -> i32,
     >,
-    /// slot 432 (gluq): fused geglu + per-fragment pow2 e4m3 quantize in
-    /// the cutlass gu GEMM epilogue over a gate/up-INTERLEAVED flat plane,
-    /// then the row-scale fixup kernel - one call produces the down GEMM's
-    /// (q, rscale) directly and the standalone glu2 quantize launch is gone.
-    /// `(w_flat_gui, wrs_gui [2*n_ff] interleaved, xq [batch][in] e4m3,
-    ///   xrs [batch] f32, q2_scratch [batch][2*n_ff] bytes, q [batch][n_ff],
-    ///   rscale [batch] f32, in_dim, n_ff, batch, act (0=gelu), stream)`.
-    /// rc 0 = done; rc -2 = shape/act declined, caller keeps the classic
-    /// chain (the -2 decline convention of attn_decode_tc5_paged).
-    pub f8cut_gemm_gluq: Option<
-        unsafe extern "C" fn(
-            *const core::ffi::c_void,
-            *const core::ffi::c_void,
-            *const core::ffi::c_void,
-            *const core::ffi::c_void,
-            *mut core::ffi::c_void,
-            *mut core::ffi::c_void,
-            *mut core::ffi::c_void,
-            u32,
-            u32,
-            u32,
-            u32,
-            *mut core::ffi::c_void,
-        ) -> i32,
-    >,
-    /// slot 433: gate/up-interleaved twin of f8t_detile (dst flat row 2f =
-    /// src f, 2f+1 = src out/2 + f) - builds the pairing layout slot 432
-    /// consumes. Same `(tiles, flat, in_dim, out_dim, stream)` contract.
-    pub f8t_detile_gui: Option<
-        unsafe extern "C" fn(
-            *const core::ffi::c_void,
-            *mut core::ffi::c_void,
-            u32,
-            u32,
-            *mut core::ffi::c_void,
-        ) -> i32,
-    >,
     /// slot 434: device top-K prefilter for HOST-HEAD sampling rows.
     /// `(logits, params [rows × PdSampleRow - mode 4 rows are selected],
     /// out [rows × k × 2 u32 = (token id, raw-logit f32 bits)], rows, n,
@@ -5597,48 +5517,6 @@ pub struct KernelTableV1 {
             *mut core::ffi::c_void,
         ) -> i32,
     >,
-    /// Slot 465: bytes needed for the blocked scale-factor plane of an
-    /// `(mn, k)` NVFP4 operand (`pd_nv4cut_sf_bytes`).
-    pub nv4cut_sf_bytes: Option<unsafe extern "C" fn(u32, u32, *mut u64) -> i32>,
-    /// Slot 466: scatter a row-major `[mn][k/16]` e4m3 scale vector into
-    /// CUTLASS's blocked SF layout. `dst` must be zeroed first.
-    pub nv4cut_sf_repack: Option<
-        unsafe extern "C" fn(
-            *const core::ffi::c_void,
-            *mut core::ffi::c_void,
-            u32,
-            u32,
-            *mut core::ffi::c_void,
-        ) -> i32,
-    >,
-    /// Slot 467: f32 `[m][k]` -> e2m1 nibbles + blocked SFA, per-16 dynamic
-    /// scale (no global scale - see the TU note).
-    pub nv4cut_quant_a: Option<
-        unsafe extern "C" fn(
-            *const core::ffi::c_void,
-            *mut core::ffi::c_void,
-            *mut core::ffi::c_void,
-            u32,
-            u32,
-            *mut core::ffi::c_void,
-        ) -> i32,
-    >,
-    /// Slot 468: `D[m][n]` bf16 = `alpha * (A_nvfp4 x B_nvfp4^T)`, CUTLASS
-    /// sm100 block-scaled. `alpha` is the plane's per-tensor `scale2`.
-    pub nv4cut_gemm: Option<
-        unsafe extern "C" fn(
-            *const core::ffi::c_void,
-            *const core::ffi::c_void,
-            *const core::ffi::c_void,
-            *const core::ffi::c_void,
-            f32,
-            *mut core::ffi::c_void,
-            u32,
-            u32,
-            u32,
-            *mut core::ffi::c_void,
-        ) -> i32,
-    >,
     /// slot 469: dflash conditioning fold (rung C) - the append
     /// that norms for the drafter ring. Per written row (`rows_w`, the
     /// flattened cut windows): k-norm (rmsnorm math verbatim, thread width
@@ -5945,6 +5823,311 @@ pub struct KernelTableV1 {
     pub swiglu_fused_nvf4_il: Option<SwigluFusedNvf4Fn>,
     /// Slot 536: pd_swiglu_quant_nvf4_from_parts over interleaved partials.
     pub swiglu_quant_nvf4_from_parts_il: Option<SwigluQuantNvf4FromPartsFn>,
+    /// 518: narrow-K bf16 GEMV - one warp per output row, 8 rows per block.
+    /// Elected by SHAPE for planes far below the stock kernel's 2048-wide
+    /// per-block walk; its own slot so no other lane's reduction order moves.
+    pub bf16_gemv_nk_f32: Option<Bf16GemvNkF32Fn>,
+    /// 519: batch-1 split-K f32 matvec with a deterministic combine and
+    /// caller-owned scratch. For skinny-out decode planes.
+    pub matvec_f32_sk: Option<MatvecF32SkFn>,
+    /// 520: bf16 GEMV with a fused `silu(v * inv)` epilogue over the first
+    /// `silu_rows` output rows.
+    pub bf16_gemv_silu_f32: Option<Bf16GemvSiluF32Fn>,
+    /// 522: multi-row narrow-K GEMV - the batch > 1 arm of slot 518.
+    pub bf16_gemv_nk_mr_f32: Option<Bf16GemvNkMrF32Fn>,
+    /// 521: per-slot dilated conv1d+silu window step (PLE), batched over rows.
+    /// The GDN causal twin already existed as `conv_step_slots` above.
+    pub q4x_conv_dil_step_slots: Option<Q4xConvDilStepSlotsFn>,
+    /// 529: one launch over a plane folding two projections, segmented store.
+    pub bf16_seg2_gemm_mma: Option<Bf16Seg2GemmMmaFn>,
+    /// 530: load-time row permute of the hc up plane so the hc mean lands in
+    /// one thread's registers in the fused epilogue.
+    pub bf16_hcmix_permute: Option<Bf16HcmixPermuteFn>,
+    /// 531: up-GEMM with the hyper-connection mix tail in its epilogue.
+    pub bf16_hcmix_gemm: Option<Bf16HcmixGemmFn>,
+    /// 532: PLE n-gram row gather off the device-resident 51.2 GB fp8 table.
+    pub q4x_ple_gather: Option<Q4xPleGatherFn>,
+    /// 533: per-slot dilated conv step over a position-indexed ring window,
+    /// window advance fused in.
+    pub q4x_conv_dil_step_ring: Option<Q4xConvDilStepRingFn>,
+    /// 534: `n_runs` independent sequences through the gated-delta recurrence
+    /// in one launch, each against its own slot's carried state.
+    pub gated_delta_recurrent_runs: Option<GatedDeltaRecurrentRunsFn>,
+    /// 535: co-residency gate for the f16 tensor-core lane - 0 forbids the
+    /// cross-CTA K-split so the lane is safe beside a forked side stream.
+    pub f16_ksplit_set: Option<F16KsplitSetFn>,
+    /// 536: `attn_decode_batch` with the parallel-score walk (every thread
+    /// works the dot product instead of `n_t` of them).
+    pub attn_decode_batch_ps: Option<AttnDecodeBatchFn>,
+    /// 537: FMHA-style decode attention. Every warp walks its own key stream
+    /// with (m, l, acc) in registers, so there is no per-tile barrier and
+    /// shared holds only the final cross-warp merge. head_dim 128/256 only.
+    /// Its own numeric class - not bit-exact against the tile walk.
+    pub attn_decode_fmha: Option<AttnDecodeBatchFn>,
+    /// slot 539: strided-logits twin of moe_topk_batch - same kernels, same
+    /// selection, the row stride is a parameter so a [n, n_expert+1] fused
+    /// router plane can feed it without a repack.
+    pub moe_topk_batch_s: Option<
+        unsafe extern "C" fn(
+            *const core::ffi::c_void,
+            *const core::ffi::c_void,
+            u32,
+            u32,
+            u32,
+            *mut core::ffi::c_void,
+            *mut core::ffi::c_void,
+            u32,
+            *mut core::ffi::c_void,
+        ) -> i32,
+    >,
+    /// slot 540: strided-gate twin of q4x_add_gated_row (gate at s[r*rs]).
+    pub q4x_add_gated_row_s: Option<
+        unsafe extern "C" fn(
+            *mut core::ffi::c_void,
+            *const core::ffi::c_void,
+            *const core::ffi::c_void,
+            u32,
+            u32,
+            u32,
+            *mut core::ffi::c_void,
+        ) -> i32,
+    >,
+    /// slot 541: pre-normed runs walk - the per-token q/k L2 trees hoisted to
+    /// a parallel companion kernel (bit-identical scalars), `rn` caller-owned.
+    pub gated_delta_recurrent_runs_pn: Option<
+        unsafe extern "C" fn(
+            *const core::ffi::c_void,
+            *const core::ffi::c_void,
+            *const core::ffi::c_void,
+            *const core::ffi::c_void,
+            *const core::ffi::c_void,
+            *mut core::ffi::c_void,
+            *mut core::ffi::c_void,
+            *const core::ffi::c_void,
+            *const core::ffi::c_void,
+            *const core::ffi::c_void,
+            u32,
+            u32,
+            u32,
+            u32,
+            *mut core::ffi::c_void,
+            *mut core::ffi::c_void,
+        ) -> i32,
+    >,
+    /// slot 542: EXPERIMENT cuBLASLt gemm (datapath-ceiling probe; stub =
+    /// NotSupported in shipped packs).
+    pub exp_lt_gemm: Option<
+        unsafe extern "C" fn(
+            *const core::ffi::c_void,
+            *const core::ffi::c_void,
+            *mut core::ffi::c_void,
+            u32,
+            u32,
+            u32,
+            *mut core::ffi::c_void,
+        ) -> i32,
+    >,
+    /// slot 543: low-M cluster GEMM (pr4266-class decode kernel; f16 W twin
+    /// x f16 X -> f32 Y, batch <= 8, cluster split-K, deterministic reduce).
+    pub lowm_gemm: Option<
+        unsafe extern "C" fn(
+            *const core::ffi::c_void,
+            *const core::ffi::c_void,
+            *mut core::ffi::c_void,
+            u32,
+            u32,
+            u32,
+            *mut core::ffi::c_void,
+        ) -> i32,
+    >,
+    /// slot 544: its load-time cluster warmup (the first cluster launch must
+    /// run on a quiet context - bench/cluster_fork_probe law).
+    pub lowm_warmup: Option<
+        unsafe extern "C" fn(
+            *const core::ffi::c_void,
+            *const core::ffi::c_void,
+            *mut core::ffi::c_void,
+            *mut core::ffi::c_void,
+        ) -> i32,
+    >,
+    /// slot 545: SPLIT-KV fmha decode attention (grid.z KV slices + a
+    /// fixed-order sink-seeded merge pass; `part` is caller-owned scratch of
+    /// batch*n_heads*split*(head_dim+2) f32). Own numeric class, env-gated.
+    pub attn_decode_fmha_sp: Option<
+        unsafe extern "C" fn(
+            *const core::ffi::c_void,
+            *const core::ffi::c_void,
+            *const core::ffi::c_void,
+            *const core::ffi::c_void,
+            *mut core::ffi::c_void,
+            *mut core::ffi::c_void,
+            *const core::ffi::c_void,
+            *const core::ffi::c_void,
+            u32,
+            u32,
+            u32,
+            u32,
+            u32,
+            u32,
+            u32,
+            u32,
+            f32,
+            u32,
+            *mut core::ffi::c_void,
+        ) -> i32,
+    >,
+    /// slot 546: dual-plane swiglu GEMV - the n=1 shared-expert gate|up pair
+    /// + swiglu in one launch (x reads amortised across both planes).
+    pub bf16_gemv2_swiglu: Option<
+        unsafe extern "C" fn(
+            *const core::ffi::c_void,
+            *const core::ffi::c_void,
+            *const core::ffi::c_void,
+            *mut core::ffi::c_void,
+            u32,
+            u32,
+            u32,
+            *mut core::ffi::c_void,
+        ) -> i32,
+    >,
+    /// slot 548: f32 -> bf16 convert (TGV activation staging).
+    pub convert_f32_bf16: Option<
+        unsafe extern "C" fn(
+            *const core::ffi::c_void,
+            *mut core::ffi::c_void,
+            u64,
+            *mut core::ffi::c_void,
+        ) -> i32,
+    >,
+    /// slot 562: HC up plane with the hyper-connection mix fused into the
+    /// epilogue (w, x, xn, out, out16, in_dim, hidden, hc, stream).
+    pub bf16_gemv_up_hcmix: Option<
+        unsafe extern "C" fn(
+            *const core::ffi::c_void,
+            *const core::ffi::c_void,
+            *const core::ffi::c_void,
+            *mut core::ffi::c_void,
+            *mut core::ffi::c_void,
+            u32,
+            u32,
+            u32,
+            *mut core::ffi::c_void,
+        ) -> i32,
+    >,
+    /// slot 563: GDN conv step with the q/k/v split+widen fused in.
+    pub conv_step_slots_split: Option<
+        unsafe extern "C" fn(
+            *mut core::ffi::c_void,
+            *const core::ffi::c_void,
+            *const core::ffi::c_void,
+            *mut core::ffi::c_void,
+            *mut core::ffi::c_void,
+            *mut core::ffi::c_void,
+            *const core::ffi::c_void,
+            u32,
+            u32,
+            u32,
+            u32,
+            u32,
+            u32,
+            u32,
+            u32,
+            *mut core::ffi::c_void,
+        ) -> i32,
+    >,
+    /// slot 564: GDN recurrence with the gated norm fused into its epilogue.
+    pub gated_delta_recurrent_slots_gn: Option<
+        unsafe extern "C" fn(
+            *const core::ffi::c_void,
+            *const core::ffi::c_void,
+            *const core::ffi::c_void,
+            *const core::ffi::c_void,
+            *const core::ffi::c_void,
+            *const core::ffi::c_void,
+            *mut core::ffi::c_void,
+            *mut core::ffi::c_void,
+            *const core::ffi::c_void,
+            *const core::ffi::c_void,
+            *mut core::ffi::c_void,
+            f32,
+            u32,
+            u32,
+            u32,
+            *mut core::ffi::c_void,
+        ) -> i32,
+    >,
+    /// slot 565: batched block-per-row bf16 gemv for narrow-out decode planes.
+    pub bf16_gemv_mrow_f32: Option<
+        unsafe extern "C" fn(
+            *const core::ffi::c_void,
+            *const core::ffi::c_void,
+            *const core::ffi::c_void,
+            *mut core::ffi::c_void,
+            *mut core::ffi::c_void,
+            u32,
+            u32,
+            u32,
+            u32,
+            f32,
+            *mut core::ffi::c_void,
+            u32,
+            *mut core::ffi::c_void,
+        ) -> i32,
+    >,
+    /// slot 568: bf16 -> f32 cast.
+    pub convert_bf16_f32: Option<
+        unsafe extern "C" fn(
+            *const core::ffi::c_void,
+            *mut core::ffi::c_void,
+            u64,
+            *mut core::ffi::c_void,
+        ) -> i32,
+    >,
+    /// slot 569: strided bf16 -> f32 (unpads a padded-N plane).
+    pub convert_bf16_f32_rows: Option<
+        unsafe extern "C" fn(
+            *const core::ffi::c_void,
+            *mut core::ffi::c_void,
+            u32,
+            u32,
+            u32,
+            u32,
+            *mut core::ffi::c_void,
+        ) -> i32,
+    >,
+    /// slot 570: swiglu with a bf16 mirror of the result.
+    pub swiglu_mir: Option<
+        unsafe extern "C" fn(
+            *mut core::ffi::c_void,
+            *const core::ffi::c_void,
+            *mut core::ffi::c_void,
+            u32,
+            *mut core::ffi::c_void,
+        ) -> i32,
+    >,
+    /// slot 573: pad a bf16 plane's row count with zero rows.
+    pub bf16_pad_rows: Option<
+        unsafe extern "C" fn(
+            *const core::ffi::c_void,
+            *mut core::ffi::c_void,
+            u32,
+            u32,
+            u32,
+            *mut core::ffi::c_void,
+        ) -> i32,
+    >,
+    /// slot 574: up plane in the gate epilogue's row order (d*hc+s), padded.
+    pub bf16_hc_perm_pad: Option<
+        unsafe extern "C" fn(
+            *const core::ffi::c_void,
+            *mut core::ffi::c_void,
+            u32,
+            u32,
+            u32,
+            u32,
+            *mut core::ffi::c_void,
+        ) -> i32,
+    >,
 }
 
 /// Slot 533: see the KernelTableV1 field doc.
@@ -6295,7 +6478,7 @@ pub type AddRmsnormQ8XnFn = unsafe extern "C" fn(
 /// the copy to the smaller of declared and expected, so an old pack against a
 /// new engine (or the reverse) reads missing entries as None rather than a
 /// shifted slot.
-pub const KERNEL_TABLE_SLOTS: usize = 537;
+pub const KERNEL_TABLE_SLOTS: usize = 560;
 
 const _: () = assert!(
     core::mem::size_of::<KernelTableV1>() == 8 + KERNEL_TABLE_SLOTS * 8,
@@ -6717,6 +6900,7 @@ pub type Nvf4MoeDownAccFn = unsafe extern "C" fn(
     topk_w: *const core::ffi::c_void,
     xr: *const core::ffi::c_void,
     y: *mut core::ffi::c_void,
+    *mut core::ffi::c_void,
     ff: u32,
     embd: u32,
     k: u32,
@@ -7898,6 +8082,7 @@ pub type Q4xGroupNorm1pFn = unsafe extern "C" fn(
     x: *const core::ffi::c_void,
     w: *const core::ffi::c_void,
     out: *mut core::ffi::c_void,
+    out16: *mut core::ffi::c_void,
     rows: u32,
     groups: u32,
     gd: u32,
@@ -7910,6 +8095,7 @@ pub type Q4xHcMixFn = unsafe extern "C" fn(
     xn: *const core::ffi::c_void,
     gate: *const core::ffi::c_void,
     out: *mut core::ffi::c_void,
+    out16: *mut core::ffi::c_void,
     rows: u32,
     hc: u32,
     hidden: u32,
@@ -7985,6 +8171,7 @@ pub type Q4xGdnGatedNormFn = unsafe extern "C" fn(
     z: *const core::ffi::c_void,
     w: *const core::ffi::c_void,
     out: *mut core::ffi::c_void,
+    out16: *mut core::ffi::c_void,
     n_rows: u32,
     d: u32,
     eps: f32,
@@ -8020,6 +8207,85 @@ pub type Q4xCombineNormFn = unsafe extern "C" fn(
     hc: u32,
     hidden: u32,
     eps: f32,
+    xn16: *mut core::ffi::c_void,
+    stream: *mut core::ffi::c_void,
+) -> KernelStatus;
+
+/// narrow-K bf16 GEMV (slot 518): `y[o] = dot(w[o,:], x) + bias[o]`, f32
+/// accumulation, one warp per output row. Identical contract to
+/// `Bf16GemvF32Fn`; differs only in the block decomposition and therefore in
+/// reduction ORDER, which is why it is a separate slot.
+pub type Bf16GemvNkF32Fn = unsafe extern "C" fn(
+    w: *const core::ffi::c_void,
+    bias: *const core::ffi::c_void,
+    x: *const core::ffi::c_void,
+    y: *mut core::ffi::c_void,
+    in_dim: u32,
+    out_dim: u32,
+    stream: *mut core::ffi::c_void,
+) -> KernelStatus;
+
+/// batch-1 split-K f32 matvec (slot 519):
+/// `(w, x, out, partials, counters, in_dim, out_dim, split, stream)`.
+/// `partials` is `out_dim * split` f32 and `counters` is `out_dim` u32, both
+/// CALLER-OWNED and address-stable; the kernel leaves `counters` zeroed so a
+/// captured graph replays cleanly.
+pub type MatvecF32SkFn = unsafe extern "C" fn(
+    w: *const core::ffi::c_void,
+    x: *const core::ffi::c_void,
+    out: *mut core::ffi::c_void,
+    partials: *mut core::ffi::c_void,
+    counters: *mut core::ffi::c_void,
+    in_dim: u32,
+    out_dim: u32,
+    split: u32,
+    stream: *mut core::ffi::c_void,
+) -> KernelStatus;
+
+/// bf16 GEMV + fused silu epilogue (slot 520):
+/// `(w, bias, x, y, in_dim, out_dim, silu_rows, inv, stream)` -
+/// `y[o] = dot(w[o,:], x) + bias[o]`, then `silu(y[o] * inv)` for
+/// `o < silu_rows`. Bit-identical to the GEMV followed by a separate
+/// scale+silu pass.
+pub type Bf16GemvSiluF32Fn = unsafe extern "C" fn(
+    w: *const core::ffi::c_void,
+    bias: *const core::ffi::c_void,
+    x: *const core::ffi::c_void,
+    y: *mut core::ffi::c_void,
+    y16: *mut core::ffi::c_void,
+    in_dim: u32,
+    out_dim: u32,
+    silu_rows: u32,
+    inv: f32,
+    stream: *mut core::ffi::c_void,
+) -> KernelStatus;
+
+/// multi-row narrow-K GEMV (slot 522):
+/// `(w, bias, x, y, in_dim, out_dim, batch, stream)` - `x` is `[batch, in_dim]`
+/// and `y` is `[batch, out_dim]`, row-major, like every other batched entry.
+pub type Bf16GemvNkMrF32Fn = unsafe extern "C" fn(
+    w: *const core::ffi::c_void,
+    bias: *const core::ffi::c_void,
+    x: *const core::ffi::c_void,
+    y: *mut core::ffi::c_void,
+    in_dim: u32,
+    out_dim: u32,
+    batch: u32,
+    stream: *mut core::ffi::c_void,
+) -> KernelStatus;
+
+/// per-slot dilated conv window step (slot 521):
+/// `(x, win, w, out, slots, dim, k, dil, rows, stream)`.
+pub type Q4xConvDilStepSlotsFn = unsafe extern "C" fn(
+    x: *const core::ffi::c_void,
+    win: *const core::ffi::c_void,
+    w: *const core::ffi::c_void,
+    out: *mut core::ffi::c_void,
+    slots: *const core::ffi::c_void,
+    dim: u32,
+    k: u32,
+    dil: u32,
+    rows: u32,
     stream: *mut core::ffi::c_void,
 ) -> KernelStatus;
 
@@ -8546,6 +8812,102 @@ pub type MatvecF32KsFn = unsafe extern "C" fn(
     out_dim: u32,
     batch: u32,
     stream: *mut core::ffi::c_void,
+) -> i32;
+
+/// Two-projection fused GEMM with a segmented store (slot 529).
+pub type Bf16Seg2GemmMmaFn = unsafe extern "C" fn(
+    *const core::ffi::c_void,
+    *const core::ffi::c_void,
+    *mut core::ffi::c_void,
+    *mut core::ffi::c_void,
+    u32,
+    u32,
+    u32,
+    u32,
+    *mut core::ffi::c_void,
+) -> i32;
+
+/// Load-time permute of the hc up plane (slot 530).
+pub type Bf16HcmixPermuteFn = unsafe extern "C" fn(
+    *const core::ffi::c_void,
+    *mut core::ffi::c_void,
+    u32,
+    u32,
+    u32,
+    *mut core::ffi::c_void,
+) -> i32;
+
+/// Co-residency gate for the f16 tensor-core lane (535). `0` declares that
+/// another kernel may be resident, which clamps the tc5g/tc5gp K-split to 1
+/// and makes its cross-CTA spin unreachable; `1` restores the free election.
+pub type F16KsplitSetFn = unsafe extern "C" fn(i32) -> i32;
+
+/// Batched-runs gated-delta recurrence (534): `(q, k, v, g, beta, state, out,
+/// run_off, run_len, run_slot, n_runs, n_heads, head_dim, stream)`. grid is
+/// (n_heads, n_runs); run `r` walks rows `run_off[r] .. +run_len[r]` against
+/// slot `run_slot[r]`'s state.
+pub type GatedDeltaRecurrentRunsFn = unsafe extern "C" fn(
+    *const core::ffi::c_void,
+    *const core::ffi::c_void,
+    *const core::ffi::c_void,
+    *const core::ffi::c_void,
+    *const core::ffi::c_void,
+    *mut core::ffi::c_void,
+    *mut core::ffi::c_void,
+    *const core::ffi::c_void,
+    *const core::ffi::c_void,
+    *const core::ffi::c_void,
+    u32,
+    u32,
+    u32,
+    *mut core::ffi::c_void,
+) -> i32;
+
+/// Per-slot dilated conv step over a POSITION-indexed ring window (533):
+/// `(x, win, w, out, slots, pos, dim, k, dil, rows, stream)`. The window
+/// advance is fused in - the row for position `q` lives at ring row
+/// `q % ((k-1)*dil)`, so nothing host-side enters the launch and one capture
+/// serves every slot set.
+pub type Q4xConvDilStepRingFn = unsafe extern "C" fn(
+    *const core::ffi::c_void,
+    *mut core::ffi::c_void,
+    *const core::ffi::c_void,
+    *mut core::ffi::c_void,
+    *const core::ffi::c_void,
+    *const core::ffi::c_void,
+    u32,
+    u32,
+    u32,
+    u32,
+    *mut core::ffi::c_void,
+) -> i32;
+
+/// PLE n-gram row gather off the device-resident fp8 table (532):
+/// `(table, ids[rows*heads], out[rows*heads*width], scale, rows, heads,
+/// width, stream)`. `ids` carries GLOBAL row ids - the per-head table offset
+/// is folded in by the host hash, which touches no table memory.
+pub type Q4xPleGatherFn = unsafe extern "C" fn(
+    *const core::ffi::c_void,
+    *const core::ffi::c_void,
+    *mut core::ffi::c_void,
+    f32,
+    u32,
+    u32,
+    u32,
+    *mut core::ffi::c_void,
+) -> i32;
+
+/// Up-GEMM with the hyper-connection mix tail fused into its epilogue (531).
+pub type Bf16HcmixGemmFn = unsafe extern "C" fn(
+    *const core::ffi::c_void,
+    *const core::ffi::c_void,
+    *const core::ffi::c_void,
+    *mut core::ffi::c_void,
+    u32,
+    u32,
+    u32,
+    u32,
+    *mut core::ffi::c_void,
 ) -> i32;
 
 /// head+router+topk fusion (slot 487).

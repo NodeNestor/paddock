@@ -1400,7 +1400,14 @@ __device__ __forceinline__ void pd_moe_topk_warp_t(const float* __restrict__ log
         bi = __shfl_sync(0xffffffffu, bi, 0);
         sel_logit[s] = best;
         if (lane == 0) out_idx[s] = bi;
-        if ((bi & 31u) == lane) v[bi >> 5] = -1e30f;
+        // Retire the winner without a dynamic index into `v`: `v[bi >> 5]`
+        // is a runtime subscript on a register array, which spills the whole
+        // array to LOCAL memory and turns every `v[j]` read in the unrolled
+        // scan above into a local load, k times over. Same lane, same slot,
+        // same value - but the store index is now a compile-time constant.
+        #pragma unroll
+        for (uint32_t j = 0; j < VJ; ++j)
+            if (lane + 32u * j == bi) v[j] = -1e30f;
     }
     if (lane == 0) {
         float mm = sel_logit[0];
@@ -1444,11 +1451,121 @@ __global__ void pd_moe_topk_kernel_t(const float* __restrict__ logits, uint32_t 
 template <uint32_t VJ>
 __global__ void pd_moe_topk_batch_kernel_t(const float* __restrict__ logits,
                                          const float* __restrict__ bias, uint32_t n_expert,
-                                         uint32_t k, uint32_t* __restrict__ out_idx,
+                                         uint32_t rs, uint32_t k, uint32_t* __restrict__ out_idx,
                                          float* __restrict__ out_w) {
+    PD_PDL_ARM();  // consumer-safe for early PDL launches (2026-08-31)
     uint32_t b = blockIdx.x;
-    pd_moe_topk_warp_t<VJ>(logits + (size_t)b * n_expert, bias, n_expert, k,
+    // rs = logits row stride; n_expert when the plane is packed, n_expert+1
+    // when the shared-gate row rides the same matvec output. Same values in
+    // the same order -> bit-identical selection either way.
+    pd_moe_topk_warp_t<VJ>(logits + (size_t)b * rs, bias, n_expert, k,
                      out_idx + (size_t)b * k, out_w + (size_t)b * k);
+}
+
+// Shared-staged twin. The selection is the same routine on the same values in
+// the same order, so results are bit-identical; the only change is who reads
+// global memory. The warp-only form has one warp issue VJ strided global loads
+// per lane (16 of them at 512 experts) with no other warp to overlap the
+// latency against - measured 8.06 us for a 513-float read plus ten selection
+// rounds, on a kernel whose arithmetic is worth ~1 us. Here the whole block
+// stages the logits into shared memory first, then warp 0 selects out of
+// shared.
+// Block-parallel twin of the shm kernel (2026-08-31). The warp routine above
+// runs k sequential picks, each scanning VJ=16 registers in one warp while the
+// other 15 warps of the staging block idle: ~230 dependent steps for the
+// qwen4_exp router (512 experts, k=10), measured 6.4 us a launch on the
+// CRITICAL BRANCH of every layer. Here every thread owns n_expert/NTH values
+// and each pick is a block reduction, so the chain is k*(VJ + 10) steps.
+//
+// The selection rule is the warp routine's, unchanged: strict `>` inside a
+// thread (ascending index, so the lowest index wins a tie) and
+// `(ov > best) || (ov == best && oi < bi)` across lanes -- an order-free rule,
+// so the picks are identical, not merely equivalent. The weight epilogue is
+// the same serial max/expf/sum/divide on the same selection order.
+template <uint32_t NW, uint32_t VJ>
+__global__ __launch_bounds__(NW * 32u) void pd_moe_topk_batch_blk_kernel_t(
+    const float* __restrict__ logits, const float* __restrict__ bias,
+    uint32_t n_expert, uint32_t rs, uint32_t k, uint32_t* __restrict__ out_idx,
+    float* __restrict__ out_w) {
+    PD_PDL_ARM();
+    __shared__ float sv[NW];
+    __shared__ uint32_t si[NW];
+    __shared__ float win_v;
+    __shared__ uint32_t win_i;
+    const uint32_t b = blockIdx.x;
+    const float* src = logits + (size_t)b * rs;
+    const uint32_t tid = threadIdx.x, nth = NW * 32u;
+    const uint32_t warp = tid >> 5, lane = tid & 31u;
+    float v[VJ];
+    #pragma unroll
+    for (uint32_t j = 0; j < VJ; ++j) {
+        const uint32_t i = tid + nth * j;
+        v[j] = i < n_expert ? src[i] + (bias ? bias[i] : 0.0f) : -1e30f;
+    }
+    float sel_logit[16];
+    for (uint32_t s = 0; s < k; ++s) {
+        float best = -1e30f;
+        uint32_t bi = 0;
+        #pragma unroll
+        for (uint32_t j = 0; j < VJ; ++j) {
+            const uint32_t i = tid + nth * j;
+            if (v[j] > best) { best = v[j]; bi = i; }
+        }
+        for (uint32_t off = 16; off > 0; off >>= 1) {
+            const float ov = __shfl_down_sync(0xffffffffu, best, off);
+            const uint32_t oi = __shfl_down_sync(0xffffffffu, bi, off);
+            if (ov > best || (ov == best && oi < bi)) { best = ov; bi = oi; }
+        }
+        if (lane == 0) { sv[warp] = best; si[warp] = bi; }
+        __syncthreads();
+        if (warp == 0) {
+            float wb = (lane < NW) ? sv[lane] : -1e30f;
+            uint32_t wi = (lane < NW) ? si[lane] : 0xffffffffu;
+            for (uint32_t off = 16; off > 0; off >>= 1) {
+                const float ov = __shfl_down_sync(0xffffffffu, wb, off);
+                const uint32_t oi = __shfl_down_sync(0xffffffffu, wi, off);
+                if (ov > wb || (ov == wb && oi < wi)) { wb = ov; wi = oi; }
+            }
+            if (lane == 0) { win_v = wb; win_i = wi; }
+        }
+        __syncthreads();
+        sel_logit[s] = win_v;
+        if (tid == 0) out_idx[(size_t)b * k + s] = win_i;
+        // retire the winner without a runtime subscript (see the warp twin)
+        #pragma unroll
+        for (uint32_t j = 0; j < VJ; ++j)
+            if (tid + nth * j == win_i) v[j] = -1e30f;
+        __syncthreads();
+    }
+    if (tid == 0) {
+        float mm = sel_logit[0];
+        for (uint32_t s = 1; s < k; ++s) mm = fmaxf(mm, sel_logit[s]);
+        float sum = 0.0f;
+        float* ow = out_w + (size_t)b * k;
+        for (uint32_t s = 0; s < k; ++s) {
+            const float e = __expf(sel_logit[s] - mm);
+            ow[s] = e;
+            sum += e;
+        }
+        for (uint32_t s = 0; s < k; ++s) ow[s] /= sum;
+    }
+}
+
+template <uint32_t VJ>
+__global__ void pd_moe_topk_batch_shm_kernel_t(const float* __restrict__ logits,
+                                         const float* __restrict__ bias, uint32_t n_expert,
+                                         uint32_t rs, uint32_t k, uint32_t* __restrict__ out_idx,
+                                         float* __restrict__ out_w) {
+    PD_PDL_ARM();  // consumer-safe for early PDL launches (2026-08-31)
+    extern __shared__ float sl[];
+    const uint32_t b = blockIdx.x;
+    const float* src = logits + (size_t)b * rs;
+    for (uint32_t i = threadIdx.x; i < n_expert; i += blockDim.x)
+        sl[i] = src[i] + (bias ? bias[i] : 0.0f);
+    __syncthreads();
+    if (threadIdx.x < 32u)
+        pd_moe_topk_warp_t<VJ>(sl, nullptr, n_expert, k,
+                               out_idx + (size_t)b * k, out_w + (size_t)b * k);
 }
 
 // f32 batched matvec for the tiny router GEMM: out[t][o] = dot(w[o], x[t]),
@@ -2142,6 +2259,7 @@ __global__ void pd_moe_align_kernel(
     const unsigned int* __restrict__ idx, unsigned int* __restrict__ sorted_row,
     unsigned int* __restrict__ sorted_slot, unsigned int* __restrict__ block_expert,
     uint32_t rows, uint32_t n_active, uint32_t n_expert, uint32_t bm, uint32_t max_blocks) {
+    PD_PDL_ARM();
     // histogram -> block-wide scan -> scatter. The first cut had one thread
     // serially walk all experts for the prefix AND the block_expert writes -
     // 21.7 us at c32/128e with the whole block idle

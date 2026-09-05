@@ -1239,176 +1239,11 @@ impl GpuExecutor {
         Ok(crate::gpu::F8RowPlane { data, scale })
     }
 
-    /// True when the CUTLASS sm100 block-scaled NVFP4 lane is loadable
-    /// (slots 462-465; sm_100a bodies, NULLed off cc 10 by the pack).
-    pub fn has_nv4cut(&self) -> bool {
-        self.kernels.nv4cut_gemm.is_some()
-            && self.kernels.nv4cut_quant_a.is_some()
-            && self.kernels.nv4cut_sf_repack.is_some()
-            && self.kernels.nv4cut_sf_bytes.is_some()
-    }
-
-    /// Bytes the blocked scale-factor plane of an `(mn, k)` operand needs.
-    /// Bigger than `mn * k / 16` whenever `mn` is not a multiple of 128 -
-    /// the layout tiles to 128 rows x 64 k-elements - so the ACTIVATION
-    /// plane must be sized with this, not by hand.
-    pub fn nv4cut_sf_bytes(&self, mn: usize, k: usize) -> Result<usize, GpuError> {
-        let f = self
-            .kernels
-            .nv4cut_sf_bytes
-            .ok_or(GpuError::MissingOp("nv4cut_sf_bytes"))?;
-        let mut out: u64 = 0;
-        // SAFETY: ABI contract (slot 462); out is a live local
-        check(unsafe { f(mn as u32, k as u32, &mut out as *mut u64) })?;
-        Ok(out as usize)
-    }
-
-    /// Build the CUTLASS-consumable twin of two NVFP4 planes concatenated
-    /// along out rows ([a | b]) - the gate|up merge the decode arm runs as
-    /// one GEMM. Fusing is worth 8.8 us/layer at m=32 (26.32 us fused vs
-    /// 2 x 17.56 unfused, nv4cut_probe), which is why this exists at all.
-    ///
-    /// Both planes must share `in_dim` AND `scale2`: one fused plane carries
-    /// one alpha. llm-compressor emits a shared `weight_global_scale` for
-    /// gate/up exactly so this holds (checked on every layer of the qwen3.8
-    /// export), and a mismatch declines rather than silently mis-scales.
-    pub fn nvf4_cut_concat2(
-        &self,
-        a: &Nvf4Plane,
-        b: &Nvf4Plane,
-    ) -> Result<crate::gpu::Nvf4CutPlane, GpuError> {
-        if a.in_dim != b.in_dim {
-            return Err(GpuError::Unsupported(
-                "fused nv4cut planes need one in_dim".into(),
-            ));
-        }
-        if a.scale2 != b.scale2 {
-            return Err(GpuError::Unsupported(format!(
-                "fused nv4cut planes need one scale2 ({} vs {})",
-                a.scale2, b.scale2
-            )));
-        }
-        if a.layout != Nvf4Layout::Row || b.layout != Nvf4Layout::Row {
-            return Err(GpuError::Unsupported(
-                "nv4cut reads the row-major layout".into(),
-            ));
-        }
-        let (k, out) = (a.in_dim, a.out_dim + b.out_dim);
-        let repack = self
-            .kernels
-            .nv4cut_sf_repack
-            .ok_or(GpuError::MissingOp("nv4cut_sf_repack"))?;
-        // nibbles: a straight concat - each plane's rows are already k-major
-        let mut data = self.alloc_u8(out * k / 2)?;
-        // scales: concat into a staging vector, then one scatter (the layout
-        // is over the fused out_dim, so a per-plane scatter would be wrong)
-        let mut raw = self.alloc_u8(out * k / 16)?;
-        for (p, roff) in [(a, 0usize), (b, a.out_dim)] {
-            let (d0, d1) = (roff * k / 2, (roff + p.out_dim) * k / 2);
-            let mut v = data
-                .try_slice_mut(d0..d1)
-                .ok_or_else(|| GpuError::Unsupported("nv4cut data slice".into()))?;
-            self.stream.memcpy_dtod(&p.data, &mut v).map_err(drv)?;
-            let (s0, s1) = (roff * k / 16, (roff + p.out_dim) * k / 16);
-            let mut v = raw
-                .try_slice_mut(s0..s1)
-                .ok_or_else(|| GpuError::Unsupported("nv4cut scale slice".into()))?;
-            self.stream.memcpy_dtod(&p.scale, &mut v).map_err(drv)?;
-        }
-        let nbytes = self.nv4cut_sf_bytes(out, k)?;
-        let mut sf = self.alloc_u8(nbytes)?;
-        self.stream.memset_zeros(&mut sf).map_err(drv)?;
-        {
-            let (sp, _g1) = raw.device_ptr(&self.stream);
-            let (dp, _g2) = sf.device_ptr_mut(&self.stream);
-            // SAFETY: ABI contract (slot 463); dst sized by slot 462 and zeroed
-            check(unsafe {
-                repack(
-                    sp as *const _,
-                    dp as *mut _,
-                    out as u32,
-                    k as u32,
-                    self.stream_ptr(),
-                )
-            })?;
-        }
-        self.stream.synchronize().map_err(drv)?;
-        Ok(crate::gpu::Nvf4CutPlane {
-            data,
-            sf,
-            alpha: a.scale2,
-            in_dim: k,
-            out_dim: out,
-        })
-    }
-
-    /// f32 `[m][k]` activations -> e2m1 nibbles + blocked SFA. Per-16
-    /// dynamic scale, no global scale (see the TU note in gemm/nv4cut.cu).
-    /// `aq` needs `m * k / 2` bytes, `asf` needs `nv4cut_sf_bytes(m, k)`.
-    pub fn nv4cut_quant_a(
-        &self,
-        x: &CudaSlice<f32>,
-        aq: &mut CudaSlice<u8>,
-        asf: &mut CudaSlice<u8>,
-        k: usize,
-        m: usize,
-    ) -> Result<(), GpuError> {
-        let f = self
-            .kernels
-            .nv4cut_quant_a
-            .ok_or(GpuError::MissingOp("nv4cut_quant_a"))?;
-        let (xp, _g1) = x.device_ptr(&self.stream);
-        let (qp, _g2) = aq.device_ptr_mut(&self.stream);
-        let (sp, _g3) = asf.device_ptr_mut(&self.stream);
-        // SAFETY: ABI contract (slot 464); k % 16 == 0 checked by the launcher
-        check(unsafe {
-            f(
-                xp as *const _,
-                qp as *mut _,
-                sp as *mut _,
-                k as u32,
-                m as u32,
-                self.stream_ptr(),
-            )
-        })
-    }
-
-    /// `y[m][out_dim]` bf16 = `alpha * (A_nvfp4 x W_nvfp4^T)`. `y` is an
-    /// f32-typed slice holding bf16 (the p16 convention), so it needs
-    /// `m * out_dim / 2` f32 elements.
-    pub fn nv4cut_gemm(
-        &self,
-        w: &crate::gpu::Nvf4CutPlane,
-        aq: &CudaSlice<u8>,
-        asf: &CudaSlice<u8>,
-        y: &mut CudaSlice<f32>,
-        m: usize,
-    ) -> Result<(), GpuError> {
-        let f = self
-            .kernels
-            .nv4cut_gemm
-            .ok_or(GpuError::MissingOp("nv4cut_gemm"))?;
-        debug_assert!(m * w.out_dim / 2 <= y.len(), "nv4cut D buffer too small");
-        let (wp, _g1) = w.data.device_ptr(&self.stream);
-        let (sp, _g2) = w.sf.device_ptr(&self.stream);
-        let (ap, _g3) = aq.device_ptr(&self.stream);
-        let (fp, _g4) = asf.device_ptr(&self.stream);
-        let (yp, _g5) = y.device_ptr_mut(&self.stream);
-        // SAFETY: ABI contract (slot 465); geometry from the plane itself
-        check(unsafe {
-            f(
-                wp as *const _,
-                sp as *const _,
-                ap as *const _,
-                fp as *const _,
-                w.alpha,
-                yp as *mut _,
-                w.in_dim as u32,
-                w.out_dim as u32,
-                m as u32,
-                self.stream_ptr(),
-            )
-        })
+    /// Byte-filled device alloc: the DSL gemms' block-scale path treats an
+    /// sf byte of 0x00 as UB (tile-wide contamination measured) - activation
+    /// sf slabs must hold VALID e4m3 bytes everywhere from the start.
+    pub fn alloc_u8_filled(&self, n: usize, byte: u8) -> Result<CudaSlice<u8>, GpuError> {
+        self.stream.clone_htod(&vec![byte; n]).map_err(drv)
     }
 
     /// NVFP4 checkpoint plane -> f8w plane (e4m3 payload + one ue8m0 scale
@@ -2384,6 +2219,7 @@ impl GpuExecutor {
         Ok(Nvf4MoePlane {
             data,
             scale,
+            row_scale: None,
             scale2,
             n_expert,
             ff,
@@ -2463,6 +2299,7 @@ impl GpuExecutor {
         Ok(Nvf4MoePlane {
             data,
             scale,
+            row_scale: None,
             scale2,
             n_expert,
             ff,
@@ -2473,7 +2310,7 @@ impl GpuExecutor {
 
     /// Loud layout mismatch for a MoE-plane consumer (the wrappers below all
     /// check; a kernel reading the wrong byte order would be silent garbage).
-    fn moe_layout_ok(
+    pub(super) fn moe_layout_ok(
         w: &Nvf4MoePlane,
         want: Nvf4MoeLayout,
         op: &'static str,
@@ -2544,6 +2381,7 @@ impl GpuExecutor {
         topk_w: &CudaSlice<f32>,
         xr: &CudaSlice<f32>,
         y: &mut CudaSlice<f32>,
+        part: Option<&mut CudaSlice<f32>>,
         k: usize,
         batch: usize,
         accumulate: bool,
@@ -2552,18 +2390,30 @@ impl GpuExecutor {
             .kernels
             .nvf4_moe_down_acc
             .ok_or(GpuError::MissingOp("nvf4_moe_down_acc"))?;
-        Self::moe_layout_ok(w, Nvf4MoeLayout::Row, "nvf4_moe_down_acc")?;
+        let row_scales: &CudaSlice<u8> = match (&w.layout, &w.row_scale) {
+            (Nvf4MoeLayout::Row, _) => &w.scale,
+            (Nvf4MoeLayout::CutBlk, Some(rs)) => rs,
+            _ => {
+                Self::moe_layout_ok(w, Nvf4MoeLayout::Row, "nvf4_moe_down_acc")?;
+                unreachable!()
+            }
+        };
         debug_assert!(idx.len() >= batch * k);
         debug_assert!(topk_w.len() >= batch * k);
         debug_assert!(xr.len() >= batch * k * w.in_dim);
         debug_assert!(y.len() >= batch * w.ff);
         let (dp, _g1) = w.data.device_ptr(&self.stream);
-        let (sp, _g2) = w.scale.device_ptr(&self.stream);
+        let (sp, _g2) = row_scales.device_ptr(&self.stream);
         let (s2p, _g3) = w.scale2.device_ptr(&self.stream);
         let (ip, _g4) = idx.device_ptr(&self.stream);
         let (wp, _g5) = topk_w.device_ptr(&self.stream);
         let (xp, _g6) = xr.device_ptr(&self.stream);
         let (yp, _g7) = y.device_ptr_mut(&self.stream);
+        let part_guard = part.map(|m| m.device_ptr_mut(&self.stream));
+        let ptp = match &part_guard {
+            Some((p, _)) => *p as *mut core::ffi::c_void,
+            None => std::ptr::null_mut(),
+        };
         // SAFETY: ABI contract; sizes checked above. For a down plane the
         // struct's `ff` is the out dim (embd) and `in_dim` is the expert ff.
         check(unsafe {
@@ -2575,6 +2425,7 @@ impl GpuExecutor {
                 wp as *const _,
                 xp as *const _,
                 yp as *mut _,
+                ptp,
                 w.in_dim as u32,
                 w.ff as u32,
                 k as u32,

@@ -307,7 +307,7 @@ __global__ void pd_attn_decode_kernel(
 #define PD_ATTN_TILE_SMEM(hd) \
     (((hd) + 2u * PD_ATTN_TILE_FOR(hd) * ((hd) + 1u) + 2u * PD_ATTN_TILE_FOR(hd)) * \
      sizeof(float))
-template<typename KV, uint32_t TILE = PD_ATTN_TILE>
+template<typename KV, uint32_t TILE = PD_ATTN_TILE, bool PS = false>
 __device__ __forceinline__ void pd_attn_tile_walk(
     const KV* __restrict__ kcb, const KV* __restrict__ vcb, uint32_t first_pos,
     uint32_t lo, uint32_t hi, uint32_t kv_dim, uint32_t kvh, uint32_t head_dim,
@@ -335,7 +335,42 @@ __device__ __forceinline__ void pd_attn_tile_walk(
             vr[0] = vf.x; vr[1] = vf.y; vr[2] = vf.z; vr[3] = vf.w;
         }
         __syncthreads();
-        if (d < n_t) {
+        if (PS) {
+            // PARALLEL SCORE. The serial form below leaves n_t of nth threads
+            // working - 16 of 256 at head_dim 256 - while the other seven warps
+            // sit at the next __syncthreads() for the whole 256-step dot
+            // product. ncu on the shipped kernel: 41.5% of the average 23.0
+            // cycles between issued instructions is stall_barrier, its own rule
+            // naming "diverging code paths before a barrier" at an estimated
+            // 41.48% local speedup. DRAM throughput is 1.23% and achieved
+            // occupancy 58.9%, so neither bandwidth nor occupancy binds here -
+            // the idle warps do.
+            //
+            // Here every thread works: LPK threads cooperate on one key, each
+            // striding the head, then a width-LPK shuffle reduces. The partial
+            // sums are interleaved rather than sequential, so this is not
+            // bit-identical to the serial walk - hence a template flag, with
+            // every existing caller keeping PS=false.
+            const uint32_t lpk = nth / TILE;
+            if (lpk >= 2u) {
+                const uint32_t key = d / lpk, lane = d % lpk;
+                float sc = 0.0f;
+                if (key < n_t) {
+                    const float* krow = s_k + key * (head_dim + 1u);
+                    for (uint32_t dd = lane; dd < head_dim; dd += lpk)
+                        sc += s_q[dd] * krow[dd];
+                }
+                #pragma unroll
+                for (uint32_t o = 16u; o >= 1u; o >>= 1)
+                    if (o < lpk) sc += __shfl_down_sync(0xffffffffu, sc, o, lpk);
+                if (key < n_t && lane == 0u) s_scores[key] = sc * scale;
+            } else if (d < n_t) {
+                float sc = 0.0f;
+                const float* krow = s_k + d * (head_dim + 1u);
+                for (uint32_t dd = 0; dd < head_dim; ++dd) sc += s_q[dd] * krow[dd];
+                s_scores[d] = sc * scale;
+            }
+        } else if (d < n_t) {
             float sc = 0.0f;
             const float* krow = s_k + d * (head_dim + 1u);
             for (uint32_t dd = 0; dd < head_dim; ++dd) sc += s_q[dd] * krow[dd];
@@ -432,6 +467,242 @@ __device__ __forceinline__ void pd_attn_tile_walk_paged(
     }
 }
 
+// FMHA-style decode attention (slot 537).
+//
+// The tile walk above stages K/V into shared as f32 -- 2*TILE*(head_dim+1)*4 B,
+// which is 32.9 KB at head_dim 256 and caps TILE at 16 and occupancy at 6
+// blocks. It then pays three __syncthreads() per 16 keys, and inside each tile
+// most of the block is idle or redundant: every one of 256 threads rescans the
+// same 16 scores for m_tile, the PV accumulate is 16 shared reads per thread
+// (ncu: L1/TEX 72.8% against DRAM 1.23%), and the running-sum update is serial
+// on thread 0 while 255 threads wait. Over a 256-token context that is ~48
+// barriers to move the KV once.
+//
+// This kernel gives every WARP its own independent key stream -- warp w walks
+// keys w, w+nw, w+2*nw, ... -- carrying (m, l, acc) in registers, so there is
+// no per-tile barrier at all. Lane i owns a contiguous DPL-dim slice of the
+// head, so the QK dot is DPL FMAs plus one 32-lane butterfly, and the PV
+// accumulate is DPL register FMAs against a vector load. The warps merge once
+// through shared at the end. Shared drops to nw*head_dim + 2*nw floats
+// (8.25 KB at head_dim 256, nw 8), so this is no longer smem-bound.
+//
+// NUMERICS: the fold order differs from the tile walk (per-warp partial
+// softmaxes merged pairwise, rather than one sequential tile chain), so this
+// is not bit-exact against it -- it is its own numeric class, elected per
+// model like the PS flag. The sink enters the merge as an extra term with
+// m = sinks[h] and weight 1, exactly the (m=sink, l=1) init the walk starts
+// from.
+//
+// DPL = head_dim / 32 and must be a multiple of 4 (the vector load width), so
+// head_dim 128 and 256 are served; other head_dims stay on the tile walk.
+template<typename KV, uint32_t DPL>
+__global__ void pd_attn_decode_fmha_kernel(
+    const float* __restrict__ q, const KV* __restrict__ kc,
+    const KV* __restrict__ vc, const float* __restrict__ sinks,
+    float* __restrict__ out, const unsigned int* __restrict__ positions,
+    const unsigned int* __restrict__ slots,
+    uint32_t n_heads, uint32_t n_kv_heads, uint32_t head_dim,
+    uint32_t max_ctx, uint32_t kv_dim, uint32_t swa_window, float scale) {
+    const uint32_t h = blockIdx.x, b = blockIdx.y;
+    const uint32_t lane = threadIdx.x & 31u;
+    const uint32_t warp = threadIdx.x >> 5;
+    const uint32_t nw = blockDim.x >> 5;
+    const uint32_t kvh = h / (n_heads / n_kv_heads);
+
+    const uint32_t slot = slots ? slots[b] : b;
+    const uint32_t pos = positions[b];
+    const uint32_t first_pos =
+        (swa_window > 0 && pos + 1 > swa_window) ? (pos + 1 - swa_window) : 0;
+    const uint32_t end_pos = pos + 1;
+
+    const float* qb = q + (size_t)b * n_heads * head_dim + (size_t)h * head_dim;
+    const KV* kcb = kc + (size_t)slot * max_ctx * kv_dim + (size_t)kvh * head_dim;
+    const KV* vcb = vc + (size_t)slot * max_ctx * kv_dim + (size_t)kvh * head_dim;
+
+    const uint32_t d0 = lane * DPL;
+    float qr[DPL], acc[DPL];
+    #pragma unroll
+    for (uint32_t i = 0; i < DPL; ++i) { qr[i] = qb[d0 + i]; acc[i] = 0.0f; }
+    float m = -INFINITY, l = 0.0f;
+
+    for (uint32_t t = first_pos + warp; t < end_pos; t += nw) {
+        const KV* kr = kcb + (size_t)t * kv_dim;
+        const KV* vr = vcb + (size_t)t * kv_dim;
+        float kk[DPL], vv[DPL];
+        #pragma unroll
+        for (uint32_t i = 0; i < DPL; i += 4) {
+            float4 kf = pd_kv_load4(kr + d0 + i);
+            float4 vf = pd_kv_load4(vr + d0 + i);
+            kk[i] = kf.x; kk[i + 1] = kf.y; kk[i + 2] = kf.z; kk[i + 3] = kf.w;
+            vv[i] = vf.x; vv[i + 1] = vf.y; vv[i + 2] = vf.z; vv[i + 3] = vf.w;
+        }
+        float sc = 0.0f;
+        #pragma unroll
+        for (uint32_t i = 0; i < DPL; ++i) sc += qr[i] * kk[i];
+        // butterfly: every lane leaves with the full head dot product
+        #pragma unroll
+        for (uint32_t o = 16u; o >= 1u; o >>= 1)
+            sc += __shfl_xor_sync(0xffffffffu, sc, o, 32);
+        sc *= scale;
+        const float m_new = fmaxf(m, sc);
+        const float corr = __expf(m - m_new);
+        const float w = __expf(sc - m_new);
+        #pragma unroll
+        for (uint32_t i = 0; i < DPL; ++i) acc[i] = acc[i] * corr + w * vv[i];
+        l = l * corr + w;
+        m = m_new;
+    }
+
+    extern __shared__ float smem[];
+    float* s_acc = smem;                    // [nw][head_dim]
+    float* s_m = s_acc + nw * head_dim;     // [nw]
+    float* s_l = s_m + nw;                  // [nw]
+    #pragma unroll
+    for (uint32_t i = 0; i < DPL; ++i) s_acc[warp * head_dim + d0 + i] = acc[i];
+    if (lane == 0) { s_m[warp] = m; s_l[warp] = l; }
+    __syncthreads();
+
+    if (warp == 0) {
+        const float sink = sinks[h];
+        float mg = sink;
+        for (uint32_t w = 0; w < nw; ++w) mg = fmaxf(mg, s_m[w]);
+        // the sink is the walk's (m = sinks[h], l = 1) starting state
+        float lg = __expf(sink - mg);
+        float o[DPL];
+        #pragma unroll
+        for (uint32_t i = 0; i < DPL; ++i) o[i] = 0.0f;
+        for (uint32_t w = 0; w < nw; ++w) {
+            // an empty warp carries m = -inf, l = 0: this weight is 0
+            const float sw = __expf(s_m[w] - mg);
+            lg += s_l[w] * sw;
+            #pragma unroll
+            for (uint32_t i = 0; i < DPL; ++i)
+                o[i] += s_acc[w * head_dim + d0 + i] * sw;
+        }
+        #pragma unroll
+        for (uint32_t i = 0; i < DPL; ++i)
+            out[(size_t)b * n_heads * head_dim + (size_t)h * head_dim + d0 + i] = o[i] / lg;
+    }
+}
+
+// SPLIT-KV decode attention, pass 1 (slot 545): grid (n_heads, batch, S).
+// CTA (h, b, z) runs the same striped walk as pd_attn_decode_fmha_kernel but
+// over the global warp stripe z*nw + warp with step S*nw, and writes its RAW
+// merged partial (m, l, acc[head_dim] - Not divided, no sink) to
+// part[((b*n_heads + h)*S + z)*(head_dim+2)]. The sink enters once, in the
+// merge pass. At c1 the un-split form is 24 CTAs on 148 SMs and 39 us/layer
+// vs the rival's 9.1 - the die is empty and the KV stream is the wall.
+template<typename KV, uint32_t DPL>
+__global__ void pd_attn_decode_fmha_sp_kernel(
+    const float* __restrict__ q, const KV* __restrict__ kc,
+    const KV* __restrict__ vc, float* __restrict__ part,
+    const unsigned int* __restrict__ positions,
+    const unsigned int* __restrict__ slots,
+    uint32_t n_heads, uint32_t n_kv_heads, uint32_t head_dim,
+    uint32_t max_ctx, uint32_t kv_dim, uint32_t swa_window, float scale) {
+    const uint32_t h = blockIdx.x, b = blockIdx.y, z = blockIdx.z;
+    const uint32_t S = gridDim.z;
+    const uint32_t lane = threadIdx.x & 31u;
+    const uint32_t warp = threadIdx.x >> 5;
+    const uint32_t nw = blockDim.x >> 5;
+    const uint32_t kvh = h / (n_heads / n_kv_heads);
+    const uint32_t slot = slots ? slots[b] : b;
+    const uint32_t pos = positions[b];
+    const uint32_t first_pos =
+        (swa_window > 0 && pos + 1 > swa_window) ? (pos + 1 - swa_window) : 0;
+    const uint32_t end_pos = pos + 1;
+    const float* qb = q + (size_t)b * n_heads * head_dim + (size_t)h * head_dim;
+    const KV* kcb = kc + (size_t)slot * max_ctx * kv_dim + (size_t)kvh * head_dim;
+    const KV* vcb = vc + (size_t)slot * max_ctx * kv_dim + (size_t)kvh * head_dim;
+    const uint32_t d0 = lane * DPL;
+    float qr[DPL], acc[DPL];
+    #pragma unroll
+    for (uint32_t i = 0; i < DPL; ++i) { qr[i] = qb[d0 + i]; acc[i] = 0.0f; }
+    float m = -INFINITY, l = 0.0f;
+    for (uint32_t t = first_pos + z * nw + warp; t < end_pos; t += S * nw) {
+        const KV* kr = kcb + (size_t)t * kv_dim;
+        const KV* vr = vcb + (size_t)t * kv_dim;
+        float kk[DPL], vv[DPL];
+        #pragma unroll
+        for (uint32_t i = 0; i < DPL; i += 4) {
+            float4 kf = pd_kv_load4(kr + d0 + i);
+            float4 vf = pd_kv_load4(vr + d0 + i);
+            kk[i] = kf.x; kk[i + 1] = kf.y; kk[i + 2] = kf.z; kk[i + 3] = kf.w;
+            vv[i] = vf.x; vv[i + 1] = vf.y; vv[i + 2] = vf.z; vv[i + 3] = vf.w;
+        }
+        float sc = 0.0f;
+        #pragma unroll
+        for (uint32_t i = 0; i < DPL; ++i) sc += qr[i] * kk[i];
+        #pragma unroll
+        for (uint32_t o = 16u; o >= 1u; o >>= 1)
+            sc += __shfl_xor_sync(0xffffffffu, sc, o, 32);
+        sc *= scale;
+        const float m_new = fmaxf(m, sc);
+        const float corr = __expf(m - m_new);
+        const float w = __expf(sc - m_new);
+        #pragma unroll
+        for (uint32_t i = 0; i < DPL; ++i) acc[i] = acc[i] * corr + w * vv[i];
+        l = l * corr + w;
+        m = m_new;
+    }
+    extern __shared__ float smem[];
+    float* s_acc = smem;
+    float* s_m = s_acc + nw * head_dim;
+    float* s_l = s_m + nw;
+    #pragma unroll
+    for (uint32_t i = 0; i < DPL; ++i) s_acc[warp * head_dim + d0 + i] = acc[i];
+    if (lane == 0) { s_m[warp] = m; s_l[warp] = l; }
+    __syncthreads();
+    if (warp == 0) {
+        float mg = -INFINITY;
+        for (uint32_t w = 0; w < nw; ++w) mg = fmaxf(mg, s_m[w]);
+        float lg = 0.0f;
+        float o[DPL];
+        #pragma unroll
+        for (uint32_t i = 0; i < DPL; ++i) o[i] = 0.0f;
+        if (mg > -INFINITY) {
+            for (uint32_t w = 0; w < nw; ++w) {
+                const float sw = __expf(s_m[w] - mg);
+                lg += s_l[w] * sw;
+                #pragma unroll
+                for (uint32_t i = 0; i < DPL; ++i)
+                    o[i] += s_acc[w * head_dim + d0 + i] * sw;
+            }
+        }
+        float* pr = part + ((size_t)(b * n_heads + h) * S + z) * (head_dim + 2u);
+        #pragma unroll
+        for (uint32_t i = 0; i < DPL; ++i) pr[d0 + i] = o[i];
+        if (lane == 0) { pr[head_dim] = mg; pr[head_dim + 1u] = lg; }
+    }
+}
+
+// SPLIT-KV pass 2: grid (n_heads, batch), head_dim threads. Seeds from the
+// sink exactly like the walk (m = sinks[h], l = 1), folds the S raw partials
+// in FIXED z order, divides once, stores. An empty slice carries m = -inf,
+// l = 0 and weighs nothing.
+__global__ void pd_attn_fmha_merge_kernel(
+    const float* __restrict__ part, const float* __restrict__ sinks,
+    float* __restrict__ out, uint32_t n_heads, uint32_t head_dim, uint32_t S) {
+    const uint32_t h = blockIdx.x, b = blockIdx.y, d = threadIdx.x;
+    const float* pb = part + (size_t)(b * n_heads + h) * S * (head_dim + 2u);
+    const float sink = sinks[h];
+    float mg = sink;
+    for (uint32_t z = 0; z < S; ++z)
+        mg = fmaxf(mg, pb[z * (head_dim + 2u) + head_dim]);
+    float lg = __expf(sink - mg);
+    float o = 0.0f;
+    for (uint32_t z = 0; z < S; ++z) {
+        const float* pr = pb + z * (head_dim + 2u);
+        const float mz = pr[head_dim];
+        if (mz > -INFINITY) {
+            const float sw = __expf(mz - mg);
+            lg += pr[head_dim + 1u] * sw;
+            o += pr[d] * sw;
+        }
+    }
+    out[(size_t)b * n_heads * head_dim + (size_t)h * head_dim + d] = o / lg;
+}
+
 // Batched decode attention: grid (n_heads, batch). Block (h, b) runs online
 // softmax for sequence b's query head h against sequence b's own KV cache up to
 // its own position - the per-sequence attention that continuous batching needs.
@@ -440,7 +711,7 @@ __device__ __forceinline__ void pd_attn_tile_walk_paged(
 // At batch B this launches n_heads*B blocks - better GPU fill than the batch-1
 // single-block path, so attention occupancy improves rather than degrades.
 // KV walk: pd_attn_tile_walk (per-32-key-tile numeric class).
-template<typename KV>
+template<typename KV, bool PS = false>
 __global__ void pd_attn_decode_batch_kernel(
     const float* __restrict__ q, const KV* __restrict__ kc,
     const KV* __restrict__ vc, const float* __restrict__ sinks,
@@ -473,11 +744,11 @@ __global__ void pd_attn_decode_batch_kernel(
     // pd_attn_tile_walk's leading __syncthreads() orders the q stage + m/l init
 
     if (head_dim > 128u)
-        pd_attn_tile_walk<KV, PD_ATTN_TILE_HD256>(kcb, vcb, first_pos, 0, n_pos, kv_dim,
-                                                  kvh, head_dim, scale, smem, &s_m, &s_l, acc);
+        pd_attn_tile_walk<KV, PD_ATTN_TILE_HD256, PS>(kcb, vcb, first_pos, 0, n_pos, kv_dim,
+                                                      kvh, head_dim, scale, smem, &s_m, &s_l, acc);
     else
-        pd_attn_tile_walk<KV, PD_ATTN_TILE>(kcb, vcb, first_pos, 0, n_pos, kv_dim, kvh,
-                                            head_dim, scale, smem, &s_m, &s_l, acc);
+        pd_attn_tile_walk<KV, PD_ATTN_TILE, PS>(kcb, vcb, first_pos, 0, n_pos, kv_dim, kvh,
+                                                head_dim, scale, smem, &s_m, &s_l, acc);
     __syncthreads();
     if (d < head_dim)
         out[(size_t)b * n_heads * head_dim + (size_t)h * head_dim + d] = acc / s_l;
@@ -1314,6 +1585,7 @@ __global__ void pd_kv_append_batch_kernel(const float* __restrict__ kv, KV* __re
                                           const unsigned int* __restrict__ positions,
                                           const unsigned int* __restrict__ slots,
                                           uint32_t kv_dim, uint32_t max_ctx, uint32_t batch) {
+    PD_PDL_ARM();  // consumer-safe for early PDL launches (2026-08-31)
     uint32_t i = blockIdx.x * blockDim.x + threadIdx.x;
     uint32_t b = blockIdx.y;
     if (i >= kv_dim || b >= batch) return;
@@ -2391,6 +2663,101 @@ __global__ void pd_convert_f32_f16_kernel(const float* __restrict__ src, __half*
     if (i < n) dst[i] = __float2half(src[i]);
 }
 
+
+// f32 -> bf16 twin of the convert above (slot 548): stages activations for
+// the TGV bf16 decode GEMM (slot 547). grid ceil(n/256).
+__global__ void pd_convert_f32_bf16_kernel(const float* __restrict__ src,
+                                           __nv_bfloat16* __restrict__ dst,
+                                           uint64_t n) {
+    PD_PDL_ARM();
+    uint64_t i = (uint64_t)blockIdx.x * blockDim.x + threadIdx.x;
+    if (i < n) dst[i] = __float2bfloat16(src[i]);
+}
+
+// bf16 -> f32, the twin of the cast above. The vendored low-M dense GEMM
+// (slot 566) emits bf16 while this engine's activations are f32.
+__global__ void pd_convert_bf16_f32_kernel(const __nv_bfloat16* __restrict__ src,
+                                           float* __restrict__ dst, uint64_t n) {
+    // 8 elements a thread: one 16 B load, two float4 stores. The scalar form
+    // cost more than the GEMM it feeds saved (a [8 x 10240] plane is 82 K
+    // elements a launch, ~48 launches a tick).
+    const uint64_t i8 = ((uint64_t)blockIdx.x * blockDim.x + threadIdx.x) * 8ull;
+    // the vector path needs both ends 16 B aligned: callers hand us `y` slices
+    // that start at an arbitrary element offset, and a float4 store into one
+    // of those raises CUDA_ERROR_MISALIGNED_ADDRESS mid-generation.
+    const bool vec_ok = ((reinterpret_cast<uintptr_t>(src) | reinterpret_cast<uintptr_t>(dst)) & 15u) == 0u;
+    if (vec_ok && i8 + 8ull <= n) {
+        const uint4 raw = *reinterpret_cast<const uint4*>(src + i8);
+        const __nv_bfloat16* v = reinterpret_cast<const __nv_bfloat16*>(&raw);
+        float4 a, b;
+        a.x = __bfloat162float(v[0]); a.y = __bfloat162float(v[1]);
+        a.z = __bfloat162float(v[2]); a.w = __bfloat162float(v[3]);
+        b.x = __bfloat162float(v[4]); b.y = __bfloat162float(v[5]);
+        b.z = __bfloat162float(v[6]); b.w = __bfloat162float(v[7]);
+        *reinterpret_cast<float4*>(dst + i8) = a;
+        *reinterpret_cast<float4*>(dst + i8 + 4) = b;
+        return;
+    }
+    for (uint64_t i = i8; i < n && i < i8 + 8ull; ++i) dst[i] = __bfloat162float(src[i]);
+}
+
+PD_EXPORT
+int pd_convert_bf16_f32(const void* src, void* dst, uint64_t n, void* stream) {
+    if (n == 0) return 0;
+    const uint32_t thr = 256u;
+    const uint64_t n8 = (n + 7ull) / 8ull;
+    pd_convert_bf16_f32_kernel<<<(uint32_t)((n8 + thr - 1) / thr), thr, 0,
+                                 (cudaStream_t)stream>>>(
+        (const __nv_bfloat16*)src, (float*)dst, n);
+    return (int)cudaGetLastError();
+}
+
+// Strided twin: copy `cols` of each row out of a wider bf16 plane. The low-M
+// dense GEMM needs its N padded to the MMA tile, and the consumers want the
+// natural width back - this unpads in the cast rather than teaching every
+// consumer a second row stride.
+__global__ void pd_convert_bf16_f32_rows_kernel(const __nv_bfloat16* __restrict__ src,
+                                                float* __restrict__ dst,
+                                                uint32_t cols, uint32_t src_rs,
+                                                uint32_t dst_rs) {
+    const uint32_t r = blockIdx.y;
+    const uint32_t c4 = (blockIdx.x * blockDim.x + threadIdx.x) * 4u;
+    if (c4 >= cols) return;
+    const __nv_bfloat16* sp = src + (size_t)r * src_rs + c4;
+    float* dp = dst + (size_t)r * dst_rs + c4;
+    const bool vec_ok = ((reinterpret_cast<uintptr_t>(sp) & 7u) == 0u)
+                     && ((reinterpret_cast<uintptr_t>(dp) & 15u) == 0u);
+    if (vec_ok && c4 + 4u <= cols) {
+        const uint2 raw = *reinterpret_cast<const uint2*>(sp);
+        const __nv_bfloat16* v = reinterpret_cast<const __nv_bfloat16*>(&raw);
+        float4 a;
+        a.x = __bfloat162float(v[0]); a.y = __bfloat162float(v[1]);
+        a.z = __bfloat162float(v[2]); a.w = __bfloat162float(v[3]);
+        *reinterpret_cast<float4*>(dp) = a;
+        return;
+    }
+    for (uint32_t i = 0; i < 4u && c4 + i < cols; ++i)
+        dp[i] = __bfloat162float(sp[i]);
+}
+
+PD_EXPORT
+int pd_convert_bf16_f32_rows(const void* src, void* dst, uint32_t rows,
+                             uint32_t cols, uint32_t src_rs, uint32_t dst_rs,
+                             void* stream) {
+    if (rows == 0 || cols == 0) return 0;
+    dim3 grid((((cols + 3u) / 4u) + 255u) / 256u, rows);
+    pd_convert_bf16_f32_rows_kernel<<<grid, 256, 0, (cudaStream_t)stream>>>(
+        (const __nv_bfloat16*)src, (float*)dst, cols, src_rs, dst_rs);
+    return (int)cudaGetLastError();
+}
+
+PD_EXPORT
+int pd_convert_f32_bf16(const void* src, void* dst, uint64_t n, void* stream) {
+    if (n == 0) return 0;
+    pd_pdl_go(pd_convert_f32_bf16_kernel, (unsigned)((n + 255u) / 256u), 256, 0,
+              (cudaStream_t)stream, (const float*)src, (__nv_bfloat16*)dst, n);
+    return cudaPeekAtLastError() == cudaSuccess ? 0 : -2;
+}
 
 // device-side u32 += k (MTP chain-step rope-pos advance; graph-captured so
 // draft chains replay back-to-back with no host copies between steps)

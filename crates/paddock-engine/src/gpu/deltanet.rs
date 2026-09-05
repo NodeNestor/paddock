@@ -1824,6 +1824,133 @@ impl GpuExecutor {
     /// larger (multi-slot) buffer - the batched-serving prefill writes slot k's
     /// region of the [n_slots, n_heads, D, D] state without a separate allocation.
     #[allow(clippy::too_many_arguments)]
+    /// True when the pack carries the batched-runs recurrence (slot 534).
+    pub fn has_gated_delta_recurrent_runs(&self) -> bool {
+        self.kernels.gated_delta_recurrent_runs.is_some()
+    }
+
+    /// `n_runs` INDEPENDENT sequences through the gated-delta recurrence in one
+    /// launch (slot 534): run `r` walks rows `run_off[r] .. +run_len[r]` of
+    /// q/k/v/g/beta against slot `run_slot[r]`'s state. grid (n_heads, n_runs).
+    ///
+    /// The single-run entry grids `n_heads` = 48 blocks at 255 registers, so a
+    /// serially-prefilled admission wave runs a 32%-occupied 195.9 us launch
+    /// per layer per prompt - 7.05 ms of a 33.9 ms 128-token prefill, times 32
+    /// prompts. Same arithmetic per run: each block still walks its own
+    /// sequence in order.
+    #[allow(clippy::too_many_arguments)]
+    pub fn gated_delta_recurrent_runs(
+        &self,
+        q: &CudaSlice<f32>,
+        k: &CudaSlice<f32>,
+        v: &CudaSlice<f32>,
+        g: &CudaSlice<f32>,
+        beta: &CudaSlice<f32>,
+        state: &mut CudaSlice<f32>,
+        out: &mut CudaSlice<f32>,
+        run_off: &CudaSlice<u32>,
+        run_len: &CudaSlice<u32>,
+        run_slot: &CudaSlice<u32>,
+        n_runs: usize,
+        n_heads: usize,
+        head_dim: usize,
+    ) -> Result<(), GpuError> {
+        let f = self
+            .kernels
+            .gated_delta_recurrent_runs
+            .ok_or(GpuError::MissingOp("gated_delta_recurrent_runs"))?;
+        let (qp, _g1) = q.device_ptr(&self.stream);
+        let (kp, _g2) = k.device_ptr(&self.stream);
+        let (vp, _g3) = v.device_ptr(&self.stream);
+        let (gp, _g4) = g.device_ptr(&self.stream);
+        let (bp, _g5) = beta.device_ptr(&self.stream);
+        let (rop, _g6) = run_off.device_ptr(&self.stream);
+        let (rlp, _g7) = run_len.device_ptr(&self.stream);
+        let (rsp, _g8) = run_slot.device_ptr(&self.stream);
+        let (sp, _g9) = state.device_ptr_mut(&self.stream);
+        let (op, _g10) = out.device_ptr_mut(&self.stream);
+        // SAFETY: ABI contract (slot 534)
+        check(unsafe {
+            f(
+                qp as *const _,
+                kp as *const _,
+                vp as *const _,
+                gp as *const _,
+                bp as *const _,
+                sp as *mut _,
+                op as *mut _,
+                rop as *const _,
+                rlp as *const _,
+                rsp as *const _,
+                n_runs as u32,
+                n_heads as u32,
+                head_dim as u32,
+                self.stream_ptr(),
+            )
+        })
+    }
+
+    /// Pre-normed runs walk (slot 541): companion kernel computes every
+    /// token's q/k rnorm scalars in parallel with the identical tree, the
+    /// walk skips both in-loop reductions. Returns false when the pack lacks
+    /// the slot. `rn` must hold n_tokens*n_heads*2 f32, address-stable.
+    #[allow(clippy::too_many_arguments)]
+    pub fn gated_delta_recurrent_runs_pn(
+        &self,
+        q: &CudaSlice<f32>,
+        k: &CudaSlice<f32>,
+        v: &CudaSlice<f32>,
+        g: &CudaSlice<f32>,
+        beta: &CudaSlice<f32>,
+        state: &mut CudaSlice<f32>,
+        out: &mut CudaSlice<f32>,
+        run_off: &CudaSlice<u32>,
+        run_len: &CudaSlice<u32>,
+        run_slot: &CudaSlice<u32>,
+        n_runs: usize,
+        n_tokens: usize,
+        n_heads: usize,
+        head_dim: usize,
+        rn: &mut CudaSlice<f32>,
+    ) -> Result<bool, GpuError> {
+        let Some(f) = self.kernels.gated_delta_recurrent_runs_pn else {
+            return Ok(false);
+        };
+        let (qp, _g1) = q.device_ptr(&self.stream);
+        let (kp, _g2) = k.device_ptr(&self.stream);
+        let (vp, _g3) = v.device_ptr(&self.stream);
+        let (gp, _g4) = g.device_ptr(&self.stream);
+        let (bp, _g5) = beta.device_ptr(&self.stream);
+        let (rop, _g6) = run_off.device_ptr(&self.stream);
+        let (rlp, _g7) = run_len.device_ptr(&self.stream);
+        let (rsp, _g8) = run_slot.device_ptr(&self.stream);
+        let (sp, _g9) = state.device_ptr_mut(&self.stream);
+        let (op, _g10) = out.device_ptr_mut(&self.stream);
+        let (rp, _g11) = rn.device_ptr_mut(&self.stream);
+        // SAFETY: ABI contract (slot 541)
+        check(unsafe {
+            f(
+                qp as *const _,
+                kp as *const _,
+                vp as *const _,
+                gp as *const _,
+                bp as *const _,
+                sp as *mut _,
+                op as *mut _,
+                rop as *const _,
+                rlp as *const _,
+                rsp as *const _,
+                n_runs as u32,
+                n_tokens as u32,
+                n_heads as u32,
+                head_dim as u32,
+                rp as *mut _,
+                self.stream_ptr(),
+            )
+        })?;
+        Ok(true)
+    }
+
     pub fn gated_delta_recurrent_at(
         &self,
         q: &CudaSlice<f32>,
@@ -1918,6 +2045,134 @@ impl GpuExecutor {
     /// Slot-indexed single-token conv+silu: B sequences advance their own window.
     /// `wins` [n_slots, k-1, conv_dim]; `x_new`/`out` [B, conv_dim].
     #[allow(clippy::too_many_arguments)]
+    /// slot 564: `gated_delta_recurrent_slots` with qwen4_exp's gated norm
+    /// fused into the epilogue - `out` receives the NORMED rows, so the
+    /// caller skips its own gated-norm launch. `Ok(false)` = declined.
+    #[allow(clippy::too_many_arguments)]
+    pub fn gated_delta_recurrent_slots_gn(
+        &self,
+        q: &CudaSlice<f32>,
+        k: &CudaSlice<f32>,
+        v: &CudaSlice<f32>,
+        g: &CudaSlice<f32>,
+        beta: &CudaSlice<f32>,
+        slots: &CudaSlice<u32>,
+        states: &mut CudaSlice<f32>,
+        out: &mut CudaSlice<f32>,
+        gn_z: &CudaSlice<f32>,
+        gn_w: &CudaSlice<f32>,
+        gn_out16: Option<&mut CudaSlice<half::bf16>>,
+        gn_eps: f32,
+        batch: usize,
+        n_heads: usize,
+        head_dim: usize,
+    ) -> Result<bool, GpuError> {
+        let Some(f) = self.kernels.gated_delta_recurrent_slots_gn else {
+            return Ok(false);
+        };
+        let (qp, _g1) = q.device_ptr(&self.stream);
+        let (kp, _g2) = k.device_ptr(&self.stream);
+        let (vp, _g3) = v.device_ptr(&self.stream);
+        let (gp, _g4) = g.device_ptr(&self.stream);
+        let (bp, _g5) = beta.device_ptr(&self.stream);
+        let (sp, _g6) = slots.device_ptr(&self.stream);
+        let (zp, _g7) = gn_z.device_ptr(&self.stream);
+        let (wp, _g8) = gn_w.device_ptr(&self.stream);
+        let (stp, _g9) = states.device_ptr_mut(&self.stream);
+        let (op, _g10) = out.device_ptr_mut(&self.stream);
+        let mp = match gn_out16 {
+            Some(m) => {
+                let (p, _g) = m.device_ptr_mut(&self.stream);
+                p as *mut core::ffi::c_void
+            }
+            None => core::ptr::null_mut(),
+        };
+        // SAFETY: ABI contract (slot 564); the pack declines unsupported
+        // geometries with -1, carried back as Ok(false).
+        let rc = unsafe {
+            f(
+                qp as *const _,
+                kp as *const _,
+                vp as *const _,
+                gp as *const _,
+                bp as *const _,
+                sp as *const _,
+                stp as *mut _,
+                op as *mut _,
+                zp as *const _,
+                wp as *const _,
+                mp,
+                gn_eps,
+                batch as u32,
+                n_heads as u32,
+                head_dim as u32,
+                self.stream_ptr(),
+            )
+        };
+        if rc == -1 {
+            return Ok(false);
+        }
+        check(rc)?;
+        Ok(true)
+    }
+
+    /// slot 563: `conv_step_slots` with the GDN q/k/v split+widen fused into
+    /// its epilogue. `Ok(false)` = geometry not supported, run the pair.
+    #[allow(clippy::too_many_arguments)]
+    pub fn conv_step_slots_split(
+        &self,
+        wins: &mut CudaSlice<f32>,
+        x_new: &CudaSlice<f32>,
+        w: &CudaSlice<f32>,
+        q: &mut CudaSlice<f32>,
+        k_out: &mut CudaSlice<f32>,
+        v_out: &mut CudaSlice<f32>,
+        slots: &CudaSlice<u32>,
+        batch: usize,
+        conv_dim: usize,
+        kconv: usize,
+        heads: (usize, usize, usize, usize),
+    ) -> Result<bool, GpuError> {
+        let Some(f) = self.kernels.conv_step_slots_split else {
+            return Ok(false);
+        };
+        let (hk, hv, kd, vd) = heads;
+        let (wp, _g1) = wins.device_ptr_mut(&self.stream);
+        let (xp, _g2) = x_new.device_ptr(&self.stream);
+        let (cp, _g3) = w.device_ptr(&self.stream);
+        let (qp, _g4) = q.device_ptr_mut(&self.stream);
+        let (kp, _g5) = k_out.device_ptr_mut(&self.stream);
+        let (vp, _g6) = v_out.device_ptr_mut(&self.stream);
+        let (sp, _g7) = slots.device_ptr(&self.stream);
+        // SAFETY: ABI contract (slot 563); the pack re-checks the geometry and
+        // declines with -1, which is what the bool return carries back.
+        let rc = unsafe {
+            f(
+                wp as *mut _,
+                xp as *const _,
+                cp as *const _,
+                qp as *mut _,
+                kp as *mut _,
+                vp as *mut _,
+                sp as *const _,
+                batch as u32,
+                conv_dim as u32,
+                kconv as u32,
+                conv_dim as u32,
+                hk as u32,
+                hv as u32,
+                kd as u32,
+                vd as u32,
+                self.stream_ptr(),
+            )
+        };
+        if rc == -1 {
+            return Ok(false);
+        }
+        check(rc)?;
+        Ok(true)
+    }
+
     pub fn conv_step_slots(
         &self,
         wins: &mut CudaSlice<f32>,

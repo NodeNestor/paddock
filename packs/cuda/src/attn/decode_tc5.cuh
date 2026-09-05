@@ -21,7 +21,7 @@ __global__ void __launch_bounds__(256) pd_attn_decode_tc5e_kernel(
     const unsigned int* __restrict__ slots,
     const uint32_t* __restrict__ block_tables, uint32_t blocks_per_slot,
     uint32_t swa_window, float scale, uint32_t n_kv, uint32_t n_seq,
-    uint32_t cpc, uint32_t dbg = 0u) {
+    uint32_t cpc, uint32_t dbg = 0u, uint32_t kvh_div = 1u) {
 #if PD_ATTN_TMA_OK && PD_TC5_OK
     PD_PDL_ARM();   // cascade: full predecessor completion before any
                     // gmem read (positions/tables/q/KV TMA)
@@ -199,7 +199,11 @@ __global__ void __launch_bounds__(256) pd_attn_decode_tc5e_kernel(
             const uint32_t blk = s_btw[t * BPC + lane / NP];
             const uint32_t p = lane % NP;
             const int y = (int)(blk * 16u);
-            const int x = (int)(s_ckvh[ci] * HD + p * 128u);
+            // kvh_div: VIRTUAL kv heads (G=12 split as two G=6 cells - qwen4exp
+            // 24q/2kv/hd256). Q rows, cells and the output all index by the
+            // virtual head (kvh*G+g is exactly the right q row); only the KV
+            // pool offset needs the PHYSICAL head, virt/kvh_div.
+            const int x = (int)((s_ckvh[ci] / kvh_div) * HD + p * 128u);
             const uint32_t dk = (uint32_t)__cvta_generic_to_shared(
                 s_k + sl * NP * CPB + p * CPB + (lane / NP) * 2048u);
             asm volatile(
@@ -221,7 +225,7 @@ __global__ void __launch_bounds__(256) pd_attn_decode_tc5e_kernel(
             const uint32_t blk = s_btw[t * BPC + lane / NP];
             const uint32_t p = lane % NP;
             const int y = (int)(blk * 16u);
-            const int x = (int)(s_ckvh[ci] * HD + p * 128u);
+            const int x = (int)((s_ckvh[ci] / kvh_div) * HD + p * 128u);
             const uint32_t dv = (uint32_t)__cvta_generic_to_shared(
                 s_v + sl * NP * CPB + p * CPB + (lane / NP) * 2048u);
             asm volatile(
@@ -630,7 +634,7 @@ __global__ void __launch_bounds__(256) pd_attn_decode_tc5e_kernel(
 #else
     (void)tmk; (void)tmv; (void)q; (void)out_o; (void)positions; (void)slots;
     (void)block_tables; (void)blocks_per_slot; (void)swa_window; (void)scale;
-    (void)n_kv; (void)n_seq; (void)cpc; (void)dbg;
+    (void)n_kv; (void)n_seq; (void)cpc; (void)dbg; (void)kvh_div;
 #endif
 }
 
@@ -657,6 +661,14 @@ int pd_attn_decode_tc5_paged(const void* q, const void* pool_k, const void* pool
 #else
     if (n_heads == 0 || batch == 0) return 0;
     const uint32_t group = n_kv_heads ? n_heads / n_kv_heads : 1u;
+    // n_kv_heads may be VIRTUAL: a G=12 model (qwen4exp 24q/2kv/hd256) rides
+    // the <256,6> instantiation as two virtual heads per physical one, and the
+    // caller passes the virtual count with the PHYSICAL kv_dim. The divisor
+    // falls out of the mismatch; 1 for every native geometry.
+    const uint32_t kvh_div =
+        (kv_dim != 0u && (n_kv_heads * head_dim) % kv_dim == 0u)
+            ? (n_kv_heads * head_dim) / kv_dim : 1u;
+    if (kvh_div != 1u && kvh_div != 2u) return -2;
     static const int tc5ok = [] {
         int dev = 0, cc = 0;
         cudaGetDevice(&dev);
@@ -747,7 +759,7 @@ int pd_attn_decode_tc5_paged(const void* q, const void* pool_k, const void* pool
                   *tk, *tv, (const float*)q, (float*)out,
                   (const unsigned int*)positions, (const unsigned int*)slots,
                   (const uint32_t*)block_tables, blocks_per_slot, swa_window, scale,
-                  n_kv_heads, batch, cpc, 0u);
+                  n_kv_heads, batch, cpc, 0u, kvh_div);
     } else if (swa5) {
         static uint32_t smset5 = 0;
         if (smem5 > smset5) {
@@ -760,7 +772,7 @@ int pd_attn_decode_tc5_paged(const void* q, const void* pool_k, const void* pool
                   *tk, *tv, (const float*)q, (float*)out,
                   (const unsigned int*)positions, (const unsigned int*)slots,
                   (const uint32_t*)block_tables, blocks_per_slot, swa_window, scale,
-                  n_kv_heads, batch, cpc, 0u);
+                  n_kv_heads, batch, cpc, 0u, kvh_div);
     } else {
         static uint32_t smset5g = 0;
         if (smem5 > smset5g) {
@@ -773,7 +785,7 @@ int pd_attn_decode_tc5_paged(const void* q, const void* pool_k, const void* pool
                   *tk, *tv, (const float*)q, (float*)out,
                   (const unsigned int*)positions, (const unsigned int*)slots,
                   (const uint32_t*)block_tables, blocks_per_slot, swa_window, scale,
-                  n_kv_heads, batch, cpc, 0u);
+                  n_kv_heads, batch, cpc, 0u, kvh_div);
     }
     return pd_launch_status();
 #endif

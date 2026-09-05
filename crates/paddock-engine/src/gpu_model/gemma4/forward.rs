@@ -182,20 +182,6 @@ pub(crate) fn swa_span_initial() -> usize {
 /// appended). Encoder emits <= 280 soft tokens per image.
 pub(crate) const IMG_SPAN_MAX: usize = 288;
 
-/// Split each same-slot run into <= swa_span() sub-spans (text prefill: rows
-/// are causal, any cut is safe).
-/// row floor for the b16 D-stream arms (default 1024 -
-/// the coalesced-pass band; sweep lower to cover the spec verify chunks)
-fn pf_b16_minr() -> usize {
-    static V: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
-    *V.get_or_init(|| {
-        paddock_models::dev_var!("PADDOCK_PF_B16_MINR")
-            .ok()
-            .and_then(|v| v.parse().ok())
-            .unwrap_or(1024)
-    })
-}
-
 pub(crate) fn swa_spans(span: usize, runs: &[(usize, usize)]) -> Vec<(usize, usize)> {
     let mut spans = Vec::new();
     for &(off, n) in runs {
@@ -1728,18 +1714,6 @@ impl GpuGemma4 {
                 && self.gpool.is_some()
                 && exec.has_attn16()
                 && super::batch::attn16_on();
-            //  b16 slice 2: bf16 qkv D streams + i16 consumers,
-            // pass-band only. Shares the i16 twins the c16 stack built.
-            let qkv_b16 = crate::envset::env_on("PADDOCK_PF_B16")
-                && r >= pf_b16_minr()
-                && !a16
-                && lw
-                    .f8t_qkv
-                    .as_ref()
-                    .map(|p| p.flat.is_some())
-                    .unwrap_or(false)
-                && exec.has_glu2_b16()
-                && exec.has_chunk16();
             // k/v ride the side lane on the fused-plane f8 arm: three
             // serial launches at ~4.8/2.4/2.4 waves pay three tail waves,
             // two lanes pack them (~9.5 total). Only the w8_off arm - it
@@ -1765,18 +1739,7 @@ impl GpuGemma4 {
                     )?;
                 }
                 //  b16 slice 2 (gate hoisted next to a16)
-                if qkv_b16 {
-                    exec.f8cut_gemm_b16(
-                        lw.f8t_qkv.as_ref().expect("f8t_qkv checked (f8t_att)"),
-                        0,
-                        &sc.pf_e4q,
-                        &sc.pf_e4rs,
-                        &mut sc.pf_q,
-                        hp.n_embd,
-                        hp.n_head * hd,
-                        r,
-                    )?;
-                } else {
+                {
                     exec.f8t_gemm_off(
                         lw.f8t_qkv.as_ref().expect("f8t_qkv checked (f8t_att)"),
                         0,
@@ -1957,18 +1920,7 @@ impl GpuGemma4 {
             }
 
             if f8t_att {
-                if qkv_b16 {
-                    exec.f8cut_gemm_b16(
-                        lw.f8t_qkv.as_ref().expect("f8t_qkv checked (f8t_att)"),
-                        hp.n_head * hd / 128,
-                        &sc.pf_e4q,
-                        &sc.pf_e4rs,
-                        &mut sc.pf_k,
-                        hp.n_embd,
-                        kv_dim,
-                        r,
-                    )?;
-                } else {
+                {
                     exec.f8t_gemm_off(
                         lw.f8t_qkv.as_ref().expect("f8t_qkv checked (f8t_att)"),
                         hp.n_head * hd / 128,
@@ -2064,16 +2016,6 @@ impl GpuGemma4 {
             match &lw.wv {
                 // fused single launch already wrote pf_v
                 Some(_) if qkv_fused1 => {}
-                Some(_) if f8t_att && qkv_b16 => exec.f8cut_gemm_b16(
-                    lw.f8t_qkv.as_ref().expect("f8t_qkv checked (f8t_att)"),
-                    (hp.n_head * hd + kv_dim) / 128,
-                    &sc.pf_e4q,
-                    &sc.pf_e4rs,
-                    &mut sc.pf_v,
-                    hp.n_embd,
-                    kv_dim,
-                    r,
-                )?,
                 Some(_) if f8t_att => exec.f8t_gemm_off(
                     lw.f8t_qkv.as_ref().expect("f8t_qkv checked (f8t_att)"),
                     (hp.n_head * hd + kv_dim) / 128,
@@ -2203,7 +2145,7 @@ impl GpuGemma4 {
                     hp.rope_neox(),
                     hp.v_norm(),
                 )?;
-            } else if qk_fused && (c16 || qkv_b16) {
+            } else if qk_fused && c16 {
                 // c16 twin: pf_q holds bf16 from the o16 qkv epilogue
                 exec.qkv_norm_rope_batch_i16(
                     &sc.pf_q,
@@ -2293,7 +2235,7 @@ impl GpuGemma4 {
                         sx.wait_event(&exec.record_event()?)?;
                     }
                     let ax = att_side.unwrap_or(exec);
-                    if kvf && (c16 || qkv_b16) {
+                    if kvf && c16 {
                         ax.kv_nra_rows_i16(
                             &sc.pf_k,
                             lw.wv.as_ref().map(|_| &sc.pf_v),
@@ -2630,7 +2572,7 @@ impl GpuGemma4 {
                 // rows (was 32 underfilled launches/layer, 10.9ms/pass).
                 let batched_append = pf_runs_batched && !a16 && kvf;
                 if batched_append {
-                    if c16 || qkv_b16 {
+                    if c16 {
                         exec.kv_nra_rows_i16(
                             &sc.pf_k,
                             lw.wv.as_ref().map(|_| &sc.pf_v),
@@ -2681,7 +2623,7 @@ impl GpuGemma4 {
                         let _ = (off, n);
                         break;
                     }
-                    if kvf && (c16 || qkv_b16) {
+                    if kvf && c16 {
                         exec.kv_nra_rows_i16(
                             &sc.pf_k,
                             lw.wv.as_ref().map(|_| &sc.pf_v),
@@ -3457,25 +3399,7 @@ impl GpuGemma4 {
                     hp.n_head * hd,
                     r,
                 )?;
-                if qkv_b16
-                    && lw
-                        .f8t_wo
-                        .as_ref()
-                        .expect("f8t_wo checked above")
-                        .flat
-                        .is_some()
                 {
-                    exec.f8cut_gemm_b16(
-                        lw.f8t_wo.as_ref().expect("f8t_wo checked above"),
-                        0,
-                        &sc.pf_e4q,
-                        &sc.pf_e4rs,
-                        &mut sc.pf_proj,
-                        hp.n_head * hd,
-                        hp.n_embd,
-                        r,
-                    )?;
-                } else {
                     exec.f8t_gemm(
                         lw.f8t_wo.as_ref().expect("f8t_wo checked above"),
                         &sc.pf_e4q,
@@ -3578,24 +3502,7 @@ impl GpuGemma4 {
             } else {
                 // fused post-norm + residual (the decode walk's kernel, same
                 // bit-exact math): one pass instead of rmsnorm + add
-                if qkv_b16
-                    && lw
-                        .f8t_wo
-                        .as_ref()
-                        .map(|p| p.flat.is_some())
-                        .unwrap_or(false)
                 {
-                    // pf_proj holds bf16 from the b16 wo arm above
-                    exec.rmsnorm_add_scale_p16(
-                        &mut sc.pf_x,
-                        &sc.pf_proj,
-                        &lw.attn_post_norm,
-                        hp.n_embd,
-                        hp.post_norm_eps,
-                        1.0,
-                        r,
-                    )?;
-                } else {
                     exec.rmsnorm_add_scale(
                         &mut sc.pf_x,
                         &sc.pf_proj,
@@ -3654,68 +3561,7 @@ impl GpuGemma4 {
                         r,
                     )?;
                 }
-                //  b16 slice (PADDOCK_PF_B16=1): the wide cutlass
-                // arm writes bf16 D and the b16 glu2 twin consumes it -
-                // halves the largest activation round-trip in the burst
-                // pass (gu D is 4700x43008). f32 pair otherwise.
-                let b16 = crate::envset::env_on("PADDOCK_PF_B16")
-                    && r >= pf_b16_minr()
-                    && lw
-                        .f8t_gu
-                        .as_ref()
-                        .expect("f8t_gu checked (f8t_pf2)")
-                        .flat
-                        .is_some()
-                    && !lw
-                        .f8t_gu
-                        .as_ref()
-                        .expect("f8t_gu checked (f8t_pf2)")
-                        .flat_gui
-                    && exec.has_glu2_b16();
-                // P62 gluq: same fused-epilogue chain as the batch site -
-                // under the flag the flat is interleaved and the b16 arm is
-                // gated off, so the burst pass rides gluq at r >= 16 and
-                // classic tc5 below/on decline.
-                let gluq_done = lw
-                    .f8t_gu
-                    .as_ref()
-                    .expect("f8t_gu checked (f8t_pf2)")
-                    .flat_gui
-                    && r >= 16
-                    && exec.f8cut_gemm_gluq(
-                        lw.f8t_gu.as_ref().expect("f8t_gu checked (f8t_pf2)"),
-                        &mut sc.pf_e4q,
-                        &mut sc.pf_e4rs,
-                        &mut sc.pf_gate,
-                        hp.n_embd,
-                        n_ff,
-                        r,
-                        match hp.glu_act() {
-                            crate::gpu::GluAct::Gelu => 0,
-                            crate::gpu::GluAct::Silu => 1,
-                        },
-                    )?;
-                if gluq_done {
-                } else if b16 {
-                    exec.f8cut_gemm_b16(
-                        lw.f8t_gu.as_ref().expect("f8t_gu checked (f8t_pf2)"),
-                        0,
-                        &sc.pf_e4q,
-                        &sc.pf_e4rs,
-                        &mut sc.pf_gate,
-                        hp.n_embd,
-                        2 * n_ff,
-                        r,
-                    )?;
-                    exec.quantize_e4m3_glu2_row_b16(
-                        &sc.pf_gate,
-                        &mut sc.pf_e4q,
-                        &mut sc.pf_e4rs,
-                        n_ff,
-                        r,
-                        hp.glu_act(),
-                    )?;
-                } else {
+                {
                     exec.f8t_gemm(
                         lw.f8t_gu.as_ref().expect("f8t_gu checked (f8t_pf2)"),
                         &sc.pf_e4q,
@@ -3735,25 +3581,7 @@ impl GpuGemma4 {
                         hp.glu_act(),
                     )?;
                 }
-                if qkv_b16
-                    && lw
-                        .f8t_down
-                        .as_ref()
-                        .expect("f8t_down checked (f8t_pf2)")
-                        .flat
-                        .is_some()
                 {
-                    exec.f8cut_gemm_b16(
-                        lw.f8t_down.as_ref().expect("f8t_down checked (f8t_pf2)"),
-                        0,
-                        &sc.pf_e4q,
-                        &sc.pf_e4rs,
-                        &mut sc.pf_proj,
-                        n_ff,
-                        hp.n_embd,
-                        r,
-                    )?;
-                } else {
                     exec.f8t_gemm(
                         lw.f8t_down.as_ref().expect("f8t_down checked (f8t_pf2)"),
                         &sc.pf_e4q,
@@ -4243,14 +4071,7 @@ impl GpuGemma4 {
                     r,
                     true,
                 )?;
-            } else if c16
-                || (qkv_b16
-                    && lw
-                        .f8t_down
-                        .as_ref()
-                        .map(|p| p.flat.is_some())
-                        .unwrap_or(false))
-            {
+            } else if c16 {
                 // pf_proj holds bf16 (o16 down epilogue, or the b16 wide arm)
                 exec.rmsnorm_add_scale_p16(
                     &mut sc.pf_x,

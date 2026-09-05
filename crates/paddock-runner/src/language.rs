@@ -193,7 +193,7 @@ const NAMED: &[(&str, &str)] = &[
 ///
 /// The lanes disagree about what a language is on the wire: whisper reports
 /// the ISO code ("sv") while Qwen3-ASR writes an English name into its own
-/// answer envelope (`language Swedish<asr_text>...`) -  is the standing
+/// answer envelope (`language Swedish<asr_text>...`) - is the standing
 /// question of which one the spec `language` field should settle on. Nothing
 /// here can compare a language against another without first agreeing what a
 /// language is, so `paddock_language` settles it for itself and always reports

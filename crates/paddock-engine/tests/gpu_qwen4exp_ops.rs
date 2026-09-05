@@ -65,7 +65,7 @@ fn group_norm_1p_matches_reference() {
     let d_x = exec.to_device(&x).expect("x");
     let d_w = exec.to_device(&w).expect("w");
     let mut d_out = exec.to_device(&vec![f32::NAN; rows * hw]).expect("out");
-    exec.q4x_group_norm_1p(&d_x, &d_w, &mut d_out, rows, hc, hidden, EPS)
+    exec.q4x_group_norm_1p(&d_x, &d_w, &mut d_out, None, rows, hc, hidden, EPS)
         .expect("q4x_group_norm_1p");
     let got = exec.to_host(&d_out).expect("dtoh");
 
@@ -125,7 +125,7 @@ fn hc_mix_matches_reference() {
     let mut d_bi = exec.to_device(&vec![f32::NAN; rows * hidden]).expect("bi");
     let mut d_inj = exec.to_device(&vec![f32::NAN; rows * hc]).expect("inj");
 
-    exec.q4x_group_norm_1p(&d_h, &d_norm, &mut d_xn, rows, hc, hidden, EPS)
+    exec.q4x_group_norm_1p(&d_h, &d_norm, &mut d_xn, None, rows, hc, hidden, EPS)
         .expect("norm");
     exec.matvec_f32_raw(&d_down, hw, lowrank, &d_xn, &mut d_m, rows)
         .expect("down");
@@ -133,7 +133,7 @@ fn hc_mix_matches_reference() {
         .expect("scale_silu");
     exec.matvec_f32_raw(&d_up, lowrank, hw, &d_m, &mut d_gate, rows)
         .expect("up");
-    exec.q4x_hc_mix(&d_xn, &d_gate, &mut d_bi, rows, hc, hidden)
+    exec.q4x_hc_mix(&d_xn, &d_gate, &mut d_bi, None, rows, hc, hidden)
         .expect("hc_mix");
     exec.matvec_f32_raw(&d_inj_w, hw, hc, &d_xn, &mut d_inj, rows)
         .expect("inject");
@@ -220,9 +220,9 @@ fn ple_gate_matches_reference() {
     let mut d_qn = exec.to_device(&vec![f32::NAN; rows * hw]).expect("qn");
     let mut d_gv = exec.to_device(&vec![f32::NAN; rows * hw]).expect("gv");
 
-    exec.q4x_group_norm_1p(&d_key, &d_nk, &mut d_kn, rows, hc, hidden, EPS)
+    exec.q4x_group_norm_1p(&d_key, &d_nk, &mut d_kn, None, rows, hc, hidden, EPS)
         .expect("key norm");
-    exec.q4x_group_norm_1p(&d_h, &d_nq, &mut d_qn, rows, hc, hidden, EPS)
+    exec.q4x_group_norm_1p(&d_h, &d_nq, &mut d_qn, None, rows, hc, hidden, EPS)
         .expect("query norm");
     exec.q4x_ple_gate(&d_kn, &d_qn, &d_val, &mut d_gv, rows, hc, hidden)
         .expect("q4x_ple_gate");
@@ -335,7 +335,7 @@ fn gdn_gated_norm_matches_reference() {
     let d_z = exec.to_device(&z).expect("z");
     let d_w = exec.to_device(&w).expect("w");
     let mut d_out = exec.to_device(&vec![f32::NAN; rows * d]).expect("out");
-    exec.q4x_gdn_gated_norm(&d_x, &d_z, &d_w, &mut d_out, rows, d, EPS)
+    exec.q4x_gdn_gated_norm(&d_x, &d_z, &d_w, &mut d_out, None, rows, d, EPS)
         .expect("q4x_gdn_gated_norm");
     let got = exec.to_host(&d_out).expect("dtoh");
 

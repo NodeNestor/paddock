@@ -119,16 +119,6 @@ pub(crate) fn f8t16_wo_in() -> usize {
     })
 }
 
-// P49: b16-D verify election - the wide-tick body's o/gu/down
-// GEMMs ride pd_f8cut_gemm_b16 + the shipped p16/b16 consumer twins (the
-// chunk walk's PF_B16 stream class, brought to spec-verify widths). Truthy
-// gate (=0 reverts once defaulted); class change like PF_B16 itself -
-// acceptance-gated, not bit-parity.
-pub(crate) fn vb16_on() -> bool {
-    static V: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    *V.get_or_init(|| crate::envset::env_on("PADDOCK_G4_VB16"))
-}
-
 // P50: the verify tick's last f32-D GEMM plane - qkv - onto the
 // b16-D arm, read straight by the packed-bf16 nra3 twin (slot 420). Its own
 // truthy gate so the plane prices alone in the A/B; same r>=65 spec-only
@@ -2709,38 +2699,7 @@ impl GpuGemma4 {
                         && q8.flat.is_some()
                         && lw.f8t_wk.as_ref().expect("f8t_wk pairs wq").flat.is_some()
                         && lw.f8t_wv.as_ref().is_some_and(|v| v.flat.is_some());
-                    if qkv_b16 {
-                        exec.f8cut_gemm_b16(
-                            q8,
-                            0,
-                            &sc.pf_e4q,
-                            &sc.pf_e4rs,
-                            &mut sc.pf_q,
-                            hp.n_embd,
-                            q_dim,
-                            r,
-                        )?;
-                        exec.f8cut_gemm_b16(
-                            lw.f8t_wk.as_ref().expect("f8t_wk pairs wq"),
-                            0,
-                            &sc.pf_e4q,
-                            &sc.pf_e4rs,
-                            &mut sc.pf_k,
-                            hp.n_embd,
-                            kv_dim,
-                            r,
-                        )?;
-                        exec.f8cut_gemm_b16(
-                            lw.f8t_wv.as_ref().expect("checked by qkv_b16"),
-                            0,
-                            &sc.pf_e4q,
-                            &sc.pf_e4rs,
-                            &mut sc.pf_v,
-                            hp.n_embd,
-                            kv_dim,
-                            r,
-                        )?;
-                    } else {
+                    {
                         exec.f8t_gemm(
                             q8,
                             &sc.pf_e4q,
@@ -3637,17 +3596,8 @@ impl GpuGemma4 {
             let mut down_nz: u32 = 1;
             // P49: pf_proj holds bf16 from the b16-D down GEMM - the post
             // consumer (immediate or deferred) must take the p16 twin
-            let mut down_b16 = false;
             // P49 b16-D verify election: floor 65 keeps the decode band
             // (r<=32, tc5-elected) and the narrow spec verifies out; the
-            // excluded arms are exactly the ones whose consumers have no
-            // p16 twin (b32/pc producers, moe tail).
-            let vb16 = r >= 65
-                && vb16_on()
-                && !nqf_b32_ffn
-                && !pc_gu_b
-                && lw.moe.is_none()
-                && exec.has_glu2_b16();
             if let Some(o8w) = &lw.f8a_wo {
                 // F8A out-projection (out = n_embd 5376 -> twin through 64);
                 // lin planes take the quantized band at r==1 too (no f32 gemv)
@@ -3723,10 +3673,6 @@ impl GpuGemma4 {
                 // only the layer class whose wo in_dim the loader published
                 wo_o16 =
                     f8t16_on() && r >= 129 && !nqf_b32_ffn && !pc_gu_b && wo_in == f8t16_wo_in();
-                // P49: explicit b16-D route needs no pack-side election
-                // agreement - the engine calls the b16 entry directly and
-                // the same wo_o16 flag routes the p16 consumers below.
-                let wo_b16 = vb16 && wot.flat.is_some();
                 // P53: the fin-e4 arm already wrote these planes in-kernel.
                 // P54: the fin-e4s arm wrote pf_e4q at static scale - skip
                 // the quantize AND feed the GEMM the ones xrs (pf_e4rs is
@@ -3735,19 +3681,7 @@ impl GpuGemma4 {
                     exec.quantize_e4m3_row(&sc.pf_attn, &mut sc.pf_e4q, &mut sc.pf_e4rs, wo_in, r)?;
                 }
                 let wo_xrs = if attn_e4s { &sc.pf_fae4rs } else { &sc.pf_e4rs };
-                if wo_b16 {
-                    wo_o16 = true;
-                    exec.f8cut_gemm_b16(
-                        wot,
-                        0,
-                        &sc.pf_e4q,
-                        wo_xrs,
-                        &mut sc.pf_proj,
-                        wo_in,
-                        hp.n_embd,
-                        r,
-                    )?;
-                } else if nqf_row_ffn && ksabs_on() && exec.has_f8t_gemm_nc() {
+                if nqf_row_ffn && ksabs_on() && exec.has_f8t_gemm_nc() {
                     // the fused addnorm consumes the K-split partial
                     // planes directly - the combine launch and the combined
                     // buffer's write+read round trip both disappear
@@ -4418,46 +4352,8 @@ impl GpuGemma4 {
                         r,
                     )?;
                 }
-                // gluq (opt-in PADDOCK_G4_GLUQ, plane built gui at load):
-                // fused geglu + per-fragment quantize in the cutlass epilogue
-                // + row-scale fixup - (q, rscale) in one call, and the
-                // standalone glu2 quantize launch is gone. Probed a clear win
-                // over the chain at every verify width, rscale bit-equal.
-                // Decline (Ok(false)) falls through to the classic chain;
-                // flat_gui gates the plain-cutlass arms off this plane, so
-                // the fallback GEMM is the tc5 tile route.
-                let gluq_done = gu8.flat_gui
-                    && r >= 16
-                    && exec.f8cut_gemm_gluq(
-                        gu8,
-                        &mut sc.pf_e4q,
-                        &mut sc.pf_e4rs,
-                        &mut sc.pf_gate,
-                        hp.n_embd,
-                        n_ff,
-                        r,
-                        match hp.glu_act() {
-                            crate::gpu::GluAct::Gelu => 0,
-                            crate::gpu::GluAct::Silu => 1,
-                        },
-                    )?;
-                if !gluq_done {
-                    // P49: b16-D gu + the bf16-in whole-row glu2 quantizer -
-                    // halves the largest activation round-trip in the tick
-                    let gu_b16 = vb16 && gu8.flat.is_some() && !gu8.flat_gui;
-                    let gu_nz = if gu_b16 {
-                        exec.f8cut_gemm_b16(
-                            gu8,
-                            0,
-                            &sc.pf_e4q,
-                            &sc.pf_e4rs,
-                            &mut sc.pf_gate,
-                            hp.n_embd,
-                            2 * n_ff,
-                            r,
-                        )?;
-                        1
-                    } else if ksabs_on() && exec.has_f8t_gemm_nc() {
+                {
+                    let gu_nz = if ksabs_on() && exec.has_f8t_gemm_nc() {
                         exec.f8t_gemm_nc(
                             gu8,
                             &sc.pf_e4q,
@@ -4491,15 +4387,6 @@ impl GpuGemma4 {
                             gu_nz,
                             hp.glu_act(),
                         )?;
-                    } else if gu_b16 {
-                        exec.quantize_e4m3_glu2_row_b16(
-                            &sc.pf_gate,
-                            &mut sc.pf_e4q,
-                            &mut sc.pf_e4rs,
-                            n_ff,
-                            r,
-                            hp.glu_act(),
-                        )?;
                     } else {
                         exec.quantize_e4m3_glu2_row(
                             &sc.pf_gate,
@@ -4511,29 +4398,7 @@ impl GpuGemma4 {
                         )?;
                     }
                 } // !gluq_done
-                // P49: the deferred absorber's row arm and the immediate
-                // rmsnorm_add_scale both have p16 twins; the b32 absorber
-                // does not, so a next_fuses_b32-only deferral stays f32
-                down_b16 = vb16
-                    && lw
-                        .f8t_down
-                        .as_ref()
-                        .expect("f8t FFN planes built as a set")
-                        .flat
-                        .is_some()
-                    && (next_fuses || !next_fuses_b32);
-                if down_b16 {
-                    exec.f8cut_gemm_b16(
-                        lw.f8t_down.as_ref().expect("f8t FFN planes built as a set"),
-                        0,
-                        &sc.pf_e4q,
-                        &sc.pf_e4rs,
-                        &mut sc.pf_proj,
-                        n_ff,
-                        hp.n_embd,
-                        r,
-                    )?;
-                } else if next_fuses
+                if next_fuses
                     && lw.moe.is_none()
                     && exec.has_rmsnorm_e4m3_row()
                     && ksabs_on()
@@ -4722,20 +4587,9 @@ impl GpuGemma4 {
                 g4_moe_tail(exec, sc, moe, &lw.ffn_post_norm, hp, lw.out_scale, r, true)?;
             } else if next_fuses || next_fuses_b32 {
                 pending_post = Some((li, lw.out_scale, down_nz));
-                post_b16 = down_b16;
             } else {
                 debug_assert!(down_nz == 1, "down absorbed without a fusing consumer");
-                if down_b16 {
-                    exec.rmsnorm_add_scale_p16(
-                        &mut sc.pf_x,
-                        &sc.pf_proj,
-                        &lw.ffn_post_norm,
-                        hp.n_embd,
-                        hp.post_norm_eps,
-                        lw.out_scale,
-                        r,
-                    )?;
-                } else {
+                {
                     exec.rmsnorm_add_scale(
                         &mut sc.pf_x,
                         &sc.pf_proj,
@@ -7396,15 +7250,22 @@ pub(super) fn g4_moe_tail(
         .kernels()
         .map(|kt| kt.q8_0_moe_gu_dec2_geglu.is_some())
         .unwrap_or(false)
-        && paddock_models::dev_var_os!("PADDOCK_NO_MOE_DEC2").is_none()
+        && paddock_models::dev_var_os!("PADDOCK_MOE_DEC2").is_some()
     {
-        // decode-band intensity twins - DEFAULT-ON. These once read as
-        // "wall-neutral", but that was a stale regime: decode then ran the
-        // uncaptured host round, where launch overhead hid kernel time. Under
-        // the graph pipe the isolated 1.5x/1.25x pair win (a4b_moe_kbench:
-        // gu 110.5->74.5us, dn 67.6->53.3us at r=8) shows up live at every
-        // width. Greedy-identical to the originals; PADDOCK_NO_MOE_DEC2 =
-        // A/B.
+        // decode-band intensity twins - NOW OPT-IN (PADDOCK_MOE_DEC2=1).
+        // GREEDY-REFUTED 2026-09-04 on gemma-4-26b-A4B: the gu_dec2 + dn_dec2
+        // PAIR produces token-repetition garbage ("CAPITAL.- Ezil, own-own..."
+        // deterministic), while EITHER twin paired with its original
+        // counterpart is correct (bisected: gu_dec2 + original down = OK;
+        // original gate_up + dn_dec2 = OK; both dec2 = garbage). So neither
+        // kernel is wrong alone - the defect is an interaction between the
+        // two (a value-/state-dependent hazard; survives PADDOCK_NO_MOE_FORK,
+        // so not the side-stream fork). The old "greedy-identical" claim held
+        // only because aiperf never reads the text. Root cause still open;
+        // default routes the correct original gate_up_geglu + down below.
+        // The 1.5x/1.25x decode-band win (a4b_moe_kbench: gu 110.5->74.5us,
+        // dn 67.6->53.3us at r=8) is forfeited until the pair is fixed;
+        // it only ever engaged at r*k < 128 (the sorted path owns >=128).
         //
         // dec3 gate_up - OPT-IN only, FALSIFIED as default. The
         // bulk-streamed kernel (moe_align BM=2 + one TMA-ring CTA per

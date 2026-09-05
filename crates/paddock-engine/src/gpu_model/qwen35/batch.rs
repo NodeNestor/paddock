@@ -59,66 +59,6 @@ pub(super) fn f8t_chunk_rmax() -> usize {
     })
 }
 
-///  - the PREFILL wave's Nvf4Dense FFN arm.
-///
-/// The wave and the chunk pass both gate their tile arm on a DECODE-band row
-/// bound (`r <= 64` / `r <= f8t_chunk_rmax()`), so above it every fp4 layer's
-/// FFN fell to the f8w row-scale planes while the decode tick next door ran
-/// the checkpoint's own nibbles through CUTLASS block-scaled fp4. The rival
-/// has no such split - its prefill and decode share one kernel class - and
-/// this is the same "a prefill site never got the decode lane's election"
-/// shape that fixed in the verify walk.
-///
-/// The old bound was not a tile limit: `f8t_gemm` takes the vendored cutlass
-/// intercept whenever the plane carries a flat twin and `m >= f8cut_minb()`,
-/// and that route never touches `d_ks_part` - which is what the 64 was really
-/// protecting (it is sized `8 * 64 * ks_out_max()`). `down` is not a
-/// `flat_gui` plane, so at wave widths it rides the intercept. So the arm is
-/// REACHABLE, and this function is what elects it.
-///
-/// OPT-IN, and the measurement is why (3 alternating boots per arm, medians
-/// of 3 reps, non-overlapping in both directions): it wins one long-prompt
-/// wide cell by ~2.5% and loses a short-prompt wide cell by ~4%.
-///
-/// A row ceiling does not separate them (PADDOCK_Q35_PF_NV4_RMAX sweep at
-/// 512/1024/2048, 2 boots each - no rung is positive on both). Both the gain
-/// AND the loss live in the same 4096-row wave band - 32x128 tokens on one
-/// cell, ~4x1000 on the other - so the GEMM is identical and the
-/// discriminator is not row count. Until that mechanism is found this stays
-/// behind the knob, because the weakest cell is better OFF.
-///
-/// The wider result is the useful one: prefill is not leaving money in the
-/// FFN GEMM. The f8w row-scale planes it already elects are competitive with
-/// the checkpoint's own fp4 nibbles at wave widths, which refutes the
-/// census-shaped hypothesis that the decode lane's arm would carry over.
-///
-/// Enable: PADDOCK_Q35_PF_NV4=1.
-pub(super) fn pf_nv4_on() -> bool {
-    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    *ON.get_or_init(|| paddock_models::dev_var!("PADDOCK_Q35_PF_NV4").is_ok_and(|v| v != "0"))
-}
-
-/// Row ceiling for the arm above. It is not blanket-better: 3 alternating
-/// boots per arm, non-overlapping in both directions, said imax (1k prompts)
-/// +2.52% and syn_128x128_c32 (128 prompts) -4.06%. The fp4 chain carries a
-/// CTA_M=128 pin and an extra activation-quantize pass, which the f8w
-/// row-scale planes (tuned for M >= 512) beat once the wave is wide enough -
-/// so the election is a row band, the same shape as every other tile choice
-/// in this file. PADDOCK_Q35_PF_NV4_RMAX overrides; 0 means no ceiling.
-pub(super) fn pf_nv4_rmax() -> usize {
-    static N: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
-    *N.get_or_init(|| {
-        match paddock_models::dev_var!("PADDOCK_Q35_PF_NV4_RMAX")
-            .ok()
-            .and_then(|v| v.parse().ok())
-        {
-            Some(0) => usize::MAX,
-            Some(n) => n,
-            None => usize::MAX,
-        }
-    })
-}
-
 /// P65: fill TruncCat rows' ids from the device top-64 head plane
 /// (`head` = the dtoh'd [rows, 64, 2] u32 (id, raw-logit bits) plane;
 /// `plans[i]` indexes row i). Sentinel id u32::MAX = n < 64 padding.
@@ -2012,7 +1952,6 @@ impl GpuQwen35 {
         // planes keep their old route for that GEMM alone.
         let bs_f8t_attn_p = &self.bs_f8t_attn;
         let bs_f8t_ffn_p = &self.bs_f8t_ffn;
-        let bs_nv4_gu_p = &self.bs_nv4_gu;
         let sc = self.scratch.as_mut().expect("scratch");
         let bs = self.batch.as_mut().expect("batch");
 
@@ -3605,38 +3544,24 @@ impl GpuQwen35 {
                                 // P62 gluq silu twin: fused swiglu+quantize in the
                                 // cutlass epilogue (act=1) replaces GEMM+swiglu+
                                 // quant; decline falls through to the classic chain.
-                                let gluq_done = gu_t.flat_gui
-                                    && r >= 16
-                                    && exec.f8cut_gemm_gluq(
-                                        gu_t,
-                                        &mut sc.d_f8t_q,
-                                        &mut sc.d_f8t_rs,
-                                        &mut sc.d_ffn_gate,
-                                        embd,
-                                        ff,
-                                        r,
-                                        1,
-                                    )?;
-                                if !gluq_done {
-                                    exec.f8t_gemm(
-                                        gu_t,
-                                        &sc.d_f8t_q,
-                                        &sc.d_f8t_rs,
-                                        &mut bs.d_ks_part,
-                                        &mut sc.d_ffn_gate,
-                                        embd,
-                                        2 * ff,
-                                        r,
-                                    )?;
-                                    exec.swiglu_fused(&sc.d_ffn_gate, &mut sc.d_ffn_up, ff, r)?;
-                                    exec.quantize_e4m3_row(
-                                        &sc.d_ffn_up,
-                                        &mut sc.d_f8t_q,
-                                        &mut sc.d_f8t_rs,
-                                        ff,
-                                        r,
-                                    )?;
-                                }
+                                exec.f8t_gemm(
+                                    gu_t,
+                                    &sc.d_f8t_q,
+                                    &sc.d_f8t_rs,
+                                    &mut bs.d_ks_part,
+                                    &mut sc.d_ffn_gate,
+                                    embd,
+                                    2 * ff,
+                                    r,
+                                )?;
+                                exec.swiglu_fused(&sc.d_ffn_gate, &mut sc.d_ffn_up, ff, r)?;
+                                exec.quantize_e4m3_row(
+                                    &sc.d_ffn_up,
+                                    &mut sc.d_f8t_q,
+                                    &mut sc.d_f8t_rs,
+                                    ff,
+                                    r,
+                                )?;
                                 exec.f8t_gemm(
                                     dn_t,
                                     &sc.d_f8t_q,
@@ -3852,29 +3777,8 @@ impl GpuQwen35 {
                             // decode walk.
                             // the DECODE lane's arm, at wave widths. Above
                             // the tile arm's decode-band row bound the fp4 gate|up +
-                            // f8t `down` pair is reachable and was simply never
-                            // elected here: `down` carries a flat twin and is not
-                            // flat_gui, so f8t_gemm takes the cutlass intercept and
-                            // never touches d_ks_part (the buffer the bound was
-                            // really protecting). See pf_nv4_on().
-                            let pf_nv4 = (f8t_ffn.is_none()
-                                && pf_nv4_on()
-                                && r <= pf_nv4_rmax()
-                                && r <= sc.cap)
-                                .then(|| {
-                                    let gu4 = bs_nv4_gu_p.get(li).and_then(|o| o.as_ref())?;
-                                    let dn = &bs_f8t_ffn_p.get(li).and_then(|o| o.as_ref())?[1];
-                                    (exec.has_glu2_b16()
-                                        && dn.flat.is_some()
-                                        && !dn.flat_gui
-                                        && r * ff <= sc.d_f8t_q.len()
-                                        && r <= sc.d_f8t_rs.len())
-                                    .then_some((gu4, dn))
-                                })
-                                .flatten();
                             let f8f = bs_f8ffn_p.get(li).and_then(|o| o.as_ref()).filter(|_| {
                                 f8t_ffn.is_none()
-                                    && pf_nv4.is_none()
                                     && r > nvf4_f8w_min_rows(w8_min)
                                     && paddock_models::dev_var_os!("PADDOCK_F8_ROWSCALE").is_none()
                             });
@@ -3893,62 +3797,7 @@ impl GpuQwen35 {
                                 r,
                                 eps,
                             )?;
-                            if let Some((gu4, dn_t)) = pf_nv4 {
-                                // identical chain to the decode tick's Nvf4Dense arm:
-                                // quantize xn to nvf4 -> fused gate|up (bf16 D in the
-                                // f32-typed buffer, r * 2ff bf16 == r * ff f32) ->
-                                // fused swiglu+e4m3 -> f8t `down`.
-                                {
-                                    // engagement witness (bisect-trap law), one line per
-                                    // power-of-two row band so a leg names its own
-                                    // distribution instead of just its first wave
-                                    use std::sync::Mutex;
-                                    static W: Mutex<Option<std::collections::HashSet<usize>>> =
-                                        Mutex::new(None);
-                                    let mut g = W.lock().unwrap_or_else(|e| e.into_inner());
-                                    if g.get_or_insert_with(Default::default)
-                                        .insert(r.next_power_of_two())
-                                    {
-                                        tracing::warn!(
-                                            "[pf-nv4] engaged rows={r} band={} ff={ff} rmax={}",
-                                            r.next_power_of_two(),
-                                            pf_nv4_rmax()
-                                        );
-                                    }
-                                }
-                                exec.nv4cut_quant_a(
-                                    &sc.d_xn,
-                                    &mut sc.d_nv4_aq,
-                                    &mut sc.d_nv4_asf,
-                                    embd,
-                                    r,
-                                )?;
-                                exec.nv4cut_gemm(
-                                    gu4,
-                                    &sc.d_nv4_aq,
-                                    &sc.d_nv4_asf,
-                                    &mut sc.d_ffn_gate,
-                                    r,
-                                )?;
-                                exec.quantize_e4m3_glu2_row_b16(
-                                    &sc.d_ffn_gate,
-                                    &mut sc.d_f8t_q,
-                                    &mut sc.d_f8t_rs,
-                                    ff,
-                                    r,
-                                    crate::gpu::GluAct::Silu,
-                                )?;
-                                exec.f8t_gemm(
-                                    dn_t,
-                                    &sc.d_f8t_q,
-                                    &sc.d_f8t_rs,
-                                    &mut bs.d_ks_part,
-                                    &mut sc.d_proj,
-                                    ff,
-                                    embd,
-                                    r,
-                                )?;
-                            } else if let Some([gu_t, dn_t]) = f8t_ffn {
+                            if let Some([gu_t, dn_t]) = f8t_ffn {
                                 exec.quantize_e4m3_row(
                                     &sc.d_xn,
                                     &mut sc.d_f8t_q,
@@ -3956,38 +3805,24 @@ impl GpuQwen35 {
                                     embd,
                                     r,
                                 )?;
-                                let gluq_done = gu_t.flat_gui
-                                    && r >= 16
-                                    && exec.f8cut_gemm_gluq(
-                                        gu_t,
-                                        &mut sc.d_f8t_q,
-                                        &mut sc.d_f8t_rs,
-                                        &mut sc.d_ffn_gate,
-                                        embd,
-                                        ff,
-                                        r,
-                                        1,
-                                    )?;
-                                if !gluq_done {
-                                    exec.f8t_gemm(
-                                        gu_t,
-                                        &sc.d_f8t_q,
-                                        &sc.d_f8t_rs,
-                                        &mut bs.d_ks_part,
-                                        &mut sc.d_ffn_gate,
-                                        embd,
-                                        2 * ff,
-                                        r,
-                                    )?;
-                                    exec.swiglu_fused(&sc.d_ffn_gate, &mut sc.d_ffn_up, ff, r)?;
-                                    exec.quantize_e4m3_row(
-                                        &sc.d_ffn_up,
-                                        &mut sc.d_f8t_q,
-                                        &mut sc.d_f8t_rs,
-                                        ff,
-                                        r,
-                                    )?;
-                                }
+                                exec.f8t_gemm(
+                                    gu_t,
+                                    &sc.d_f8t_q,
+                                    &sc.d_f8t_rs,
+                                    &mut bs.d_ks_part,
+                                    &mut sc.d_ffn_gate,
+                                    embd,
+                                    2 * ff,
+                                    r,
+                                )?;
+                                exec.swiglu_fused(&sc.d_ffn_gate, &mut sc.d_ffn_up, ff, r)?;
+                                exec.quantize_e4m3_row(
+                                    &sc.d_ffn_up,
+                                    &mut sc.d_f8t_q,
+                                    &mut sc.d_f8t_rs,
+                                    ff,
+                                    r,
+                                )?;
                                 exec.f8t_gemm(
                                     dn_t,
                                     &sc.d_f8t_q,
@@ -5868,7 +5703,6 @@ impl GpuQwen35 {
         // r <= 64 the whole mixed tick takes it instead.
         let bs_f8t_attn_p = &self.bs_f8t_attn;
         let bs_f8t_ffn_p = &self.bs_f8t_ffn;
-        let bs_nv4_gu_p = &self.bs_nv4_gu;
         // DFlash: the walk below taps every row; the append itself needs
         // &mut self after the walk's field borrows end, so stash the row
         // mirrors here and let unified_span_launch fuse+append on return.
@@ -7041,7 +6875,15 @@ impl GpuQwen35 {
                     // the f32 d_core store skipped - the GEMM's q/scale
                     // planes are the only consumer on this path. Bytes are
                     // bit-identical to the norm + standalone-quantize pair.
-                    let gr_fused = lw8.is_some() && exec.has_gated_rmsnorm_e4m3();
+                    // f8t out_w arm excluded: it needs the f32 d_core + the
+                    // row-quant seam, not the linear e4m3 planes. Without this
+                    // guard, an f8t in_qkv tick that ALSO has lw8 (the arms
+                    // overlap once w8_min < r, e.g. the shipped w8_min=0) runs
+                    // the fused norm, skips the d_core store, and the f8t out
+                    // arm below then row-quants a stale d_core -> corrupt out
+                    // proj (matches the mixed-tick site's gr_fused).
+                    let gr_fused =
+                        lw8.is_some() && f8t_ow_u.is_none() && exec.has_gated_rmsnorm_e4m3();
                     if gr_fused {
                         exec.gated_rmsnorm_e4m3(
                             &sc.d_dattn,
@@ -7208,38 +7050,24 @@ impl GpuQwen35 {
                         )?;
                         // P62 gluq silu twin - same election as the first
                         // prefill site.
-                        let gluq_done = gu_t.flat_gui
-                            && r >= 16
-                            && exec.f8cut_gemm_gluq(
-                                gu_t,
-                                &mut sc.d_f8t_q,
-                                &mut sc.d_f8t_rs,
-                                &mut sc.d_ffn_gate,
-                                embd,
-                                ff,
-                                r,
-                                1,
-                            )?;
-                        if !gluq_done {
-                            exec.f8t_gemm(
-                                gu_t,
-                                &sc.d_f8t_q,
-                                &sc.d_f8t_rs,
-                                &mut bs.d_ks_part,
-                                &mut sc.d_ffn_gate,
-                                embd,
-                                2 * ff,
-                                r,
-                            )?;
-                            exec.swiglu_fused(&sc.d_ffn_gate, &mut sc.d_ffn_up, ff, r)?;
-                            exec.quantize_e4m3_row(
-                                &sc.d_ffn_up,
-                                &mut sc.d_f8t_q,
-                                &mut sc.d_f8t_rs,
-                                ff,
-                                r,
-                            )?;
-                        }
+                        exec.f8t_gemm(
+                            gu_t,
+                            &sc.d_f8t_q,
+                            &sc.d_f8t_rs,
+                            &mut bs.d_ks_part,
+                            &mut sc.d_ffn_gate,
+                            embd,
+                            2 * ff,
+                            r,
+                        )?;
+                        exec.swiglu_fused(&sc.d_ffn_gate, &mut sc.d_ffn_up, ff, r)?;
+                        exec.quantize_e4m3_row(
+                            &sc.d_ffn_up,
+                            &mut sc.d_f8t_q,
+                            &mut sc.d_f8t_rs,
+                            ff,
+                            r,
+                        )?;
                         exec.f8t_gemm(
                             dn_t,
                             &sc.d_f8t_q,
@@ -7441,27 +7269,8 @@ impl GpuQwen35 {
                     // plane set built.
                     // the DECODE lane's arm, at wave widths. Above
                     // the tile arm's decode-band row bound the fp4 gate|up +
-                    // f8t `down` pair is reachable and was simply never
-                    // elected here: `down` carries a flat twin and is not
-                    // flat_gui, so f8t_gemm takes the cutlass intercept and
-                    // never touches d_ks_part (the buffer the bound was
-                    // really protecting). See pf_nv4_on().
-                    let pf_nv4 =
-                        (f8t_ffn.is_none() && pf_nv4_on() && r <= pf_nv4_rmax() && r <= sc.cap)
-                            .then(|| {
-                                let gu4 = bs_nv4_gu_p.get(li).and_then(|o| o.as_ref())?;
-                                let dn = &bs_f8t_ffn_p.get(li).and_then(|o| o.as_ref())?[1];
-                                (exec.has_glu2_b16()
-                                    && dn.flat.is_some()
-                                    && !dn.flat_gui
-                                    && r * ff <= sc.d_f8t_q.len()
-                                    && r <= sc.d_f8t_rs.len())
-                                .then_some((gu4, dn))
-                            })
-                            .flatten();
                     let f8f = bs_f8ffn_p.get(li).and_then(|o| o.as_ref()).filter(|_| {
                         f8t_ffn.is_none()
-                            && pf_nv4.is_none()
                             && r > nvf4_f8w_min_rows(w8_min)
                             && paddock_models::dev_var_os!("PADDOCK_F8_ROWSCALE").is_none()
                     });
@@ -7480,56 +7289,7 @@ impl GpuQwen35 {
                         r,
                         eps,
                     )?;
-                    if let Some((gu4, dn_t)) = pf_nv4 {
-                        // identical chain to the decode tick's Nvf4Dense arm:
-                        // quantize xn to nvf4 -> fused gate|up (bf16 D in the
-                        // f32-typed buffer, r * 2ff bf16 == r * ff f32) ->
-                        // fused swiglu+e4m3 -> f8t `down`.
-                        {
-                            // engagement witness (bisect-trap law), one line per
-                            // power-of-two row band so a leg names its own
-                            // distribution instead of just its first wave
-                            use std::sync::Mutex;
-                            static W: Mutex<Option<std::collections::HashSet<usize>>> =
-                                Mutex::new(None);
-                            let mut g = W.lock().unwrap_or_else(|e| e.into_inner());
-                            if g.get_or_insert_with(Default::default)
-                                .insert(r.next_power_of_two())
-                            {
-                                tracing::warn!(
-                                    "[pf-nv4] engaged rows={r} band={} ff={ff} rmax={}",
-                                    r.next_power_of_two(),
-                                    pf_nv4_rmax()
-                                );
-                            }
-                        }
-                        exec.nv4cut_quant_a(
-                            &sc.d_xn,
-                            &mut sc.d_nv4_aq,
-                            &mut sc.d_nv4_asf,
-                            embd,
-                            r,
-                        )?;
-                        exec.nv4cut_gemm(gu4, &sc.d_nv4_aq, &sc.d_nv4_asf, &mut sc.d_ffn_gate, r)?;
-                        exec.quantize_e4m3_glu2_row_b16(
-                            &sc.d_ffn_gate,
-                            &mut sc.d_f8t_q,
-                            &mut sc.d_f8t_rs,
-                            ff,
-                            r,
-                            crate::gpu::GluAct::Silu,
-                        )?;
-                        exec.f8t_gemm(
-                            dn_t,
-                            &sc.d_f8t_q,
-                            &sc.d_f8t_rs,
-                            &mut bs.d_ks_part,
-                            &mut sc.d_proj,
-                            ff,
-                            embd,
-                            r,
-                        )?;
-                    } else if let Some([gu_t, dn_t]) = f8t_ffn {
+                    if let Some([gu_t, dn_t]) = f8t_ffn {
                         exec.quantize_e4m3_row(
                             &sc.d_xn,
                             &mut sc.d_f8t_q,
@@ -7537,38 +7297,24 @@ impl GpuQwen35 {
                             embd,
                             r,
                         )?;
-                        let gluq_done = gu_t.flat_gui
-                            && r >= 16
-                            && exec.f8cut_gemm_gluq(
-                                gu_t,
-                                &mut sc.d_f8t_q,
-                                &mut sc.d_f8t_rs,
-                                &mut sc.d_ffn_gate,
-                                embd,
-                                ff,
-                                r,
-                                1,
-                            )?;
-                        if !gluq_done {
-                            exec.f8t_gemm(
-                                gu_t,
-                                &sc.d_f8t_q,
-                                &sc.d_f8t_rs,
-                                &mut bs.d_ks_part,
-                                &mut sc.d_ffn_gate,
-                                embd,
-                                2 * ff,
-                                r,
-                            )?;
-                            exec.swiglu_fused(&sc.d_ffn_gate, &mut sc.d_ffn_up, ff, r)?;
-                            exec.quantize_e4m3_row(
-                                &sc.d_ffn_up,
-                                &mut sc.d_f8t_q,
-                                &mut sc.d_f8t_rs,
-                                ff,
-                                r,
-                            )?;
-                        }
+                        exec.f8t_gemm(
+                            gu_t,
+                            &sc.d_f8t_q,
+                            &sc.d_f8t_rs,
+                            &mut bs.d_ks_part,
+                            &mut sc.d_ffn_gate,
+                            embd,
+                            2 * ff,
+                            r,
+                        )?;
+                        exec.swiglu_fused(&sc.d_ffn_gate, &mut sc.d_ffn_up, ff, r)?;
+                        exec.quantize_e4m3_row(
+                            &sc.d_ffn_up,
+                            &mut sc.d_f8t_q,
+                            &mut sc.d_f8t_rs,
+                            ff,
+                            r,
+                        )?;
                         exec.f8t_gemm(
                             dn_t,
                             &sc.d_f8t_q,
@@ -10298,64 +10044,49 @@ impl GpuQwen35 {
                         }
                         // P62 gluq silu twin: only the b in [16, 64] slice of
                         // this decode arm - tc5r keeps the low rungs.
-                        let gluq_done = gu_t.flat_gui
-                            && b >= 16
-                            && exec.f8cut_gemm_gluq(
-                                gu_t,
-                                &mut sc.d_f8t_q,
-                                &mut sc.d_f8t_rs,
-                                &mut sc.d_ffn_gate,
-                                embd,
-                                ff,
-                                b,
-                                1,
-                            )?;
-                        if !gluq_done {
-                            exec.f8t_gemm(
-                                gu_t,
-                                &sc.d_f8t_q,
-                                &sc.d_f8t_rs,
-                                &mut bs.d_ks_part,
-                                &mut sc.d_ffn_gate,
-                                embd,
-                                2 * ff,
-                                b,
-                            )?;
-                            // swiglu straight to row-e4m3 removes a launch and the
-                            // f32 round trip of the widest row (ff=17408) -- and
-                            // MEASURED worse, 111.52 -> 106.01 c1. The pair it
-                            // replaces is not launch-bound: pd_swiglu_fused runs
-                            // grid 68x1 at 1.98 us, genuinely parallel, while the
-                            // one-block-per-row fusion needed to see the whole row
-                            // for the max serialises it onto one CTA (and 68 KB of
-                            // smem pins that CTA to its SM). Fusing only pays when
-                            // the victim launch was already single-block, as the
-                            // two norms were. Kept opt-in as the measured
-                            // counterexample: PADDOCK_QWEN_SWIGLU_FUSE=1.
-                            let sg_fused = exec.has_swiglu_e4m3_row()
-                                && ff * 4 <= 200 * 1024
-                                && paddock_models::dev_var_os!("PADDOCK_QWEN_SWIGLU_FUSE")
-                                    .is_some()
-                                && exec
-                                    .swiglu_e4m3_row(
-                                        &sc.d_ffn_gate,
-                                        &mut sc.d_f8t_q,
-                                        &mut sc.d_f8t_rs,
-                                        ff,
-                                        b,
-                                    )
-                                    .is_ok();
-                            if !sg_fused {
-                                exec.swiglu_fused(&sc.d_ffn_gate, &mut sc.d_ffn_up, ff, b)?;
-                                exec.quantize_e4m3_row(
-                                    &sc.d_ffn_up,
+                        exec.f8t_gemm(
+                            gu_t,
+                            &sc.d_f8t_q,
+                            &sc.d_f8t_rs,
+                            &mut bs.d_ks_part,
+                            &mut sc.d_ffn_gate,
+                            embd,
+                            2 * ff,
+                            b,
+                        )?;
+                        // swiglu straight to row-e4m3 removes a launch and the
+                        // f32 round trip of the widest row (ff=17408) -- and
+                        // MEASURED worse, 111.52 -> 106.01 c1. The pair it
+                        // replaces is not launch-bound: pd_swiglu_fused runs
+                        // grid 68x1 at 1.98 us, genuinely parallel, while the
+                        // one-block-per-row fusion needed to see the whole row
+                        // for the max serialises it onto one CTA (and 68 KB of
+                        // smem pins that CTA to its SM). Fusing only pays when
+                        // the victim launch was already single-block, as the
+                        // two norms were. Kept opt-in as the measured
+                        // counterexample: PADDOCK_QWEN_SWIGLU_FUSE=1.
+                        let sg_fused = exec.has_swiglu_e4m3_row()
+                            && ff * 4 <= 200 * 1024
+                            && paddock_models::dev_var_os!("PADDOCK_QWEN_SWIGLU_FUSE").is_some()
+                            && exec
+                                .swiglu_e4m3_row(
+                                    &sc.d_ffn_gate,
                                     &mut sc.d_f8t_q,
                                     &mut sc.d_f8t_rs,
                                     ff,
                                     b,
-                                )?;
-                            }
-                        } // !gluq_done
+                                )
+                                .is_ok();
+                        if !sg_fused {
+                            exec.swiglu_fused(&sc.d_ffn_gate, &mut sc.d_ffn_up, ff, b)?;
+                            exec.quantize_e4m3_row(
+                                &sc.d_ffn_up,
+                                &mut sc.d_f8t_q,
+                                &mut sc.d_f8t_rs,
+                                ff,
+                                b,
+                            )?;
+                        }
                         exec.f8t_gemm(
                             dn_t,
                             &sc.d_f8t_q,
@@ -10547,50 +10278,7 @@ impl GpuQwen35 {
                         .get(li)
                         .and_then(|o| o.as_ref())
                         .filter(|_| b <= f8t_dec_bmax());
-                    // gate|up off the checkpoint's own nibbles (slots 462-465)
-                    // when the plane built: 0.5 B/param instead of the f8t
-                    // plane's 1.0 on the widest GEMM in the tick. Measured at
-                    // m=32, L2-honest: 26.32 us vs the gluq chain's 39.7 + 5.4.
-                    // `down` stays on f8t - fp4 is a WASH there (21.37 vs
-                    // 23.0; n=5120 starves the persistent grid at 40-80 CTAs
-                    // and CUTLASS StreamK does not rescue it), so the tile
-                    // plane keeps its shape-appropriate K-split.
-                    let nv4 = self
-                        .bs_nv4_gu
-                        .get(li)
-                        .and_then(|o| o.as_ref())
-                        .filter(|_| b <= sc.cap && exec.has_glu2_b16());
-                    if let (Some(gu4), Some([_, dn_t])) = (nv4, f8t) {
-                        exec.nv4cut_quant_a(
-                            &sc.d_xn,
-                            &mut sc.d_nv4_aq,
-                            &mut sc.d_nv4_asf,
-                            embd,
-                            b,
-                        )?;
-                        // D is bf16 in the f32-typed gu buffer (the p16
-                        // convention) - b * 2ff bf16 = b * ff f32, which is
-                        // exactly d_ffn_gate's capacity.
-                        exec.nv4cut_gemm(gu4, &sc.d_nv4_aq, &sc.d_nv4_asf, &mut sc.d_ffn_gate, b)?;
-                        exec.quantize_e4m3_glu2_row_b16(
-                            &sc.d_ffn_gate,
-                            &mut sc.d_f8t_q,
-                            &mut sc.d_f8t_rs,
-                            ff,
-                            b,
-                            crate::gpu::GluAct::Silu,
-                        )?;
-                        exec.f8t_gemm(
-                            dn_t,
-                            &sc.d_f8t_q,
-                            &sc.d_f8t_rs,
-                            &mut bs.d_ks_part,
-                            &mut sc.d_proj,
-                            ff,
-                            embd,
-                            b,
-                        )?;
-                    } else if let Some([gu_t, dn_t]) = f8t {
+                    if let Some([gu_t, dn_t]) = f8t {
                         // d_xn is always f32 here - the e4m3-fused norm routes
                         // above are gated on Ffn::Dense, so quantize always.
                         exec.quantize_e4m3_row(
@@ -10600,38 +10288,24 @@ impl GpuQwen35 {
                             embd,
                             b,
                         )?;
-                        let gluq_done = gu_t.flat_gui
-                            && b >= 16
-                            && exec.f8cut_gemm_gluq(
-                                gu_t,
-                                &mut sc.d_f8t_q,
-                                &mut sc.d_f8t_rs,
-                                &mut sc.d_ffn_gate,
-                                embd,
-                                ff,
-                                b,
-                                1,
-                            )?;
-                        if !gluq_done {
-                            exec.f8t_gemm(
-                                gu_t,
-                                &sc.d_f8t_q,
-                                &sc.d_f8t_rs,
-                                &mut bs.d_ks_part,
-                                &mut sc.d_ffn_gate,
-                                embd,
-                                2 * ff,
-                                b,
-                            )?;
-                            exec.swiglu_fused(&sc.d_ffn_gate, &mut sc.d_ffn_up, ff, b)?;
-                            exec.quantize_e4m3_row(
-                                &sc.d_ffn_up,
-                                &mut sc.d_f8t_q,
-                                &mut sc.d_f8t_rs,
-                                ff,
-                                b,
-                            )?;
-                        }
+                        exec.f8t_gemm(
+                            gu_t,
+                            &sc.d_f8t_q,
+                            &sc.d_f8t_rs,
+                            &mut bs.d_ks_part,
+                            &mut sc.d_ffn_gate,
+                            embd,
+                            2 * ff,
+                            b,
+                        )?;
+                        exec.swiglu_fused(&sc.d_ffn_gate, &mut sc.d_ffn_up, ff, b)?;
+                        exec.quantize_e4m3_row(
+                            &sc.d_ffn_up,
+                            &mut sc.d_f8t_q,
+                            &mut sc.d_f8t_rs,
+                            ff,
+                            b,
+                        )?;
                         exec.f8t_gemm(
                             dn_t,
                             &sc.d_f8t_q,

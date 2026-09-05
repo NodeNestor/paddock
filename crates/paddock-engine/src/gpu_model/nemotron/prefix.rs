@@ -1,4 +1,4 @@
-//! Nemotron radix prefix cache -  stage D.
+//! Nemotron radix prefix cache - stage D.
 //!
 //! The attention half is granite's shape: a [`PagedRadix`] over the 6-layer
 //! block pool, a hit ADOPTS blocks by refcount, nothing copies. The mamba

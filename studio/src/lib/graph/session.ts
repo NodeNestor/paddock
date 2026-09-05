@@ -1,7 +1,7 @@
 // The one file that touches @truespar/traverse-wasm.
 //
 // A GraphSession is a live in-browser Traverse engine (a Web Worker holding
-// the single-threaded WASM build -  D3)
+// the single-threaded WASM build - D3)
 // seeded from a graph artifact's Cypher script. The artifact text is the
 // source of truth; the session is a playground - mutations live in the worker
 // and die with it, exports are explicit (D1). No OPFS here: persisting a copy

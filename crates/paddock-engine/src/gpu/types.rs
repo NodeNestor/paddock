@@ -184,6 +184,17 @@ pub enum Nvf4MoeLayout {
     /// exactly, so byte count is identical to `Row`. `nvf4_moe_upload_tiled`;
     /// consumers are the `_st`/`_stw`/`_mtt` kernel family (slots 472-477).
     Tiled64,
+    /// Nibbles UNCHANGED (the checkpoint's own k-major bytes are already
+    /// CUTLASS's B operand), scales scattered into CUTLASS's blocked SF
+    /// layout so the GROUPED NVFP4 GEMM (slot 524) can read the plane
+    /// directly. Requires `ff % 128 == 0`: the SF atom tiles 128 rows, so
+    /// only then does expert `e`'s slice start on an atom boundary and one
+    /// scatter over `n_expert * ff` equal the per-expert scatters.
+    ///
+    /// Byte count is identical to `Row` for every shape this is used on -
+    /// checked, not assumed, by `nvf4_moe_repack_cutblk`, which refuses
+    /// rather than grow the plane - so the repack runs in place.
+    CutBlk,
 }
 
 /// A per-layer NVFP4 MoE expert residency: all experts of one
@@ -195,6 +206,11 @@ pub enum Nvf4MoeLayout {
 pub struct Nvf4MoePlane {
     pub data: CudaSlice<u8>,
     pub scale: CudaSlice<u8>,
+    /// Row-layout scales retained across the CutBlk repack (dual-resident
+    /// layouts, +7.03 GiB scales-only): lets the per-(row,expert) walk serve
+    /// n=1 while the grouped lane keeps every batched width. None until the
+    /// repack runs (or when the plane was never repacked).
+    pub row_scale: Option<CudaSlice<u8>>,
     pub scale2: CudaSlice<f32>,
     pub n_expert: usize,
     /// rows per expert (`ff` for up planes, `n_embd` for down planes)
@@ -209,24 +225,6 @@ pub struct Nvf4MoePlane {
 pub struct F8RowPlane {
     pub data: CudaSlice<u8>,
     pub scale: CudaSlice<f32>,
-}
-
-/// An NVFP4 checkpoint plane made consumable by the CUTLASS sm100
-/// block-scaled GEMM (`pd_nv4cut_gemm`, slots 462-465).
-///
-/// `data` is the checkpoint's own e2m1 nibbles, UNCHANGED - `[out_dim]
-/// [in_dim/2]` bytes with element 2j in the low nibble, which is already
-/// CUTLASS's k-major B operand. Only the scale vector is repacked: `sf`
-/// holds the per-16 e4m3 scales scattered into CUTLASS's blocked SF layout
-/// (`pd_nv4cut_sf_repack`, once at load). `alpha` is the plane's per-tensor
-/// `scale2` (= 1/weight_global_scale), folded in the GEMM epilogue, so D
-/// comes out dequantized.
-pub struct Nvf4CutPlane {
-    pub data: CudaSlice<u8>,
-    pub sf: CudaSlice<u8>,
-    pub alpha: f32,
-    pub in_dim: usize,
-    pub out_dim: usize,
 }
 
 /// The v4 decode plane: the same rowwise e4m3 payload as F8RowPlane

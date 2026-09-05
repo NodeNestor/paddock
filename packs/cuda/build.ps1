@@ -23,8 +23,7 @@ param(
     # Must match build.sh's list. The fatbin carries no PTX, so a die absent
     # from here cannot load the pack at all - and this script once lagged its
     # Linux twin's list (no 103/110/121), so a Windows-built pack silently
-    # could not serve three generations the Linux one could. Same drift that
-    # left cutgemm uncompiled here for weeks.
+    # could not serve three generations the Linux one could.
     #
     # [string[]], not [int[]] - normalised below. `powershell -File` hands every
     # argument over as a STRING, so `-Arches 86,100,120` (the form this file's
@@ -112,72 +111,6 @@ if ($bsHost) { $defines += "-DPD_BS_HOST=1" }
 # bring-up and an explicit SASS target, not a fallback.
 if ($gencode.Count -eq 0) { throw "no supported arches to build" }
 
-# cutgemm: the vendored CUTLASS sm100 fp8 GEMM is its own TU so the
-# CUTLASS headers never touch the multi-arch pack.cu compile. Built for real
-# only when an sm_100 target is asked for AND the headers are here; otherwise
-# it compiles to `cudaErrorNotSupported` stubs, which pack.cu still has to LINK
-# against - leaving it out is three unresolved externals and no pack at all
-# (build.sh has done this for longer; this script had not, so every Windows
-# build was broken until it turned up while chasing a missing kernel).
-# /MT for the static lib, and only for it. Rust's Windows binaries link the
-# static CRT (+crt-static in .cargo/config.toml) because pdfium is built /MT
-# and mixing CRTs gives the process two heaps - the same trap, so the kernels
-# have to agree. nvcc defaults to /MD, which would link but corrupt. The DLL
-# keeps the default: it is self-contained and never shares a heap with us.
-# /Zc:preprocessor is not optional and not about the CRT: CUDA 13's
-# <cooperative_groups.h> - pulled into the fatbin by gemm/f32_qkv.cuh since the
-# qwen4exp lane landed - includes CCCL, and CCCL hard-#errors on
-# MSVC's traditional preprocessor. It aborts the pack.cu compile outright, so
-# there is no .dll and no .lib at the end, only a throw. gcc has no such check,
-# which is why build.sh never needed this and why a Linux-side push cannot see
-# the break - it is Windows-only by construction. Satisfy the check rather than
-# define CCCL_IGNORE_MSVC_TRADITIONAL_PREPROCESSOR_WARNING: that silences the
-# diagnostic and keeps the non-conforming preprocessor CCCL is warning about.
-$crt = @('-Xcompiler', '/Zc:preprocessor')
-if ($Static) { $crt += @('-Xcompiler', '/MT') }
-# PD_STATIC drops __declspec(dllexport) from every launcher - see abi.cuh. An
-# archive is resolved by address at link time, so exporting 430 kernel names
-# from the consuming exe buys nothing.
-if ($Static) { $defines += '-DPD_STATIC=1' }
-
-# Its own object per linkage: the static lane compiles it /MT, and leaving a
-# /MT object under the shared name would quietly get linked into the next DLL
-# build somebody else runs.
-$cutleaf = if ($Static) { 'build/cutgemm-mt' } else { 'build/cutgemm' }
-$cutobj = Join-Path $here "$cutleaf.obj"
-$cutFlags = @()
-$cutInc = $env:PD_CUTLASS_INC
-if (($Arches -contains 100) -and $cutInc -and (Test-Path "$cutInc\include")) {
-    $cutFlags += @(
-        "-DPD_CUTGEMM=1", "-I$cutInc\include", "-I$cutInc\tools\util\include",
-        "-gencode=arch=compute_100a,code=sm_100a", "--expt-relaxed-constexpr"
-    )
-    Write-Host "building cutgemm TU: $($cutFlags -join ' ')"
-} else {
-    # The STUB still needs our arch list. Without any -gencode nvcc emits its
-    # default target, which on CUDA 13 is sm_75 - so every pack ever built has
-    # carried a dead Turing cubin from this one TU (found by cuobjdump'ing an
-    # sm_86-ONLY build and finding sm_75 in it). Harmless, in
-    # that preflight refuses pre-Ampere long before anything could launch it,
-    # but it made the fatbin's arch list a lie.
-    $cutFlags += $gencode
-    Write-Host "building cutgemm TU: (stub - no CUTLASS headers or no sm_100 target)"
-}
-& nvcc -O3 -std=c++17 @cutFlags @crt -c -o $cutobj (Join-Path $here 'src/gemm/cutgemm.cu')
-if ($LASTEXITCODE -ne 0) { throw "nvcc failed on cutgemm.cu with exit code $LASTEXITCODE" }
-
-# nv4cut (the checkpoint-native NVFP4 decode GEMM) is a SECOND CUTLASS TU, on
-# the same terms as cutgemm: sm_100a only, CUTLASS headers kept out of the
-# multi-arch pack.cu compile, NotSupported stubs when the tree is absent. Its
-# own object per linkage/flavour, same reason. Ported from build.sh, which
-# grew this TU first - the exact sh/ps1 drift these scripts' own comments warn
-# about, found as unresolved symbols in the static link:
-# pack.cu declared the entry points, no TU defined them.
-$nv4obj = $cutobj -replace 'cutgemm', 'nv4cut'
-Write-Host "building nv4cut TU: $($cutFlags -join ' ')"
-& nvcc -O3 -std=c++17 @cutFlags @crt -c -o $nv4obj (Join-Path $here 'src/gemm/nv4cut.cu')
-if ($LASTEXITCODE -ne 0) { throw "nvcc failed on nv4cut.cu with exit code $LASTEXITCODE" }
-
 # -lib archives the objects; the DLL name is kept for compatibility (it is a
 # fatbin either way, not sm_86-only). Both carry the same fatbin and the same
 # two exports - only how the engine reaches them differs.
@@ -186,12 +119,10 @@ $leaf = 'build/pd-cuda-sm86.dll'
 if ($Static) { $link = '-lib'; $leaf = 'build/pd-cuda.lib' }
 $out = Join-Path $here $leaf
 Write-Host "building fatbin:" ($gencode -join ' ') ($defines -join ' ') "$link --threads $Threads"
-# -std=c++17 matches the two object TUs above, which have always had it. It was
-# absent here and did not matter until CCCL arrived: MSVC defaults to C++14, so
-# _MSVC_LANG read 201402L and CCCL's dialect gate (#error "libcu++ requires at
-# least C++ 17") aborted the fatbin. Passing it also stops pack.cu linking
-# against cutgemm/nv4cut objects built in a different dialect.
-& nvcc -O3 -std=c++17 --threads $Threads @gencode @defines @crt $link -o $out (Join-Path $here 'pack.cu') $cutobj $nv4obj
+# -std=c++17 is not optional: MSVC defaults to C++14, so _MSVC_LANG reads
+# 201402L and CCCL's dialect gate (#error "libcu++ requires at least C++ 17")
+# aborts the fatbin.
+& nvcc -O3 -std=c++17 --threads $Threads @gencode @defines @crt $link -o $out (Join-Path $here 'pack.cu')
 
 if ($LASTEXITCODE -ne 0) { throw "nvcc failed with exit code $LASTEXITCODE" }
 Write-Host "built (multi-arch): $out"

@@ -95,42 +95,14 @@ out="$outdir/pd-cuda-sm120.so"
 # target, capped by cores. Same generated code, just not one-at-a-time.
 threads="${PD_BUILD_THREADS:-0}"
 
-# cutgemm: vendored CUTLASS sm100 fp8 GEMM as its own TU so the
-# CUTLASS headers never touch the 8-arch pack.cu compile. Built only when an
-# sm_100 target is requested AND the flashinfer-bundled CUTLASS is present;
-# otherwise the export compiles to a cudaErrorNotSupported stub inside
-# pack.cu's link (the stub TU is still compiled, without PD_CUTGEMM).
-cutobj=""
-cut_inc="${PD_CUTLASS_INC:-}"   # point at a CUTLASS checkout to enable cutgemm
-cut_flags=()
-if printf '%s\n' "${arches[@]}" | grep -qx 100 && [ -d "$cut_inc/include" ]; then
-    cut_flags+=("-DPD_CUTGEMM=1" "-I$cut_inc/include" "-I$cut_inc/tools/util/include"
-                "-gencode=arch=compute_100a,code=sm_100a" "--expt-relaxed-constexpr")
-else
-    # The STUB needs our arch list too: with no -gencode nvcc emits its default
-    # target (sm_75 on CUDA 13), so every pack has been carrying a dead Turing
-    # cubin from this one TU. See the note in build.ps1.
-    cut_flags+=("${gencode[@]}")
-fi
-cutobj="$outdir/cutgemm.o"
-# separate object per linkage, mirroring build.ps1 (there it is a CRT-flavour
-# question; here it is just symmetry, so the two lanes never share a stale .o)
-[ "$static" = 1 ] && cutobj="$outdir/cutgemm-static.o"
-echo "building cutgemm TU: ${cut_flags[*]:-(stub)}"
-nvcc -O3 -std=c++17 ${cut_flags[@]:+"${cut_flags[@]}"} \
-    -Xcompiler -fPIC -c -o "$cutobj" "$here/src/gemm/cutgemm.cu"
-
-# nv4cut (the checkpoint-native NVFP4 decode GEMM) is a SECOND CUTLASS TU, on
-# the same terms as cutgemm: sm_100a only, CUTLASS headers kept out of the
-# 8-arch pack.cu compile, NotSupported stubs when the tree is absent. Its own
-# object per linkage/flavour, same reason.
-nv4obj="${cutobj%.o}"
-nv4obj="${nv4obj/cutgemm/nv4cut}.o"
-echo "building nv4cut TU: ${cut_flags[*]:-(stub)}"
-nvcc -O3 -std=c++17 ${cut_flags[@]:+"${cut_flags[@]}"} \
-    -Xcompiler -fPIC -c -o "$nv4obj" "$here/src/gemm/nv4cut.cu"
 
 link=(--shared)
+# PD_EXP_LT=1: compile the cuBLASLt datapath-ceiling EXPERIMENT arm (slot 542
+# real instead of stub) and link the library. Never for a shipped pack.
+if [ -n "${PD_EXP_LT:-}" ]; then
+    defines+=(-DPD_EXP_LT=1)
+    link+=(-lcublasLt)
+fi
 if [ "$static" = 1 ]; then
     # -lib archives the objects. Same fatbin, same two exports - only how the
     # engine reaches them differs. No -fPIC concern either way: it is already
@@ -140,7 +112,7 @@ if [ "$static" = 1 ]; then
 fi
 echo "building fatbin: ${gencode[*]} ${defines[*]:-} ${link[*]} --threads $threads"
 nvcc -O3 --threads "$threads" "${gencode[@]}" ${defines[@]:+"${defines[@]}"} \
-    -Xcompiler -fPIC "${link[@]}" -o "$out" "$here/pack.cu" "$cutobj" "$nv4obj"
+    -Xcompiler -fPIC "${link[@]}" -o "$out" "$here/pack.cu"
 # the .dll alias exists only for the hardcoded test paths on the .so lane
 [ "$static" = 1 ] || ln -sf pd-cuda-sm120.so "$outdir/pd-cuda-sm86.dll"
 echo "built (multi-arch): $out"

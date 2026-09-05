@@ -18,7 +18,7 @@ const ACCESS_TOKEN = 'mcp-access-' + crypto.randomBytes(6).toString('hex')
 let PASS = true
 const check = (name, ok, extra = '') => {
   if (!ok) PASS = false
-  console.log(`${ok ? 'PASS' : 'FAIL'}  ${name}${extra ? '  - ' + extra : ''}`)
+  console.log(`${ok ? 'PASS' : 'FAIL'}  ${name}${extra ? ' - ' + extra : ''}`)
 }
 
 // ── mock OAuth provider + MCP resource ───────────────────────────────────────

@@ -861,7 +861,7 @@ impl GpuQwen35 {
                         .sum::<u64>() as f64
                         / 1e9;
                     tracing::info!(
-                        "qwen35 dflash: e4m3 twins built for {built}/{} layers (+{gb:.2} GB) -                          the drafter's layer walk leaves the W4A8 dp4a class                          (PADDOCK_DFLASH_F8=0 restores it)",
+                        "qwen35 dflash: e4m3 twins built for {built}/{} layers (+{gb:.2} GB) -                         the drafter's layer walk leaves the W4A8 dp4a class                          (PADDOCK_DFLASH_F8=0 restores it)",
                         layers.len()
                     );
                 }

@@ -1742,12 +1742,6 @@ struct KernelTableV1 {
     // (src, idx, out, rows, k, width, stream)
     int (*pixel_shuffle_rows)(const void*, const void*, void*, uint32_t, uint32_t,
                               uint32_t, void*);
-    //  vendored CUTLASS sm100 fp8 decode GEMM (slots 372-373):
-    // (w_flat, wrs, xq, xrs, y, in_dim, out_dim, batch, stream) and the
-    // tile-image -> flat k-major detiler (tiles, flat, in_dim, out_dim, stream)
-    int (*f8cut_gemm)(const void*, const void*, const void*, const void*, void*,
-                      uint32_t, uint32_t, uint32_t, void*);
-    int (*f8t_detile)(const void*, void*, uint32_t, uint32_t, void*);
     //  (slot 374): (pool, vdim, positions, slots, block_tables,
     // blocks_per_slot, kv_dim, rows, stream)
     int (*vdim_sync)(const void*, void*, const void*, const void*, const void*,
@@ -1757,10 +1751,6 @@ struct KernelTableV1 {
     // slot 376: (run_offs, n_runs, max_n) -> arms the batched-runs prefill
     // attention for the current coalesced pass; null disarms
     int (*pf_runs_register)(const void*, unsigned int, unsigned int);
-    // slot 377: bf16-D wide cutlass GEMM (pass glue halving)
-    int (*f8cut_gemm_b16)(const void*, const void*, const void*, const void*,
-                          void*, unsigned int, unsigned int, unsigned int,
-                          void*);
     // slot 378: bf16-in whole-row glu2 quantize (act: 0=gelu, 1=silu)
     int (*quantize_e4m3_glu2_row_b16)(const void*, void*, void*, unsigned int,
                                       unsigned int, unsigned int, void*);
@@ -1918,7 +1908,7 @@ struct KernelTableV1 {
     // (data, scale, scale2, idx, topk_w, xr, y, ff, embd, k, batch,
     //  accumulate, stream)
     int (*nvf4_moe_down_acc)(const void*, const void*, const void*,
-                             const void*, const void*, const void*, void*,
+                             const void*, const void*, const void*, void*, void*,
                              uint32_t, uint32_t, uint32_t, uint32_t,
                              uint32_t, void*);
     // 405: slot 389's cross-K/V store off an audio-major batched
@@ -2130,16 +2120,6 @@ struct KernelTableV1 {
                                  const void*, uint32_t, uint32_t, uint32_t,
                                  uint32_t, uint32_t, uint32_t, uint32_t, float,
                                  uint32_t, void*);
-    // 432 (gluq): fused geglu + per-fragment e4m3 quantize cutlass gu
-    // GEMM + row-scale fixup - (w_flat_gui, wrs_gui, xq, xrs, q2_scratch,
-    // q, rscale, in_dim, n_ff, batch, act 0=gelu, stream); rc -2 = shape/
-    // act declined, caller keeps the classic chain
-    int (*f8cut_gemm_gluq)(const void*, const void*, const void*,
-                           const void*, void*, void*, void*, uint32_t,
-                           uint32_t, uint32_t, uint32_t, void*);
-    // 433: gate/up-interleaved twin of f8t_detile (row 2f = gate f,
-    // 2f+1 = up f) - builds the pairing layout slot 432 consumes
-    int (*f8t_detile_gui)(const void*, void*, uint32_t, uint32_t, void*);
     // 434: device top-K prefilter for HOST-HEAD sampling rows -
     // (logits, params [rows x PdSampleRow, mode 4 = selected], out
     // [rows x k x 2 u32 = (id, raw-logit bits)], rows, n, k, stream).
@@ -2337,21 +2317,6 @@ struct KernelTableV1 {
     // Args: out, draft, n, rows, k_use, stream.
     int (*dflash_chain_picks)(const void*, void*, uint32_t, uint32_t,
                               uint32_t, void*);
-    // slots 465-468: the checkpoint-native NVFP4 decode GEMM (gemm/nv4cut.cu,
-    // CUTLASS sm100 block-scaled). The weight NIBBLES are used as they sit in
-    // Nvf4Plane::data, so only the scale vector needs a one-time repack into
-    // CUTLASS's blocked SF layout - hence a size query, a scatter, an
-    // activation quantizer that writes the same layout, and the GEMM.
-    // 465: bytes needed for the blocked SF plane of an (mn, k) operand.
-    int (*nv4cut_sf_bytes)(uint32_t, uint32_t, unsigned long long*);
-    // 466: row-major [mn][k/16] e4m3 -> blocked SF. dst must be zeroed.
-    int (*nv4cut_sf_repack)(const void*, void*, uint32_t, uint32_t, void*);
-    // 467: f32 [m][k] -> e2m1 nibbles + blocked SFA (per-16 dynamic scale).
-    int (*nv4cut_quant_a)(const void*, void*, void*, uint32_t, uint32_t, void*);
-    // 468: D[m][n] bf16 = alpha * (A_nvfp4 x B_nvfp4^T). alpha is the plane's
-    // per-tensor scale2 and is folded in the epilogue.
-    int (*nv4cut_gemm)(const void*, const void*, const void*, const void*,
-                       float, void*, uint32_t, uint32_t, uint32_t, void*);
     // slot 469: dflash conditioning fold (rung C) - the append
     // that norms for the drafter ring: per written row, k-norm (rmsnorm
     // math verbatim, nth elected from norm_batch like the rmsnorm launcher)
@@ -2559,10 +2524,10 @@ struct KernelTableV1 {
     // src/qwen4exp.cuh; ground truth is paddock-kernels reference::qwen4exp.
     // 506: grouped RMSNorm with the Gemma (1+w) FMA affine (hyper-connection
     // state: 4 streams normalized independently, weight spans the full width).
-    int (*q4x_group_norm_1p)(const void*, const void*, void*, uint32_t,
+    int (*q4x_group_norm_1p)(const void*, const void*, void*, void*, uint32_t,
                              uint32_t, uint32_t, float, void*);
     // 507: hyper-connection mix reduce - Sum_s sigmoid(gate)*xn / hc.
-    int (*q4x_hc_mix)(const void*, const void*, void*, uint32_t, uint32_t,
+    int (*q4x_hc_mix)(const void*, const void*, void*, void*, uint32_t, uint32_t,
                       uint32_t, void*);
     // 508: hyper-connection combine - H[s] += block_out * 2*sigmoid(inj/hc).
     int (*q4x_hc_combine)(void*, const void*, const void*, uint32_t, uint32_t,
@@ -2581,7 +2546,7 @@ struct KernelTableV1 {
     // 513: GDN output gated norm, plain w and a SIGMOID gate (the pack's
     // pd_gated_rmsnorm is the qwen3.5 shape and gates with SILU).
     int (*q4x_gdn_gated_norm)(const void*, const void*, const void*, void*,
-                              uint32_t, uint32_t, float, void*);
+                              void*, uint32_t, uint32_t, float, void*);
     // 514: GDN conv-output split with REPEAT_INTERLEAVE key-head widening
     // (raw safetensors order; the pack's own split kernels use the GGUF
     // lane's %-mapping, which cannot express this map).
@@ -2601,7 +2566,7 @@ struct KernelTableV1 {
     // 517: hyper-connection combine FUSED with the grouped (1+w) norm that
     // always follows it - one launch, one pass over the 4-stream state.
     int (*q4x_combine_norm)(void*, const void*, const void*, const void*, void*,
-                            uint32_t, uint32_t, uint32_t, float, void*);
+                            uint32_t, uint32_t, uint32_t, float, void*, void*);
     // granite fused wqkv (f8row class): one mma over the q|k|v-concat plane
     // into K-split partials, then combine + NORM-rope + paged append in one
     // kernel. (data, w_rowscale, xq, x_rowscale, part, q_out, k_pool, v_pool,
@@ -2698,6 +2663,133 @@ struct KernelTableV1 {
     int (*swiglu_fused_nvf4_il)(const void*, void*, void*, uint32_t, uint32_t, void*);
     int (*swiglu_quant_nvf4_from_parts_il)(const void*, const void*, void*, void*,
                                            uint32_t, uint32_t, float, uint32_t, void*);
+    // 518: narrow-K arm of the bf16 GEMV - one warp per output row, 8 rows per
+    // block. For planes whose in_dim is far below the stock kernel's 2048-wide
+    // per-block walk (the hyper-connection up plane, in=320 out=10240).
+    int (*bf16_gemv_nk_f32)(const void*, const void*, const void*, void*,
+                            uint32_t, uint32_t, void*);
+    // 519: batch-1 split-K f32 matvec, deterministic combine, caller-owned
+    // partials/counters scratch. For skinny-out decode planes whose one-block-
+    // per-row launch cannot fill the die.
+    int (*matvec_f32_sk)(const void*, const void*, void*, void*, void*,
+                         uint32_t, uint32_t, uint32_t, void*);
+    // 520: bf16 GEMV with a fused `silu(v * inv)` epilogue over the first
+    // `silu_rows` output rows; the tail passes through. Folds the qwen4_exp
+    // hyper-connection scale+silu into the down projection.
+    int (*bf16_gemv_silu_f32)(const void*, const void*, const void*, void*,
+                              void*, uint32_t, uint32_t, uint32_t, float, void*);
+    // 521: per-SLOT dilated conv window step (PLE). This was the only decode-walk
+    // entry still single-sequence - pd_conv_step_slots,
+    // pd_gated_delta_recurrent_slots, kv_append_batch and attn_decode_batch all
+    // already took a slot vector.
+    // 522: multi-row narrow-K GEMV - the batch>1 arm of slot 518.
+    int (*bf16_gemv_nk_mr_f32)(const void*, const void*, const void*, void*,
+                               uint32_t, uint32_t, uint32_t, void*);
+    int (*q4x_conv_dil_step_slots)(const void*, const void*, const void*, void*,
+                                   const void*, uint32_t, uint32_t, uint32_t,
+                                   uint32_t, void*);
+    // 529: one launch over a plane folding two projections, segmented store.
+    // The q|k|v arm cannot serve a 2-segment plane: its launcher computes the
+    // fused row count as oq + 2*okv and would read past the end.
+    int (*bf16_seg2_gemm_mma)(const void*, const void*, void*, void*, uint32_t,
+                              uint32_t, uint32_t, uint32_t, void*);
+    // 530-531: the hyper-connection MIX tail folded into the up-GEMM epilogue.
+    // 530 permutes the up plane once at load so the hc mean lands in registers;
+    // 531 is the fused GEMM, which never materialises the gate plane.
+    int (*bf16_hcmix_permute)(const void*, void*, uint32_t, uint32_t, uint32_t,
+                              void*);
+    int (*bf16_hcmix_gemm)(const void*, const void*, const void*, void*,
+                           uint32_t, uint32_t, uint32_t, uint32_t, void*);
+    // 532: PLE n-gram row gather off the device-resident 51.2 GB fp8 table.
+    // The host twin is a random read over a 51.2 GB mmap (16 x 160 B per
+    // token, uniform over 320M rows) and it is what made prefill ticks run
+    // 0.9-48 s on the serve ladder. vLLM keeps the table device-resident.
+    int (*q4x_ple_gather)(const void*, const void*, void*, float, uint32_t,
+                          uint32_t, uint32_t, void*);
+    // 533: per-slot dilated conv step over a POSITION-indexed ring window,
+    // with the window advance fused in. Replaces 1 + 3*rows launches per tick
+    // whose offsets came from the host slot set - which is what pinned the
+    // captured decode graph to one slot set.
+    int (*q4x_conv_dil_step_ring)(const void*, void*, const void*, void*,
+                                  const void*, const void*, uint32_t, uint32_t,
+                                  uint32_t, uint32_t, void*);
+    // 534: n_runs INDEPENDENT sequences through the gated-delta recurrence in
+    // one launch, each against its own slot's carried state. The single-run
+    // kernel grids 48 blocks on a 148-SM die, so a serially-prefilled
+    // admission wave pays a 32%-occupied 195.9 us launch per layer per prompt.
+    int (*gated_delta_recurrent_runs)(const void*, const void*, const void*,
+                                      const void*, const void*, void*, void*,
+                                      const void*, const void*, const void*,
+                                      uint32_t, uint32_t, uint32_t, void*);
+    // 535: co-residency gate for the f16 tensor-core lane. 0 = "another kernel
+    // may be resident" -> the tc5g/tc5gp K-split clamps to 1, which makes its
+    // cross-CTA spin on pd_f16ks_flags unreachable, and the ::2 duo declines.
+    // Read at DISPATCH time, so it bakes into a graph captured while clear.
+    int (*f16_ksplit_set)(int);
+    // 536: pd_attn_decode_batch with the parallel-score walk. Same signature.
+    // A separate slot because the score's summation order differs, so it is
+    // not bit-identical to the shipped walk every other family is gated on.
+    int (*attn_decode_batch_ps)(const void*, const void*, const void*, const void*, void*,
+                                const void*, const void*, uint32_t, uint32_t, uint32_t,
+                                uint32_t, uint32_t, uint32_t, uint32_t, float, uint32_t,
+                                void*);
+    // 537: FMHA-style decode attention. Same signature as 536. Every warp
+    // carries its own key stream and its own (m, l, acc) in registers, so the
+    // tile walk's per-16-key barriers disappear and shared holds only the
+    // final cross-warp merge. head_dim 128/256 only; other head_dims must
+    // stay on the walk (the guard returns non-zero). Its own numeric class.
+    int (*attn_decode_fmha)(const void*, const void*, const void*, const void*, void*,
+                            const void*, const void*, uint32_t, uint32_t, uint32_t,
+                            uint32_t, uint32_t, uint32_t, uint32_t, float, uint32_t,
+                            void*);
+    // slot 539
+    int (*moe_topk_batch_s)(const void*, const void*, uint32_t, uint32_t, uint32_t, void*, void*, uint32_t, void*);
+    // slot 540
+    int (*q4x_add_gated_row_s)(void*, const void*, const void*, uint32_t, uint32_t, uint32_t, void*);
+    // slot 541
+    int (*gated_delta_recurrent_runs_pn)(const void*, const void*, const void*, const void*, const void*, void*, void*, const void*, const void*, const void*, uint32_t, uint32_t, uint32_t, uint32_t, void*, void*);
+    // slot 542 (EXPERIMENT: cuBLASLt datapath-ceiling probe; stub in shipped packs)
+    int (*exp_lt_gemm)(const void*, const void*, void*, uint32_t, uint32_t, uint32_t, void*);
+    // slot 543: low-M cluster GEMM (pr4266-class decode kernel)
+    int (*lowm_gemm)(const void*, const void*, void*, uint32_t, uint32_t, uint32_t, void*);
+    // slot 544: its load-time cluster warmup
+    int (*lowm_warmup)(const void*, const void*, void*, void*);
+    // slot 545: split-KV fmha decode (S slices + sink-seeded merge pass)
+    int (*attn_decode_fmha_sp)(const void*, const void*, const void*, const void*, void*, void*, const void*, const void*, uint32_t, uint32_t, uint32_t, uint32_t, uint32_t, uint32_t, uint32_t, uint32_t, float, uint32_t, void*);
+    // slot 546: dual-plane swiglu GEMV (sh gate|up + swiglu in one launch)
+    int (*bf16_gemv2_swiglu)(const void*, const void*, const void*, void*, uint32_t, uint32_t, uint32_t, void*);
+    // slot 548: f32 -> bf16 convert (TGV activation staging)
+    int (*convert_f32_bf16)(const void*, void*, uint64_t, void*);
+    // 562: HC up plane + hc_mix fused (bf16 narrow-K arm with the mix
+    // epilogue) -- w, x, xn, out, out16, in_dim, hidden, hc, stream
+    int (*bf16_gemv_up_hcmix)(const void*, const void*, const void*, void*,
+                              void*, uint32_t, uint32_t, uint32_t, void*);
+    // 563: GDN conv step with the q/k/v split+widen fused into its epilogue
+    int (*conv_step_slots_split)(void*, const void*, const void*, void*, void*,
+                                 void*, const void*, uint32_t, uint32_t,
+                                 uint32_t, uint32_t, uint32_t, uint32_t,
+                                 uint32_t, uint32_t, void*);
+    // 564: GDN recurrence with the gated norm fused into its epilogue
+    int (*gated_delta_recurrent_slots_gn)(const void*, const void*, const void*,
+                                          const void*, const void*, const void*,
+                                          void*, void*, const void*, const void*,
+                                          void*, float, uint32_t, uint32_t,
+                                          uint32_t, void*);
+    // 565: batched block-per-row bf16 gemv (narrow-out decode planes)
+    int (*bf16_gemv_mrow_f32)(const void*, const void*, const void*, void*,
+                              void*, uint32_t, uint32_t, uint32_t, uint32_t,
+                              float, void*, uint32_t, void*);
+    // 568: bf16 -> f32 cast (the low-M dense GEMM emits bf16)
+    int (*convert_bf16_f32)(const void*, void*, uint64_t, void*);
+    // 569: strided bf16 -> f32 (unpads the low-M GEMM's padded N)
+    int (*convert_bf16_f32_rows)(const void*, void*, uint32_t, uint32_t,
+                                 uint32_t, uint32_t, void*);
+    // 570: swiglu with a bf16 mirror of the result
+    int (*swiglu_mir)(void*, const void*, void*, uint32_t, void*);
+    // 573/574: weight prep for the HC island (row pad; gate-order permute+pad)
+    int (*bf16_pad_rows)(const void*, void*, uint32_t, uint32_t, uint32_t, void*);
+    int (*bf16_hc_perm_pad)(const void*, void*, uint32_t, uint32_t, uint32_t,
+                            uint32_t, void*);
 };
 
 } // extern "C"

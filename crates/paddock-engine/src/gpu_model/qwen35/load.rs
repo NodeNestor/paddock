@@ -25,51 +25,6 @@ fn e4m3_to_f32(b: u8) -> f32 {
     }
 }
 
-/// Give a decode tile plane the flat k-major
-/// e4m3 twin that the SHIPPED `f8t_gemm` cutlass intercept needs, so the
-/// decode band (m >= 16) leaves the tc5p K-split for CUTLASS's Narrow
-/// 64x64x128 tile. Measured at m=32, L2-honest 4-clone rotation
-/// (bench/q35dec_cut_sweep.cu) against live per-launch means:
-///
-///   ffn_down   5120 x 17408   26.46 -> 20.70 us   x64/tick
-///   attn_qkv  14336 x  5120   29.08 -> 16.45      x16
-///   out_proj   5120 x  6144   12.53 -> 10.32      x64
-///   gdn_qkvz  16384 x  5120   20.98 -> 18.45      x48
-///
-/// ~1.28 ms of a ~10.9 ms tick, and it also retires that many
-/// `ks_combine` launches (the intercept writes y directly). The twin is a
-/// SECOND full copy of the plane (in*out bytes), so each one is headroom-
-/// gated on its own and the whole thing is killable with
-/// PADDOCK_NO_Q35_FLAT (in LANE_FLAGS, so it survives the smoke's env
-/// scrub). The f32 accumulation ORDER differs from the tc5 chains - the
-/// same acceptance-gated class change the f8cut intercept already ships
-/// for the planes that had a twin before this.
-fn flatten_for_decode(exec: &GpuExecutor, p: &mut crate::gpu::F8TilePlane) {
-    if p.flat.is_some() || p.flat_gui {
-        return;
-    }
-    if paddock_models::dev_var_os!("PADDOCK_NO_Q35_FLAT").is_some() {
-        return;
-    }
-    // The plane keeps one f32 scale per output row and in*out tile bytes,
-    // which is the only place the two dims survive as data.
-    let out_dim = p.scale.len();
-    if out_dim == 0 || !p.tiles.len().is_multiple_of(out_dim) {
-        return;
-    }
-    let in_dim = p.tiles.len() / out_dim;
-    if !in_dim.is_multiple_of(128) || !out_dim.is_multiple_of(128) {
-        return;
-    }
-    let need = (in_dim * out_dim) as u64;
-    if !exec.vram_headroom().is_some_and(|h| h > need + (24 << 30)) {
-        tracing::info!("qwen35 flat-twin SKIP (headroom): in {in_dim} out {out_dim}");
-        return;
-    }
-    // Best-effort: without the twin the plane simply keeps the tc5p route.
-    let _ = exec.f8t_flatten(p, in_dim, out_dim);
-}
-
 impl GpuQwen35 {
     /// Load a Qwen3.5/3.6 GGUF onto `exec`'s device. Reads the `qwen35.*`
     /// metadata, classifies each block as DeltaNet or full-attn from
@@ -693,7 +648,6 @@ impl GpuQwen35 {
         let fp8_bs = paddock_models::dev_var_os!("PADDOCK_FP8_BS").is_some();
         let mut bs_f8ffn_bs_planes: Vec<Option<[(RepackedMxfp4, usize, usize); 2]>> =
             Vec::with_capacity(n_layers);
-        let mut bs_nv4_gu_planes: Vec<Option<crate::gpu::Nvf4CutPlane>> = Vec::new();
         let mut bs_f8t_ffn_planes: Vec<Option<[crate::gpu::F8TilePlane; 2]>> =
             Vec::with_capacity(n_layers);
         let mut bs_f8row_ffn_planes: Vec<Option<F8RowFfn>> = Vec::with_capacity(n_layers);
@@ -1270,42 +1224,6 @@ impl GpuQwen35 {
             // most of the decode byte budget, and the checkpoint already
             // ships these 56 layers as those nibbles. Costs only the
             // fused nibble copy plus a repacked scale vector; the f8t planes
-            // stay as the fallback arm and for the r<=64 chunk path.
-            // Kill: PADDOCK_NO_NV4CUT.
-            let nv4_gu = if exec.has_nv4cut()
-                && paddock_models::dev_var_os!("PADDOCK_NO_NV4CUT").is_none()
-            {
-                match &ffn {
-                    Ffn::Nvf4Dense { gate, up, .. } => (|| -> Option<crate::gpu::Nvf4CutPlane> {
-                        // fused nibbles (0.5 B/param) + the blocked scale
-                        // vector (1/16 B/param); keep the same 24 GiB floor
-                        // the f8t build uses so a small card declines both.
-                        let need = (gate.out_dim * gate.in_dim * 9 / 8) as u64;
-                        if !exec.vram_headroom().is_some_and(|h| h > need + (24 << 30)) {
-                            return None;
-                        }
-                        exec.nvf4_cut_concat2(gate, up).ok()
-                    })(),
-                    _ => None,
-                }
-            } else {
-                None
-            };
-            if i == 0 {
-                tracing::info!(
-                    enabled = exec.has_nv4cut(),
-                    built = nv4_gu.is_some(),
-                    "qwen35 nv4cut (CUTLASS block-scaled NVFP4) gate|up decode lane"
-                );
-            }
-            // sm_100 tcgen05 FFN decode planes (PADDOCK_QWEN_F8T). Straight
-            // port of gemma4's v4 tile-image lane: Q8_0 -> per-row e4m3
-            // (q8_0_to_f8row) -> SW128 tile image (f8_repack_tiles) -> served
-            // by f8t_gemm. Fused gate|up, because the two tile streams
-            // concatenate byte-exactly (tile index (row/128)*nkt + kt is
-            // plane-relative, so up's stream lands at gate's byte size) - the
-            // same argument gemma4's gu fusion rests on, and it keeps the
-            // decode at one 2ff GEMM instead of two.
             let f8t_ffn = if f8t_ffn_enabled(&exec) {
                 match &ffn {
                     Ffn::Dense { gate, up, down } => {
@@ -1343,7 +1261,7 @@ impl GpuQwen35 {
                             let dt = exec
                                 .f8_repack_tiles(exec.q8_0_to_f8row(d).ok()?, di, dn)
                                 .ok()?;
-                            let mut pgu = crate::gpu::F8TilePlane {
+                            let pgu = crate::gpu::F8TilePlane {
                                 tiles,
                                 scale,
                                 flat: None,
@@ -1355,20 +1273,7 @@ impl GpuQwen35 {
                             // mean parity, exact probe; coherence symmetric with
                             // the control; 3-leg interleaved wide A/B with no
                             // overlap on either throughput or ITL):
-                            // gate/up-interleaved flat + scale_il feed the fused
-                            // swiglu+quantize cutlass epilogue at r >= 16; the
-                            // tc5 tile image is untouched, so every classic
-                            // route and the r < 16 fallback are unaffected.
-                            // This module has no plain-cutlass consumer of
-                            // `flat`, so flat_gui has no other reader to gate
-                            // off. Kill: PADDOCK_NO_Q35_GLUQ.
-                            if paddock_models::dev_var_os!("PADDOCK_NO_Q35_GLUQ").is_none()
-                                && exec.has_f8cut_gemm_gluq()
-                            {
-                                exec.f8t_flatten_gui(&mut pgu, gi, go * 2).ok()?;
-                            }
-                            let mut dt = dt;
-                            flatten_for_decode(&exec, &mut dt);
+                            let dt = dt;
                             Some([pgu, dt])
                         })()
                     }
@@ -1419,7 +1324,7 @@ impl GpuQwen35 {
                             let dt = exec
                                 .f8_repack_tiles(exec.nvf4_to_f8row(down).ok()?, di, dn)
                                 .ok()?;
-                            let mut pgu = crate::gpu::F8TilePlane {
+                            let pgu = crate::gpu::F8TilePlane {
                                 tiles,
                                 scale,
                                 flat: None,
@@ -1427,21 +1332,7 @@ impl GpuQwen35 {
                                 flat_gui: false,
                                 scale_il: None,
                             };
-                            // The gluq `flat` twin is a SECOND full copy of the
-                            // gate|up plane (178 MB/layer, 10.0 GB over 56). Its
-                            // only consumers on this lane were the decode arm and
-                            // the r<=256 chunk arm; once the nv4cut plane serves
-                            // gate|up at decode, paying 10 GB for the chunk arm
-                            // alone is a bad trade - and the memory is what the
-                            // prefill wave needs. Skip it when nv4cut built.
-                            if nv4_gu.is_none()
-                                && paddock_models::dev_var_os!("PADDOCK_NO_Q35_GLUQ").is_none()
-                                && exec.has_f8cut_gemm_gluq()
-                            {
-                                exec.f8t_flatten_gui(&mut pgu, gi, go * 2).ok()?;
-                            }
-                            let mut dt = dt;
-                            flatten_for_decode(&exec, &mut dt);
+                            let dt = dt;
                             Some([pgu, dt])
                         })()
                     }
@@ -1458,7 +1349,6 @@ impl GpuQwen35 {
                     "qwen35 tcgen05 (f8t) FFN decode lane"
                 );
             }
-            bs_nv4_gu_planes.push(nv4_gu);
             bs_f8t_ffn_planes.push(f8t_ffn);
             // Mixer-projection half of the same lane. Both layer kinds reduce
             // to the same shape - one fused input projection, one output
@@ -1557,10 +1447,8 @@ impl GpuQwen35 {
                     Mixer::Full(w) => (|| {
                         // wq is already [embd, 2*q_dim] (query || out-gate);
                         // the fusion appends k and v to the same stream.
-                        let mut inp = fuse(&[&w.wq, &w.wk, &w.wv])?;
-                        let mut out = fuse(&[&w.wo])?;
-                        flatten_for_decode(&exec, &mut inp);
-                        flatten_for_decode(&exec, &mut out);
+                        let inp = fuse(&[&w.wq, &w.wk, &w.wv])?;
+                        let out = fuse(&[&w.wo])?;
                         Some([inp, out])
                     })(),
                     Mixer::Linear(w) => (|| {
@@ -1575,10 +1463,8 @@ impl GpuQwen35 {
                         {
                             parts.push(ab);
                         }
-                        let mut inp = concat(parts)?;
-                        let mut out = fuse(&[&w.out_w])?;
-                        flatten_for_decode(&exec, &mut inp);
-                        flatten_for_decode(&exec, &mut out);
+                        let inp = concat(parts)?;
+                        let out = fuse(&[&w.out_w])?;
                         Some([inp, out])
                     })(),
                 }
@@ -2431,10 +2317,6 @@ impl GpuQwen35 {
             for p in bs_gu_planes.iter().chain(bs_dn_planes.iter()).flatten() {
                 dv_fused.q8(p);
             }
-            for p in bs_nv4_gu_planes.iter().flatten() {
-                dv_fused.bytes += (p.data.len() + p.sf.len()) as u64;
-                dv_fused.allocs += 2;
-            }
             let mut dv_head = AuSum::default();
             if let Some((p, _, _)) = &out_f8 {
                 dv_head.fp4(p);
@@ -2565,7 +2447,6 @@ impl GpuQwen35 {
             bs_f8ffn_bs: bs_f8ffn_bs_planes,
             bs_f8t_ffn: bs_f8t_ffn_planes,
             bs_f8row_ffn: bs_f8row_ffn_planes,
-            bs_nv4_gu: bs_nv4_gu_planes,
             bs_f8t_attn: bs_f8t_attn_planes,
             out_f8,
             out_f8t,

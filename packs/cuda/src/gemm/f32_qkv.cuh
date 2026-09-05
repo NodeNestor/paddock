@@ -920,6 +920,71 @@ int pd_matvec_f32_ks(const void* w, const void* x, void* scratch, void* out,
     return pd_launch_status();
 }
 
+// ---------------------------------------------------------------------------
+// Batch-1 split-K matvec (slot 519). Every K-split arm above gates on
+// batch >= 16 (or >= 1024), so a DECODE row falls through to one block per
+// output row. For a skinny-out plane that is a starved launch: the qwen4_exp
+// GDN alpha||beta plane is [in=2560, out=96] -> 96 blocks on a 148-SM die,
+// measured 65 GB/s, and the MoE router [in=2560, out=513] -> 513 blocks.
+//
+// grid = (out_dim, SPLIT). Each block owns one K window; the last block to
+// finish a row combines that row's partials in INDEX ORDER, so the result is
+// bit-stable run to run (unlike an atomicAdd combine). The counter is reset by
+// that same block, so a captured graph replays with the buffers back in their
+// initial state.
+//
+// `partials` and `counters` are CALLER-OWNED and address-stable by contract:
+// a lazy cudaMallocAsync in a kernel entry runs during decode graph capture,
+// which is how a previous rung turned 700 tok/s into 17.9.
+__global__ __launch_bounds__(256) void pd_matvec_f32_sk_kernel(
+        const float* __restrict__ w, const float* __restrict__ x,
+        float* __restrict__ out, float* __restrict__ partials,
+        unsigned int* __restrict__ counters, uint32_t in_dim, uint32_t out_dim,
+        uint32_t split) {
+    const uint32_t o = blockIdx.x, sp = blockIdx.y;
+    if (o >= out_dim) return;
+    PD_PDL_ARM();
+    const uint32_t chunk = (in_dim + split - 1u) / split;
+    const uint32_t k0 = sp * chunk;
+    const uint32_t k1 = (k0 + chunk < in_dim) ? (k0 + chunk) : in_dim;
+    const float* __restrict__ row = w + (size_t)o * in_dim;
+    float acc = 0.0f;
+    for (uint32_t i = k0 + threadIdx.x; i < k1; i += 256u)
+        acc += row[i] * x[i];
+    __shared__ float ws[8];
+    const uint32_t warp = threadIdx.x >> 5, lane = threadIdx.x & 31u;
+    for (uint32_t t = 16; t > 0; t >>= 1) acc += __shfl_down_sync(0xffffffffu, acc, t);
+    if (lane == 0) ws[warp] = acc;
+    __syncthreads();
+    if (threadIdx.x == 0) {
+        float v = 0.0f;
+        for (uint32_t t = 0; t < 8u; ++t) v += ws[t];
+        partials[(size_t)o * split + sp] = v;
+        __threadfence();
+        unsigned int prev = atomicAdd(&counters[o], 1u);
+        if (prev == split - 1u) {
+            float sum = 0.0f;
+            for (uint32_t t = 0; t < split; ++t)
+                sum += partials[(size_t)o * split + t];
+            out[o] = sum;
+            counters[o] = 0u;      // graph-replay safe: back to initial state
+        }
+    }
+}
+
+PD_EXPORT
+int pd_matvec_f32_sk(const void* w, const void* x, void* out, void* partials,
+                     void* counters, uint32_t in_dim, uint32_t out_dim,
+                     uint32_t split, void* stream) {
+    if (out_dim == 0 || in_dim == 0) return 0;
+    if (split < 2u || split > 64u) return cudaErrorInvalidValue;
+    dim3 grid(out_dim, split);
+    pd_pdl_go(pd_matvec_f32_sk_kernel, grid, 256u, 0u, (cudaStream_t)stream,
+              (const float*)w, (const float*)x, (float*)out, (float*)partials,
+              (unsigned int*)counters, in_dim, out_dim, split);
+    return pd_launch_status();
+}
+
 PD_EXPORT
 int pd_matvec_f32_batch(const void* w, const void* x, void* out, uint32_t in_dim,
                         uint32_t out_dim, uint32_t batch, void* stream) {
@@ -1031,18 +1096,49 @@ int pd_matvec_f32_batch(const void* w, const void* x, void* out, uint32_t in_dim
     // BT adapts to fill the die: at b=8 a BT=8 grid is (128,1) = 0.7 waves of
     // pure latency (11.4 us in the c8 profile); BT=2 quadruples the blocks
     // for the same L2-resident weight. Per-token sums are BT-invariant.
-    if (batch < 16u) {
-        dim3 grid(out_dim, (batch + 1u) / 2u);
-        pd_pdl_go(pd_matvec_f32_batch_kernel<2u>, grid, 256, 0u, (cudaStream_t)stream,
+    //
+    // "for the same L2-RESIDENT weight" is the load-bearing clause, and it is
+    // false for the qwen4_exp router. Both elections below were swept on
+    // laguna's [in=2816, out=128] plane -- 1.44 MB, which stays in L2 across
+    // the whole tick, so gridY re-reads cost L2 bandwidth and buying blocks
+    // with them is free. qwen4_exp routes over 513 rows of 2560: a 5.25 MB
+    // plane, 48 DISTINCT ones per tick, and ~290 MB of other weights streams
+    // between two consecutive routers -- so every gridY re-read is a DRAM
+    // re-read. Measured in the c8 serve profile (nsys, median tick): grid
+    // (512,4), 18.80 us/launch, 903 us/tick, 21 MB of traffic for a 5.25 MB
+    // plane -- 0.28 TB/s, against sglang's one 5.02 us bf16 router GEMM.
+    //
+    // BT is therefore PINNABLE while the two regimes are measured apart. The
+    // pin is bit-exact by the same argument the elections already carry (same
+    // per-thread i stride, same shfl tree, same serial cross-warp sum), so it
+    // trades DRAM re-reads against block count and nothing else.
+    static const char* bt_e = pd_env("PADDOCK_MATVEC_BT");
+    static const int bt_pin = bt_e ? atoi(bt_e) : 0;
+    const uint32_t bt = (bt_pin == 2 || bt_pin == 4 || bt_pin == 8 || bt_pin == 16)
+                            ? (uint32_t)bt_pin
+                            : (batch < 16u ? 2u : 4u);
+    dim3 grid(out_dim, (batch + bt - 1u) / bt);
+    switch (bt) {
+    case 16u:
+        pd_pdl_go(pd_matvec_f32_batch_kernel<16u>, grid, 256, 0u, (cudaStream_t)stream,
             (const float*)w, (const float*)x, (float*)out, in_dim, out_dim, batch);
-    } else {
+        break;
+    case 8u:
+        pd_pdl_go(pd_matvec_f32_batch_kernel<8u>, grid, 256, 0u, (cudaStream_t)stream,
+            (const float*)w, (const float*)x, (float*)out, in_dim, out_dim, batch);
+        break;
+    case 4u:
         // BT=4 (was 8): at c32 the 8-token tile ran 18.5 us/layer - the 8
         // in-flight x rows starve the per-thread load pipe; 4 doubles the
         // block count for the same L2-resident weight. Per-token sums are
         // BT-invariant (same i stride) - bit-exact across BT.
-        dim3 grid(out_dim, (batch + 3u) / 4u);
         pd_pdl_go(pd_matvec_f32_batch_kernel<4u>, grid, 256, 0u, (cudaStream_t)stream,
             (const float*)w, (const float*)x, (float*)out, in_dim, out_dim, batch);
+        break;
+    default:
+        pd_pdl_go(pd_matvec_f32_batch_kernel<2u>, grid, 256, 0u, (cudaStream_t)stream,
+            (const float*)w, (const float*)x, (float*)out, in_dim, out_dim, batch);
+        break;
     }
     return pd_launch_status();
 }
@@ -1133,21 +1229,69 @@ int pd_gemm_f32(const void* w, const void* x, void* out, uint32_t in_dim,
     return pd_launch_status();
 }
 
-PD_EXPORT
-int pd_moe_topk_batch(const void* logits, const void* bias, uint32_t n_expert, uint32_t k,
-                      void* out_idx, void* out_w, uint32_t batch, void* stream) {
+static int pd_moe_topk_batch_rs(const void* logits, const void* bias, uint32_t n_expert,
+                                uint32_t rs, uint32_t k, void* out_idx, void* out_w,
+                                uint32_t batch, void* stream) {
     if (batch == 0) return 0;
     if (k > 16u || n_expert > PD_MOE_TOPK_MAX_EXPERTS) return cudaErrorInvalidValue;
     // > 256 experts needs the wide walk (qwen4_exp routes over 512); the
     // narrow one would silently ignore everything past expert 255.
+    // Stage the logits through shared memory with a full block when the row is
+    // wide enough that a lone warp's strided global read dominates. Selection
+    // is the same routine on the same values in the same order => bit-identical
+    // picks and weights; this is a pure schedule change, like the BT tile note
+    // above. PADDOCK_MOE_TOPK_WARP=1 returns to the warp-only launch.
+    static const bool warp_only = pd_env("PADDOCK_MOE_TOPK_WARP") != nullptr;
+    // BLOCK-PARALLEL selection, OPT-IN (PADDOCK_MOE_TOPK_BLK=1). It shortens
+    // the dependent chain (k*(VJ+10) steps instead of k*(VJ+7) in a lone warp
+    // with 15 idle ones) and its picks are identical -- and it MEASURED A LOSS
+    // of 1.2% on the qwen4_exp c1 serve cell (161.37 with the warp selection
+    // vs 159.36/159.54 with this one, alternating boots 2026-08-31). The
+    // 20 __syncthreads a launch cost more than the chain they save. Kept
+    // because it is the right shape for wider routers/batches, not defaulted.
+    static const bool blk_on = [] {
+        const char* e = pd_env("PADDOCK_MOE_TOPK_BLK");
+        return e && e[0] == '1';
+    }();
+    if (!warp_only && blk_on && n_expert == 512u && k <= 16u) {
+        pd_moe_topk_batch_blk_kernel_t<16u, 1u><<<batch, 512, 0, (cudaStream_t)stream>>>(
+            (const float*)logits, (const float*)bias, n_expert, rs, k,
+            (uint32_t*)out_idx, (float*)out_w);
+        return pd_launch_status();
+    }
+    if (!warp_only && n_expert >= 128u) {
+        const uint32_t nth = n_expert >= 512u ? 512u : 256u;
+        const size_t shm = (size_t)n_expert * sizeof(float);
+        if (n_expert > 256u)
+            pd_moe_topk_batch_shm_kernel_t<16u><<<batch, nth, shm, (cudaStream_t)stream>>>(
+                (const float*)logits, (const float*)bias, n_expert, rs, k, (uint32_t*)out_idx, (float*)out_w);
+        else
+            pd_moe_topk_batch_shm_kernel_t<8u><<<batch, nth, shm, (cudaStream_t)stream>>>(
+                (const float*)logits, (const float*)bias, n_expert, rs, k, (uint32_t*)out_idx, (float*)out_w);
+        return pd_launch_status();
+    }
     if (n_expert > 256u) {
         pd_moe_topk_batch_kernel_t<16u><<<batch, 32, 0, (cudaStream_t)stream>>>(
-            (const float*)logits, (const float*)bias, n_expert, k, (uint32_t*)out_idx, (float*)out_w);
+            (const float*)logits, (const float*)bias, n_expert, rs, k, (uint32_t*)out_idx, (float*)out_w);
     } else {
         pd_moe_topk_batch_kernel_t<8u><<<batch, 32, 0, (cudaStream_t)stream>>>(
-            (const float*)logits, (const float*)bias, n_expert, k, (uint32_t*)out_idx, (float*)out_w);
+            (const float*)logits, (const float*)bias, n_expert, rs, k, (uint32_t*)out_idx, (float*)out_w);
     }
     return pd_launch_status();
+}
+
+PD_EXPORT
+int pd_moe_topk_batch(const void* logits, const void* bias, uint32_t n_expert, uint32_t k,
+                      void* out_idx, void* out_w, uint32_t batch, void* stream) {
+    return pd_moe_topk_batch_rs(logits, bias, n_expert, n_expert, k, out_idx, out_w, batch, stream);
+}
+
+// slot 539: strided-logits twin - [n, rs] plane, selection bit-identical.
+PD_EXPORT
+int pd_moe_topk_batch_s(const void* logits, const void* bias, uint32_t n_expert, uint32_t rs,
+                        uint32_t k, void* out_idx, void* out_w, uint32_t batch, void* stream) {
+    if (rs < n_expert) return cudaErrorInvalidValue;
+    return pd_moe_topk_batch_rs(logits, bias, n_expert, rs, k, out_idx, out_w, batch, stream);
 }
 
 PD_EXPORT
@@ -1260,7 +1404,7 @@ int pd_moe_align(const void* idx, void* sorted_row, void* sorted_slot, void* blo
                  void* stream) {
     if (rows == 0 || n_expert == 0) return 0;
     size_t shmem = (size_t)3 * n_expert * sizeof(unsigned int);
-    pd_moe_align_kernel<<<1, 1024, shmem, (cudaStream_t)stream>>>(
+    pd_pdl_go(pd_moe_align_kernel, 1, 1024, shmem, (cudaStream_t)stream, 
         (const unsigned int*)idx, (unsigned int*)sorted_row, (unsigned int*)sorted_slot,
         (unsigned int*)block_expert, rows, n_active, n_expert, PD_MOE_BM, max_blocks);
     return pd_launch_status();
@@ -2387,6 +2531,174 @@ int pd_attn_decode_batch(const void* q, const void* kc, const void* vc, const vo
             (const float*)q, (const __half*)kc, (const __half*)vc, (const float*)sinks, (float*)out,
             (const unsigned int*)positions, (const unsigned int*)slots, n_heads, n_kv_heads, head_dim,
             max_ctx, kv_dim, swa_window, scale);
+    return pd_launch_status();
+}
+
+// 536: pd_attn_decode_batch with the PARALLEL-SCORE walk. Identical signature,
+// identical grid/carveout/smem; the only difference is that the per-key dot
+// product is spread across all threads instead of n_t of them.
+//
+// Why it is a separate entry rather than a flip: the partial sums are
+// interleaved rather than sequential, so it is a different summation order and
+// therefore not bit-identical to what every other family's gates were stamped
+// against. Callers opt in.
+PD_EXPORT
+int pd_attn_decode_batch_ps(const void* q, const void* kc, const void* vc, const void* sinks,
+                            void* out, const void* positions, const void* slots, uint32_t n_heads,
+                            uint32_t n_kv_heads, uint32_t head_dim, uint32_t max_ctx, uint32_t kv_dim,
+                            uint32_t swa_window, uint32_t batch, float scale, uint32_t kv_dtype,
+                            void* stream) {
+    if (n_heads == 0 || batch == 0) return 0;
+    dim3 grid(n_heads, batch);
+    uint32_t attn_nth = head_dim > 256 ? head_dim : 256;
+    uint32_t attn_smem = (uint32_t)PD_ATTN_TILE_SMEM(head_dim);
+    static uint32_t smem_set_ps = 0;
+    if (smem_set_ps == 0) {
+        pd_prefer_max_shared(pd_attn_decode_batch_kernel<__nv_fp8_e4m3, true>);
+        pd_prefer_max_shared(pd_attn_decode_batch_kernel<__half, true>);
+        smem_set_ps = 1;
+    }
+    if (attn_smem > 48u * 1024u && attn_smem > smem_set_ps) {
+        cudaFuncSetAttribute((const void*)pd_attn_decode_batch_kernel<__nv_fp8_e4m3, true>,
+                             cudaFuncAttributeMaxDynamicSharedMemorySize, attn_smem);
+        cudaFuncSetAttribute((const void*)pd_attn_decode_batch_kernel<__half, true>,
+                             cudaFuncAttributeMaxDynamicSharedMemorySize, attn_smem);
+        smem_set_ps = attn_smem;
+    }
+    if (kv_dtype == PD_KV_FP8_E4M3)
+        pd_attn_decode_batch_kernel<__nv_fp8_e4m3, true><<<grid, attn_nth, attn_smem, (cudaStream_t)stream>>>(
+            (const float*)q, (const __nv_fp8_e4m3*)kc, (const __nv_fp8_e4m3*)vc, (const float*)sinks,
+            (float*)out, (const unsigned int*)positions, (const unsigned int*)slots, n_heads,
+            n_kv_heads, head_dim, max_ctx, kv_dim, swa_window, scale);
+    else
+        pd_attn_decode_batch_kernel<__half, true><<<grid, attn_nth, attn_smem, (cudaStream_t)stream>>>(
+            (const float*)q, (const __half*)kc, (const __half*)vc, (const float*)sinks, (float*)out,
+            (const unsigned int*)positions, (const unsigned int*)slots, n_heads, n_kv_heads, head_dim,
+            max_ctx, kv_dim, swa_window, scale);
+    return pd_launch_status();
+}
+
+// FMHA-style decode attention (slot 537). Same ABI as pd_attn_decode_batch.
+// The register layout needs head_dim % 32 == 0 and (head_dim/32) % 4 == 0, so
+// only 128 and 256 are served. The CALLER elects on head_dim; the guard below
+// is a safety net and returns non-zero (surfacing as a launch error) rather
+// than silently writing garbage.
+PD_EXPORT
+int pd_attn_decode_fmha(const void* q, const void* kc, const void* vc, const void* sinks,
+                        void* out, const void* positions, const void* slots, uint32_t n_heads,
+                        uint32_t n_kv_heads, uint32_t head_dim, uint32_t max_ctx, uint32_t kv_dim,
+                        uint32_t swa_window, uint32_t batch, float scale, uint32_t kv_dtype,
+                        void* stream) {
+    if (n_heads == 0 || batch == 0) return 0;
+    if (head_dim != 128u && head_dim != 256u) return 1;
+    dim3 grid(n_heads, batch);
+    // Warp count = KV-split parallelism: the walk stripes t across warps, so
+    // more warps is split-KV inside one launch. At c1 (24 blocks) the 8-warp
+    // form is 39 us/layer vs the rival fmha's 9.1 - 4x the warps quadruples
+    // the stream count for a one-line change. Merge grouping changes with nw
+    // (f32 online-softmax merge order), so the widening is env-gated and
+    // battery-judged, never a silent default.
+    // DEFAULT 512 (16 warps), measured 2026-09-01 on qwen4exp's decode geometry
+    // (24 q heads / 4 kv / head_dim 256) with scratch fmha_probe, us a launch:
+    //
+    //           b8 sl256   b8 sl4095   b1 sl256
+    //   nw=8      20.73      245.51      18.45
+    //   nw=16     18.58      185.71      14.37
+    //   nw=32     24.62      176.33      14.34
+    //
+    // 16 warps dominates 8 at every point measured, so this is a strict
+    // improvement on the old 256 default. 32 wins only once the walk is long
+    // enough to amortise the epilogue -- warp 0 merges nw partials SERIALLY --
+    // and is 24% worse at the c8 serve shape, which is what the 1024 the board
+    // had been electing was costing: c8 688.1 at 512 against 683.7 at 1024,
+    // four legs against three, non-overlapping.
+    static const uint32_t nth = [] {
+        const char* v = pd_env("PADDOCK_Q38FN_FMHA_NTH");
+        const uint32_t n = v ? (uint32_t)atoi(v) : 512u;
+        return (n == 256u || n == 512u || n == 1024u) ? n : 512u;
+    }();
+    const uint32_t nw = nth / 32u;
+    const uint32_t smem = (nw * head_dim + 2u * nw) * (uint32_t)sizeof(float);
+    if (head_dim == 256u) {
+        if (kv_dtype == PD_KV_FP8_E4M3)
+            pd_attn_decode_fmha_kernel<__nv_fp8_e4m3, 8><<<grid, nth, smem, (cudaStream_t)stream>>>(
+                (const float*)q, (const __nv_fp8_e4m3*)kc, (const __nv_fp8_e4m3*)vc,
+                (const float*)sinks, (float*)out, (const unsigned int*)positions,
+                (const unsigned int*)slots, n_heads, n_kv_heads, head_dim, max_ctx, kv_dim,
+                swa_window, scale);
+        else
+            pd_attn_decode_fmha_kernel<__half, 8><<<grid, nth, smem, (cudaStream_t)stream>>>(
+                (const float*)q, (const __half*)kc, (const __half*)vc, (const float*)sinks,
+                (float*)out, (const unsigned int*)positions, (const unsigned int*)slots, n_heads,
+                n_kv_heads, head_dim, max_ctx, kv_dim, swa_window, scale);
+    } else {
+        if (kv_dtype == PD_KV_FP8_E4M3)
+            pd_attn_decode_fmha_kernel<__nv_fp8_e4m3, 4><<<grid, nth, smem, (cudaStream_t)stream>>>(
+                (const float*)q, (const __nv_fp8_e4m3*)kc, (const __nv_fp8_e4m3*)vc,
+                (const float*)sinks, (float*)out, (const unsigned int*)positions,
+                (const unsigned int*)slots, n_heads, n_kv_heads, head_dim, max_ctx, kv_dim,
+                swa_window, scale);
+        else
+            pd_attn_decode_fmha_kernel<__half, 4><<<grid, nth, smem, (cudaStream_t)stream>>>(
+                (const float*)q, (const __half*)kc, (const __half*)vc, (const float*)sinks,
+                (float*)out, (const unsigned int*)positions, (const unsigned int*)slots, n_heads,
+                n_kv_heads, head_dim, max_ctx, kv_dim, swa_window, scale);
+    }
+    return pd_launch_status();
+}
+
+// SPLIT-KV decode attention (slot 545): the fmha walk striped over
+// grid.z KV slices + a fixed-order merge pass. `part` is CALLER-OWNED,
+// address-stable scratch of batch*n_heads*S*(head_dim+2) floats (graph
+// capture forbids lazy allocation - pack-scratch law). S is the caller's
+// split election; the un-split slot-537 form is 24 CTAs at c1 and 39
+// us/layer vs the rival's 9.1. Own numeric class (per-slice partial
+// merges), env-gated and battery-judged by the engine.
+PD_EXPORT
+int pd_attn_decode_fmha_sp(const void* q, const void* kc, const void* vc, const void* sinks,
+                           void* out, void* part, const void* positions, const void* slots,
+                           uint32_t n_heads, uint32_t n_kv_heads, uint32_t head_dim,
+                           uint32_t max_ctx, uint32_t kv_dim, uint32_t swa_window,
+                           uint32_t batch, uint32_t split, float scale, uint32_t kv_dtype,
+                           void* stream) {
+    if (n_heads == 0 || batch == 0) return 0;
+    if (head_dim != 128u && head_dim != 256u) return 1;
+    if (split < 2u || split > 64u) return 1;
+    // same 16-warp default as the unsplit form above
+    static const uint32_t nth = [] {
+        const char* v = pd_env("PADDOCK_Q38FN_FMHA_NTH");
+        const uint32_t n = v ? (uint32_t)atoi(v) : 512u;
+        return (n == 256u || n == 512u || n == 1024u) ? n : 512u;
+    }();
+    const uint32_t nw = nth / 32u;
+    const uint32_t smem = (nw * head_dim + 2u * nw) * (uint32_t)sizeof(float);
+    dim3 grid(n_heads, batch, split);
+    if (head_dim == 256u) {
+        if (kv_dtype == PD_KV_FP8_E4M3)
+            pd_attn_decode_fmha_sp_kernel<__nv_fp8_e4m3, 8><<<grid, nth, smem, (cudaStream_t)stream>>>(
+                (const float*)q, (const __nv_fp8_e4m3*)kc, (const __nv_fp8_e4m3*)vc,
+                (float*)part, (const unsigned int*)positions, (const unsigned int*)slots,
+                n_heads, n_kv_heads, head_dim, max_ctx, kv_dim, swa_window, scale);
+        else
+            pd_attn_decode_fmha_sp_kernel<__half, 8><<<grid, nth, smem, (cudaStream_t)stream>>>(
+                (const float*)q, (const __half*)kc, (const __half*)vc, (float*)part,
+                (const unsigned int*)positions, (const unsigned int*)slots,
+                n_heads, n_kv_heads, head_dim, max_ctx, kv_dim, swa_window, scale);
+    } else {
+        if (kv_dtype == PD_KV_FP8_E4M3)
+            pd_attn_decode_fmha_sp_kernel<__nv_fp8_e4m3, 4><<<grid, nth, smem, (cudaStream_t)stream>>>(
+                (const float*)q, (const __nv_fp8_e4m3*)kc, (const __nv_fp8_e4m3*)vc,
+                (float*)part, (const unsigned int*)positions, (const unsigned int*)slots,
+                n_heads, n_kv_heads, head_dim, max_ctx, kv_dim, swa_window, scale);
+        else
+            pd_attn_decode_fmha_sp_kernel<__half, 4><<<grid, nth, smem, (cudaStream_t)stream>>>(
+                (const float*)q, (const __half*)kc, (const __half*)vc, (float*)part,
+                (const unsigned int*)positions, (const unsigned int*)slots,
+                n_heads, n_kv_heads, head_dim, max_ctx, kv_dim, swa_window, scale);
+    }
+    dim3 mgrid(n_heads, batch);
+    pd_attn_fmha_merge_kernel<<<mgrid, head_dim, 0, (cudaStream_t)stream>>>(
+        (const float*)part, (const float*)sinks, (float*)out, n_heads, head_dim, split);
     return pd_launch_status();
 }
 

@@ -1319,8 +1319,6 @@ pub struct GpuQwen35 {
     /// Checkpoint-native NVFP4 decode plane for the FUSED gate|up GEMM, one
     /// entry per layer (None off the NVFP4 lane, without CUTLASS, or under a
     /// VRAM-headroom decline). This is the 0.5 B/param twin of
-    /// `bs_f8t_ffn[li][0]`: same values, half the decode read.
-    bs_nv4_gu: Vec<Option<crate::gpu::Nvf4CutPlane>>,
     /// The mixer-projection twin of `bs_f8t_ffn`, one entry per layer, shaped
     /// [fused input projection, output projection] for both layer kinds:
     ///   Full   -> [ wq(=[2q|gate]) | wk | wv  ,  wo    ]
@@ -2635,9 +2633,6 @@ struct Scratch {
     /// the CUTLASS mainloop reads. Caller-owned and address-stable because
     /// the decode graphs bake addresses (see the batch.rs note) - a lazy
     /// allocation inside the kernel entry cost ~40x of wide-batch throughput
-    /// once already.
-    d_nv4_aq: CudaSlice<u8>,
-    d_nv4_asf: CudaSlice<u8>,
     d_pxs: CudaSlice<f32>,
     // e4m3 per-32-block activation scales (u8, one exponent byte per block) for
     // the fp8 W8A8 projection GEMM (b1). Paired with d_pxq reinterpreted as e4m3

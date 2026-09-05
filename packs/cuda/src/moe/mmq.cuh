@@ -447,6 +447,7 @@ __global__ void __launch_bounds__(256, 2) pd_mxfp4_moe_down_mmq_kernel(
 __global__ void pd_moe_slot_combine_kernel(
     const float4* __restrict__ part, float4* __restrict__ residual,
     uint32_t embd4, uint32_t n_active, uint32_t rows) {
+    PD_PDL_ARM();  // consumer-safe for early PDL launches (2026-08-31)
     const size_t i = (size_t)blockIdx.x * blockDim.x + threadIdx.x;
     if (i >= (size_t)rows * embd4) return;
     const size_t t = i / embd4, r = i % embd4;
@@ -487,6 +488,7 @@ int pd_moe_slot_combine(const void* part, void* residual, uint32_t embd,
 __global__ void pd_moe_slot_combine_init_kernel(
     const float4* __restrict__ part, float4* __restrict__ residual,
     uint32_t embd4, uint32_t n_active, uint32_t rows) {
+    PD_PDL_ARM();  // consumer-safe for early PDL launches (2026-08-31)
     const size_t i = (size_t)blockIdx.x * blockDim.x + threadIdx.x;
     if (i >= (size_t)rows * embd4) return;
     const size_t t = i / embd4, r = i % embd4;
