@@ -16,7 +16,11 @@ use paddock_models::safetensors::{ShardedSafetensors, StDtype};
 use super::*;
 use super::{DenseClass, DensePlane, dense_class_from_env};
 
-pub(super) fn dt(exec: &GpuExecutor, v: Vec<f32>, dims: Vec<usize>) -> Result<DeviceTensor, GpuError> {
+pub(super) fn dt(
+    exec: &GpuExecutor,
+    v: Vec<f32>,
+    dims: Vec<usize>,
+) -> Result<DeviceTensor, GpuError> {
     Ok(DeviceTensor {
         buf: exec.to_device(&v)?,
         dims,

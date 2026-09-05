@@ -320,7 +320,9 @@ impl Qwen4ExpConfig {
                 .ok_or_else(|| miss(k))
         };
         let f = |k: &str| -> Result<f32, StError> {
-            g.arch_field(k).and_then(Value::as_f32).ok_or_else(|| miss(k))
+            g.arch_field(k)
+                .and_then(Value::as_f32)
+                .ok_or_else(|| miss(k))
         };
         let arr_u = |k: &str| -> Result<Vec<u64>, StError> {
             match g.arch_field(k) {
@@ -390,7 +392,10 @@ impl Qwen4ExpConfig {
                 "qwen4exp gguf: ssm.inner_size {gdn_inner} is not a multiple of {gdn_v_heads} value heads"
             )));
         }
-        let ple_layers: Vec<usize> = arr_u("ple.layers")?.into_iter().map(|x| x as usize).collect();
+        let ple_layers: Vec<usize> = arr_u("ple.layers")?
+            .into_iter()
+            .map(|x| x as usize)
+            .collect();
         let ngram_size = u("ple.ngram_size")?;
         let heads_per_ngram = u("ple.heads_per_ngram")?;
         let ple_heads = (ngram_size - 1) * heads_per_ngram;
@@ -405,7 +410,11 @@ impl Qwen4ExpConfig {
         let ngram_vocab_base = head_vocab.iter().copied().min().unwrap_or(0);
         let eos_ids: Vec<u32> = {
             let mut v = Vec::new();
-            if let Some(e) = g.metadata.get("tokenizer.ggml.eos_token_id").and_then(Value::as_u64) {
+            if let Some(e) = g
+                .metadata
+                .get("tokenizer.ggml.eos_token_id")
+                .and_then(Value::as_u64)
+            {
                 v.push(e as u32);
             }
             if let Some(Value::Array(items)) = g.metadata.get("tokenizer.ggml.eos_token_ids") {

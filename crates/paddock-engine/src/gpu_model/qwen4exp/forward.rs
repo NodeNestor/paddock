@@ -578,7 +578,7 @@ impl Qwen4ExpGpu {
             map.tensor_info(name)
                 .map(|t| t.dims.iter().map(|&d| d as usize).collect())
         })
-            .map_err(|e| GpuModelError::Unsupported(format!("qwen4exp gguf config: {e}")))?;
+        .map_err(|e| GpuModelError::Unsupported(format!("qwen4exp gguf config: {e}")))?;
         let hash = Qwen4ExpConfig::ple_hash_from_gguf(map.gguf())
             .map_err(|e| GpuModelError::Unsupported(format!("qwen4exp gguf ple: {e}")))?;
         let mut layers = Vec::with_capacity(cfg.n_layer);
@@ -625,7 +625,9 @@ impl Qwen4ExpGpu {
                 map: map.clone(),
             }
         };
-        Self::from_parts(exec, cfg, src, layers, embed, lm_head, final_mix, max_tokens, slots)
+        Self::from_parts(
+            exec, cfg, src, layers, embed, lm_head, final_mix, max_tokens, slots,
+        )
     }
 
     /// `[moe_offload]`: seat the VRAM slot cache over the host-mapped expert
@@ -636,7 +638,11 @@ impl Qwen4ExpGpu {
     pub fn enable_moe_cache(&mut self, budget: u64) -> Result<usize, GpuModelError> {
         fn host_seats(
             l: &Qwen4ExpLayer,
-        ) -> Option<(&crate::gpu::HostMappedKq, &crate::gpu::HostMappedKq, &crate::gpu::HostMappedKq)> {
+        ) -> Option<(
+            &crate::gpu::HostMappedKq,
+            &crate::gpu::HostMappedKq,
+            &crate::gpu::HostMappedKq,
+        )> {
             match &l.moe.seats {
                 ExpertSeats::Kq {
                     gate,
@@ -704,6 +710,19 @@ impl Qwen4ExpGpu {
             gib(budget)
         );
         Ok(seated)
+    }
+
+    /// Slot-cache counters summed over the layers: (rows resolved, misses).
+    pub fn moe_cache_stats(&self) -> Result<(u64, u64), GpuModelError> {
+        let mut acc = (0u64, 0u64);
+        for l in &self.layers {
+            if let ExpertSeats::Kq { cache: Some(c), .. } = &l.moe.seats {
+                let (r, m) = c.stats(&self.exec)?;
+                acc.0 += r;
+                acc.1 += m;
+            }
+        }
+        Ok(acc)
     }
 
     /// Host bytes the expert planes hold (device-mapped), for the load log.
@@ -2844,7 +2863,8 @@ fn gdn_pass(
         if w.tiled_heads {
             if !e.has_q4x_gdn_split_widen_tiled() {
                 return Err(GpuModelError::Unsupported(
-                    "kernel pack has no q4x_gdn_split_widen_tiled (slot 540) - rebuild packs/cuda".into(),
+                    "kernel pack has no q4x_gdn_split_widen_tiled (slot 540) - rebuild packs/cuda"
+                        .into(),
                 ));
             }
             e.q4x_gdn_split_widen_tiled(
@@ -3855,7 +3875,9 @@ impl Scratch {
                 match e.lowm_warmup(&w, &xd, &mut yd) {
                     Ok(_) => e.synchronize()?,
                     Err(err) => {
-                        tracing::warn!("qwen4exp: low-M cluster warm-up refused ({err}) - lane off");
+                        tracing::warn!(
+                            "qwen4exp: low-M cluster warm-up refused ({err}) - lane off"
+                        );
                         eprintln!("[q4x] low-M cluster warm-up refused ({err}) - lane off");
                     }
                 }

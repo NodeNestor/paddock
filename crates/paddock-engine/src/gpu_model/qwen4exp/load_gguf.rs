@@ -106,7 +106,10 @@ fn f32_dt_m1(
     dims: Vec<usize>,
 ) -> Result<DeviceTensor, GpuModelError> {
     let n: usize = dims.iter().product();
-    let v: Vec<f32> = f32_vec(map, name, n)?.into_iter().map(|w| w - 1.0).collect();
+    let v: Vec<f32> = f32_vec(map, name, n)?
+        .into_iter()
+        .map(|w| w - 1.0)
+        .collect();
     super::load::dt(exec, v, dims).map_err(GpuModelError::from)
 }
 
@@ -233,7 +236,12 @@ pub(super) fn hc_weights(
         down_p42: None,
         up_p42: None,
         inject: if inject {
-            Some(f32_dt(exec, map, &format!("{pfx}_inject.weight"), vec![hc, hw])?)
+            Some(f32_dt(
+                exec,
+                map,
+                &format!("{pfx}_inject.weight"),
+                vec![hc, hw],
+            )?)
         } else {
             None
         },
@@ -264,13 +272,29 @@ pub(super) fn load_layer(
             }
             let a_log: Vec<f32> = ssm_a.iter().map(|&a| (-a).ln()).collect();
             MixerW::Gdn(GdnW {
-                qkv: dense(exec, map, &format!("{p}.attn_qkv.weight"), c.gdn_qkv_rows(), h)?,
-                z: dense(exec, map, &format!("{p}.attn_gate.weight"), c.gdn_z_rows(), h)?,
+                qkv: dense(
+                    exec,
+                    map,
+                    &format!("{p}.attn_qkv.weight"),
+                    c.gdn_qkv_rows(),
+                    h,
+                )?,
+                z: dense(
+                    exec,
+                    map,
+                    &format!("{p}.attn_gate.weight"),
+                    c.gdn_z_rows(),
+                    h,
+                )?,
                 zqkv: None,
                 ab: super::load::dt(exec, ab_v, vec![2 * hv, h])?,
                 ab16: None,
                 conv: {
-                    want_dims(map, &format!("{p}.ssm_conv1d.weight"), &[c.gdn_conv, c.gdn_qkv_rows()])?;
+                    want_dims(
+                        map,
+                        &format!("{p}.ssm_conv1d.weight"),
+                        &[c.gdn_conv, c.gdn_qkv_rows()],
+                    )?;
                     f32_dt(
                         exec,
                         map,
@@ -282,7 +306,12 @@ pub(super) fn load_layer(
                 ssm_a: super::load::dt(exec, ssm_a, vec![hv])?,
                 dt_bias: f32_dt(exec, map, &format!("{p}.ssm_dt.bias"), vec![hv])?,
                 // the GDN norm is the one norm the converter leaves raw
-                norm: f32_dt(exec, map, &format!("{p}.ssm_norm.weight"), vec![c.gdn_v_dim])?,
+                norm: f32_dt(
+                    exec,
+                    map,
+                    &format!("{p}.ssm_norm.weight"),
+                    vec![c.gdn_v_dim],
+                )?,
                 out: dense(exec, map, &format!("{p}.ssm_out.weight"), h, c.gdn_z_rows())?,
                 // the converter tiles the value heads (see the module doc)
                 tiled_heads: true,
@@ -295,16 +324,38 @@ pub(super) fn load_layer(
                 k: dense(exec, map, &format!("{p}.attn_k.weight"), kv, h)?,
                 v: dense(exec, map, &format!("{p}.attn_v.weight"), kv, h)?,
                 qkv_f: None,
-                o: dense(exec, map, &format!("{p}.attn_output.weight"), h, c.attn_o_in())?,
+                o: dense(
+                    exec,
+                    map,
+                    &format!("{p}.attn_output.weight"),
+                    h,
+                    c.attn_o_in(),
+                )?,
                 // consumed in (1+w) form - the converter's +1 is the fold
-                q_norm: f32_dt(exec, map, &format!("{p}.attn_q_norm.weight"), vec![c.head_dim])?,
-                k_norm: f32_dt(exec, map, &format!("{p}.attn_k_norm.weight"), vec![c.head_dim])?,
+                q_norm: f32_dt(
+                    exec,
+                    map,
+                    &format!("{p}.attn_q_norm.weight"),
+                    vec![c.head_dim],
+                )?,
+                k_norm: f32_dt(
+                    exec,
+                    map,
+                    &format!("{p}.attn_k_norm.weight"),
+                    vec![c.head_dim],
+                )?,
                 idx_qk: bf16_concat(
                     exec,
                     map,
                     &[
-                        (&format!("{p}.indexer.q_proj.weight"), c.idx_heads * c.idx_head_dim),
-                        (&format!("{p}.indexer.k_proj.weight"), c.idx_kv_heads * c.idx_head_dim),
+                        (
+                            &format!("{p}.indexer.q_proj.weight"),
+                            c.idx_heads * c.idx_head_dim,
+                        ),
+                        (
+                            &format!("{p}.indexer.k_proj.weight"),
+                            c.idx_kv_heads * c.idx_head_dim,
+                        ),
                     ],
                     h,
                 )?,
@@ -330,19 +381,58 @@ pub(super) fn load_layer(
     let mut router_v = f32_vec(map, &format!("{p}.ffn_gate_inp.weight"), c.n_expert * h)?;
     router_v.extend(f32_vec(map, &format!("{p}.ffn_gate_inp_shexp.weight"), h)?);
     let seats = ExpertSeats::Kq {
-        gate: kq_seat(exec, map, &format!("{p}.ffn_gate_exps.weight"), h, c.moe_ff, c.n_expert)?,
-        up: kq_seat(exec, map, &format!("{p}.ffn_up_exps.weight"), h, c.moe_ff, c.n_expert)?,
-        down: kq_seat(exec, map, &format!("{p}.ffn_down_exps.weight"), c.moe_ff, h, c.n_expert)?,
+        gate: kq_seat(
+            exec,
+            map,
+            &format!("{p}.ffn_gate_exps.weight"),
+            h,
+            c.moe_ff,
+            c.n_expert,
+        )?,
+        up: kq_seat(
+            exec,
+            map,
+            &format!("{p}.ffn_up_exps.weight"),
+            h,
+            c.moe_ff,
+            c.n_expert,
+        )?,
+        down: kq_seat(
+            exec,
+            map,
+            &format!("{p}.ffn_down_exps.weight"),
+            c.moe_ff,
+            h,
+            c.n_expert,
+        )?,
         cache: None,
     };
     let moe = MoeW {
         router: super::load::dt(exec, router_v, vec![c.n_expert + 1, h])?,
         router16: None,
         seats,
-        sh_gate: dense(exec, map, &format!("{p}.ffn_gate_shexp.weight"), c.shared_ff, h)?,
+        sh_gate: dense(
+            exec,
+            map,
+            &format!("{p}.ffn_gate_shexp.weight"),
+            c.shared_ff,
+            h,
+        )?,
         sh_gu: None,
-        sh_up: dense(exec, map, &format!("{p}.ffn_up_shexp.weight"), c.shared_ff, h)?,
-        sh_down: dense(exec, map, &format!("{p}.ffn_down_shexp.weight"), h, c.shared_ff)?,
+        sh_up: dense(
+            exec,
+            map,
+            &format!("{p}.ffn_up_shexp.weight"),
+            c.shared_ff,
+            h,
+        )?,
+        sh_down: dense(
+            exec,
+            map,
+            &format!("{p}.ffn_down_shexp.weight"),
+            h,
+            c.shared_ff,
+        )?,
     };
     Ok(Qwen4ExpLayer {
         attn_hc: hc_weights(exec, map, c, &format!("{p}.hc_attn"), true)?,
@@ -409,10 +499,21 @@ pub(super) fn load_ple(
     }
     Ok(PleW {
         key: dense(exec, map, &format!("{p}.ple_key.weight"), hw, c.hidden)?,
-        value: dense(exec, map, &format!("{p}.ple_value.weight"), c.hidden, c.hidden)?,
+        value: dense(
+            exec,
+            map,
+            &format!("{p}.ple_value.weight"),
+            c.hidden,
+            c.hidden,
+        )?,
         conv: {
             want_dims(map, &format!("{p}.ple_conv1d.weight"), &[c.ple_conv, hw])?;
-            f32_dt(exec, map, &format!("{p}.ple_conv1d.weight"), vec![hw, c.ple_conv])?
+            f32_dt(
+                exec,
+                map,
+                &format!("{p}.ple_conv1d.weight"),
+                vec![hw, c.ple_conv],
+            )?
         },
         // all three stored (1+w); the pack's PLE norms add the 1
         norm_key: f32_dt_m1(exec, map, &format!("{p}.ple_norm_key.weight"), vec![hw])?,

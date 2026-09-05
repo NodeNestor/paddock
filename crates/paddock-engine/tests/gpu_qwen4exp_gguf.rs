@@ -13,8 +13,8 @@ mod common;
 use std::time::Instant;
 
 use paddock_engine::gpu_model::qwen4exp::Qwen4ExpGpu;
-use paddock_models::mapped::MappedGguf;
 use paddock_models::ggml_type::GgmlType;
+use paddock_models::mapped::MappedGguf;
 use paddock_tokenizer::GgufTokenizer;
 
 const PROMPT: &str = "The capital of France is";
@@ -57,7 +57,10 @@ fn gguf_greedy_continuation() {
     eprintln!("prompt ids {prompt:?}");
     eprintln!("greedy ids {out:?}");
     eprintln!("greedy text {text:?}");
-    eprintln!("{n} tokens in {gen_s:.2}s = {:.1} tok/s (prefill included)", n as f64 / gen_s);
+    eprintln!(
+        "{n} tokens in {gen_s:.2}s = {:.1} tok/s (prefill included)",
+        n as f64 / gen_s
+    );
     // decode-only rate: 64 more tokens off the carried state
     let t2 = Instant::now();
     let mut last = *out.last().unwrap();
@@ -69,7 +72,16 @@ fn gguf_greedy_continuation() {
             .fold(0usize, |b, (i, &x)| if x > l[b] { i } else { b }) as u32;
     }
     let dec_s = t2.elapsed().as_secs_f64();
-    eprintln!("decode-only: 64 tokens in {dec_s:.2}s = {:.1} tok/s", 64.0 / dec_s);
+    eprintln!(
+        "decode-only: 64 tokens in {dec_s:.2}s = {:.1} tok/s",
+        64.0 / dec_s
+    );
+    let (rows, misses) = m.moe_cache_stats().expect("stats");
+    eprintln!(
+        "graph active: {} | slot cache: {rows} rows resolved, {misses} misses, hit rate {:.1}%",
+        m.graph_active(),
+        100.0 * (1.0 - misses as f64 / rows.max(1) as f64)
+    );
     if let Ok(reference) = std::env::var("QWEN38FN_GGUF_REF") {
         let want: Vec<u32> = reference
             .split(',')
@@ -80,9 +92,16 @@ fn gguf_greedy_continuation() {
         // part ways at the first near-tie; the parity gate is
         // `gguf_teacher_forced_agreement`. The first token must agree.
         let k = want.len().min(out.len());
-        let same = out[..k].iter().zip(&want[..k]).take_while(|(a, b)| a == b).count();
+        let same = out[..k]
+            .iter()
+            .zip(&want[..k])
+            .take_while(|(a, b)| a == b)
+            .count();
         eprintln!("matches the llama.cpp greedy ids for the first {same} of {k} tokens");
-        assert_eq!(out[0], want[0], "first greedy token differs from the llama.cpp reference");
+        assert_eq!(
+            out[0], want[0],
+            "first greedy token differs from the llama.cpp reference"
+        );
     }
     assert!(
         out.iter().any(|&t| t != out[0]),
@@ -113,11 +132,16 @@ fn gguf_incremental_matches_prefill() {
     drop(map);
     let mut m = Qwen4ExpGpu::load_gguf_with_slots(&exec, &path, 4096, 1).expect("load gguf");
     let headroom = exec.vram_headroom().unwrap_or(0);
-    m.enable_moe_cache(headroom.saturating_sub(512 << 20)).expect("cache");
+    m.enable_moe_cache(headroom.saturating_sub(512 << 20))
+        .expect("cache");
     let text = std::env::var("QWEN38FN_PROMPT").unwrap_or_else(|_| PROMPT.to_owned());
     let prompt = tok.encode(&text).expect("encode");
     eprintln!("prompt {text:?} -> {prompt:?}");
-    let argmax = |v: &[f32]| v.iter().enumerate().fold(0usize, |b, (i, &x)| if x > v[b] { i } else { b });
+    let argmax = |v: &[f32]| {
+        v.iter()
+            .enumerate()
+            .fold(0usize, |b, (i, &x)| if x > v[b] { i } else { b })
+    };
     // prefill walk
     let lp = m.forward_prompt(&prompt).expect("prefill");
     let top_prefill = argmax(&lp);
@@ -129,7 +153,11 @@ fn gguf_incremental_matches_prefill() {
     }
     let top_inc = argmax(&last);
     let dec = |i: usize| tok.decode(&[i as u32], false).unwrap_or_default();
-    eprintln!("prefill top {top_prefill} {:?} | incremental top {top_inc} {:?}", dec(top_prefill), dec(top_inc));
+    eprintln!(
+        "prefill top {top_prefill} {:?} | incremental top {top_inc} {:?}",
+        dec(top_prefill),
+        dec(top_inc)
+    );
     let top5 = |v: &[f32]| {
         let mut ix: Vec<usize> = (0..v.len()).collect();
         ix.sort_by(|&a, &b| v[b].partial_cmp(&v[a]).unwrap());
@@ -137,7 +165,10 @@ fn gguf_incremental_matches_prefill() {
     };
     eprintln!("prefill top5 {:?}", top5(&lp));
     eprintln!("incremental top5 {:?}", top5(&last));
-    assert_eq!(top_prefill, top_inc, "prefill and incremental walks disagree on the next token");
+    assert_eq!(
+        top_prefill, top_inc,
+        "prefill and incremental walks disagree on the next token"
+    );
 }
 
 /// The Q8_0 dense planes of the GGUF at their odd widths (hc up: in 320,
@@ -197,16 +228,20 @@ fn gguf_q8_dense_lanes_match() {
         }
         let d_x = exec.to_device(&x).expect("x");
         let mut d_y = exec.alloc(batch * out_dim).expect("y");
-        exec.q8_0_gemm_repacked_mt(q, None, &d_x, &mut d_y, batch).expect("mt");
+        exec.q8_0_gemm_repacked_mt(q, None, &d_x, &mut d_y, batch)
+            .expect("mt");
         let y_mt = exec.to_host(&d_y).expect("h");
-        exec.q8_0_gemm_repacked(q, None, &d_x, &mut d_y, batch).expect("plain");
+        exec.q8_0_gemm_repacked(q, None, &d_x, &mut d_y, batch)
+            .expect("plain");
         let y_plain = exec.to_host(&d_y).expect("h");
         let mut y_gemv = vec![0f32; batch * out_dim];
         let mut xr = exec.alloc(in_dim).expect("xr");
         let mut yr = exec.alloc(out_dim).expect("yr");
         for r in 0..batch {
-            exec.copy_region(&d_x, r * in_dim, &mut xr, 0, in_dim).expect("copy");
-            exec.q8_0_gemv_repacked(q, None, &xr, &mut yr).expect("gemv");
+            exec.copy_region(&d_x, r * in_dim, &mut xr, 0, in_dim)
+                .expect("copy");
+            exec.q8_0_gemv_repacked(q, None, &xr, &mut yr)
+                .expect("gemv");
             y_gemv[r * out_dim..(r + 1) * out_dim].copy_from_slice(&exec.to_host(&yr).expect("h"));
         }
         eprintln!(
@@ -238,7 +273,8 @@ fn gguf_dump_prefill() {
     drop(map);
     let mut m = Qwen4ExpGpu::load_gguf_with_slots(&exec, &path, 4096, 1).expect("load gguf");
     let headroom = exec.vram_headroom().unwrap_or(0);
-    m.enable_moe_cache(headroom.saturating_sub(512 << 20)).expect("cache");
+    m.enable_moe_cache(headroom.saturating_sub(512 << 20))
+        .expect("cache");
     let text = std::env::var("QWEN38FN_PROMPT").unwrap_or_else(|_| PROMPT.to_owned());
     let prompt = tok.encode(&text).expect("encode");
     let logits = if std::env::var_os("QWEN38FN_DUMP_INCREMENTAL").is_some() {
@@ -256,7 +292,10 @@ fn gguf_dump_prefill() {
     };
     let mut ix: Vec<usize> = (0..logits.len()).collect();
     ix.sort_by(|&a, &b| logits[b].partial_cmp(&logits[a]).unwrap());
-    eprintln!("prompt {prompt:?} top5 {:?}", ix[..5].iter().map(|&i| (i, logits[i])).collect::<Vec<_>>());
+    eprintln!(
+        "prompt {prompt:?} top5 {:?}",
+        ix[..5].iter().map(|&i| (i, logits[i])).collect::<Vec<_>>()
+    );
 }
 
 /// Every k-quant dense type the GGUF carries (Q5_K, Q6_K, Q4_K), batch 1
@@ -314,9 +353,11 @@ fn gguf_kq_dense_lanes_match() {
         let d_x = exec.to_device(&x).expect("x");
         let mut d_xq = exec.alloc_i8(batch * in_dim).expect("xq");
         let mut d_xs = exec.alloc(batch * in_dim / 32).expect("xs");
-        exec.quantize_q8(&d_x, &mut d_xq, &mut d_xs, batch * in_dim).expect("quant");
+        exec.quantize_q8(&d_x, &mut d_xq, &mut d_xs, batch * in_dim)
+            .expect("quant");
         let mut d_sums = exec.alloc(batch * in_dim / 16).expect("sums");
-        exec.q8_sums_strided(&d_xq, &mut d_sums, in_dim, batch).expect("sums");
+        exec.q8_sums_strided(&d_xq, &mut d_sums, in_dim, batch)
+            .expect("sums");
         let needs = matches!(k.ty, GgmlType::Q4K | GgmlType::Q5K | GgmlType::Q4_0);
         let mut d_y = exec.alloc(batch * out_dim).expect("y");
         exec.kquant_gemm_dp4a(k, &d_xq, &d_xs, needs.then_some(&d_sums), &mut d_y, batch)
@@ -326,7 +367,8 @@ fn gguf_kq_dense_lanes_match() {
         let mut xr = exec.alloc(in_dim).expect("xr");
         let mut yr = exec.alloc(out_dim).expect("yr");
         for r in 0..batch {
-            exec.copy_region(&d_x, r * in_dim, &mut xr, 0, in_dim).expect("copy");
+            exec.copy_region(&d_x, r * in_dim, &mut xr, 0, in_dim)
+                .expect("copy");
             exec.kquant_gemv(k, &xr, &mut yr).expect("gemv");
             y_gemv[r * out_dim..(r + 1) * out_dim].copy_from_slice(&exec.to_host(&yr).expect("h"));
         }
@@ -357,13 +399,19 @@ fn gguf_l0_outproj_check() {
     let dir = std::path::PathBuf::from(dir);
     let rd = |n: &str| -> Vec<f32> {
         let b = std::fs::read(dir.join(n)).expect(n);
-        b.chunks_exact(4).map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]])).collect()
+        b.chunks_exact(4)
+            .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
+            .collect()
     };
     let core = rd("L0.gdn_core.bin");
     let mix = rd("L0.mix_out.bin");
     let map = MappedGguf::open(&path).expect("open gguf");
-    let w = exec.load_quantw(&map, "blk.0.ssm_out.weight").expect("ssm_out");
-    let paddock_engine::gpu::QuantW::Kq(k) = &w else { panic!() };
+    let w = exec
+        .load_quantw(&map, "blk.0.ssm_out.weight")
+        .expect("ssm_out");
+    let paddock_engine::gpu::QuantW::Kq(k) = &w else {
+        panic!()
+    };
     let (in_dim, out_dim) = (k.dims[0], k.dims[1]);
     let mut d_dq = exec.alloc(in_dim * out_dim).expect("dq");
     exec.kquant_dequant_rp(k, &mut d_dq).expect("dequant");
@@ -389,11 +437,13 @@ fn gguf_l0_outproj_check() {
         };
         eprintln!(
             "row {r}: cpu(outproj(core)) first3 {:?} last3 {:?} | dumped mix_out first3 {:?} last3 {:?} | rel {rel:.2e}",
-            &y[..3], &y[out_dim - 3..], &ours[..3], &ours[out_dim - 3..]
+            &y[..3],
+            &y[out_dim - 3..],
+            &ours[..3],
+            &ours[out_dim - 3..]
         );
     }
 }
-
 
 /// The parity gate: llama.cpp's own greedy path on the same file, teacher
 /// forced through our walk (`QWEN38FN_GGUF_TOP10` = one line per position:
@@ -424,7 +474,8 @@ fn gguf_teacher_forced_agreement() {
     drop(map);
     let mut m = Qwen4ExpGpu::load_gguf_with_slots(&exec, &path, 4096, 1).expect("load gguf");
     let headroom = exec.vram_headroom().unwrap_or(0);
-    m.enable_moe_cache(headroom.saturating_sub(512 << 20)).expect("cache");
+    m.enable_moe_cache(headroom.saturating_sub(512 << 20))
+        .expect("cache");
     let prompt = tok.encode(PROMPT).expect("encode");
     let steps: Vec<(u32, Vec<(u32, f32)>)> = std::fs::read_to_string(&top10)
         .expect("top10 file")
@@ -446,7 +497,12 @@ fn gguf_teacher_forced_agreement() {
         let v = logits[id as usize];
         logits.iter().filter(|&&x| x > v).count()
     };
-    let top1 = |logits: &[f32]| logits.iter().enumerate().fold(0usize, |b, (i, &x)| if x > logits[b] { i } else { b }) as u32;
+    let top1 = |logits: &[f32]| {
+        logits
+            .iter()
+            .enumerate()
+            .fold(0usize, |b, (i, &x)| if x > logits[b] { i } else { b }) as u32
+    };
     let mut logits = m.forward_prompt(&prompt).expect("prefill");
     let (mut agree, mut worst_rank) = (0usize, 0usize);
     for (pos, (chosen, tops)) in steps.iter().enumerate() {
@@ -454,7 +510,8 @@ fn gguf_teacher_forced_agreement() {
         let r = rank_of(&logits, *chosen);
         worst_rank = worst_rank.max(r);
         agree += usize::from(ours == *chosen);
-        let llama_gap = tops.first().map(|t| t.1).unwrap_or(0.0) - tops.get(1).map(|t| t.1).unwrap_or(-99.0);
+        let llama_gap =
+            tops.first().map(|t| t.1).unwrap_or(0.0) - tops.get(1).map(|t| t.1).unwrap_or(-99.0);
         eprintln!(
             "pos {pos:2}: llama {chosen:6} {:?} (margin {llama_gap:.2}) | ours top1 {ours:6} {:?}, llama's token at rank {r}",
             tok.decode(&[*chosen], false).unwrap_or_default(),
@@ -462,7 +519,17 @@ fn gguf_teacher_forced_agreement() {
         );
         logits = m.decode_step(*chosen).expect("decode");
     }
-    eprintln!("top-1 agreement {agree}/{} , worst rank of llama's token {worst_rank}", steps.len());
-    assert!(agree * 4 >= steps.len() * 3, "top-1 agreement {agree}/{} below 3/4", steps.len());
-    assert!(worst_rank < 5, "llama's chosen token fell to rank {worst_rank} (> top-5)");
+    eprintln!(
+        "top-1 agreement {agree}/{} , worst rank of llama's token {worst_rank}",
+        steps.len()
+    );
+    assert!(
+        agree * 4 >= steps.len() * 3,
+        "top-1 agreement {agree}/{} below 3/4",
+        steps.len()
+    );
+    assert!(
+        worst_rank < 5,
+        "llama's chosen token fell to rank {worst_rank} (> top-5)"
+    );
 }

@@ -1419,13 +1419,14 @@ fn build_generator(
             "cuda" => {
                 let exec = make_exec(pack)?;
                 drop(map);
-                let mut model = paddock_engine::gpu_model::qwen4exp::Qwen4ExpGpu::load_gguf_with_slots(
-                    &exec,
-                    path,
-                    max_ctx,
-                    max_batch.max(1),
-                )
-                .map_err(|e| e.to_string())?;
+                let mut model =
+                    paddock_engine::gpu_model::qwen4exp::Qwen4ExpGpu::load_gguf_with_slots(
+                        &exec,
+                        path,
+                        max_ctx,
+                        max_batch.max(1),
+                    )
+                    .map_err(|e| e.to_string())?;
                 let host = model.expert_host_bytes();
                 if host > 0 {
                     let headroom = exec.vram_headroom().unwrap_or(0);
