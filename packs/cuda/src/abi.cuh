@@ -2790,6 +2790,19 @@ struct KernelTableV1 {
     int (*bf16_pad_rows)(const void*, void*, uint32_t, uint32_t, uint32_t, void*);
     int (*bf16_hc_perm_pad)(const void*, void*, uint32_t, uint32_t, uint32_t,
                             uint32_t, void*);
+    // 575: MoE expert-offload cache resolve - expert ids -> slot ids with
+    // device-side LRU bookkeeping, emits the miss jobs. (idx, rows, n_slots,
+    // slot_of[n_expert], expert_in[S], last_use[S], tick, idx_slot[rows],
+    // jobs[2*rows], n_jobs, stats[2] (rows, misses accumulators), stream);
+    // rows <= n_slots.
+    int (*moe_cache_resolve)(const void*, uint32_t, uint32_t, void*, void*, void*,
+                             void*, void*, void*, void*, void*, void*);
+    // 576: MoE expert-offload cache fill - copy the resolve's miss jobs from
+    // the host-mapped mirror into their slots, six streams (gate/up/down x
+    // data/scales). (jobs, n_jobs (device), max_jobs, src[6], dst[6],
+    // bytes[6] (host u64 arrays), stream).
+    int (*moe_cache_fill)(const void*, const void*, uint32_t, const void*,
+                          const void*, const void*, void*);
 };
 
 } // extern "C"

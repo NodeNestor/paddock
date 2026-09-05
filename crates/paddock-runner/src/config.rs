@@ -23,6 +23,20 @@ pub struct KvOffload {
     pub nvme_path: Option<PathBuf>,
 }
 
+/// `[moe_offload]` - MoE expert offload: the routed-expert planes of a MoE
+/// model live in page-locked host RAM the GPU reads over PCIe, with a VRAM
+/// slot cache of the hot experts sized from what the KV plan leaves. Lets a
+/// model whose experts do not fit the card serve at cache-hit speed; only
+/// k-quant expert seats offload today. `vram_gb` caps the slot cache (unset =
+/// auto: everything the plan leaves). Lower `max_ctx` / `max_batch` to give
+/// the cache more room.
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct MoeOffload {
+    pub enabled: bool,
+    pub vram_gb: Option<f64>,
+}
+
 #[derive(Debug, Clone, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct Config {
@@ -92,6 +106,8 @@ pub struct Config {
     pub vram_budget: Option<u64>,
     /// See [`KvOffload`].
     pub kv_offload: KvOffload,
+    /// See [`MoeOffload`].
+    pub moe_offload: MoeOffload,
     /// Default max output tokens per reply when a request doesn't specify.
     pub max_tokens: Option<usize>,
     /// API key for Bearer auth. Empty + loopback bind = no auth; empty +
@@ -306,6 +322,7 @@ impl Default for Config {
             fp8_native: None,
             vram_budget: None,
             kv_offload: KvOffload::default(),
+            moe_offload: MoeOffload::default(),
             max_tokens: None,
             api_key: None,
             no_auth: false,

@@ -1146,8 +1146,8 @@ pub(super) fn moe_ffn(
         && exec.compute_capability().0 >= 8
         && paddock_models::dev_var_os!("PADDOCK_NO_QMOE_MMA").is_none();
     let kq_sorted_ok = seats_q8 || {
-        let pair_ok = match (&w.gate_exps, &w.up_exps) {
-            (ExpW::Kq(g), ExpW::Kq(u)) => g.ty == u.ty,
+        let pair_ok = match (w.gate_exps.kq(), w.up_exps.kq()) {
+            (Some(g), Some(u)) => g.ty == u.ty,
             _ => true,
         };
         let all_kq =
@@ -1389,8 +1389,8 @@ pub(super) fn moe_ffn(
                     max_blocks,
                 )?;
             }
-            match (&w.gate_exps, &w.up_exps) {
-                (ExpW::Kq(g), ExpW::Kq(u)) => {
+            match (w.gate_exps.kq(), w.up_exps.kq()) {
+                (Some(g), Some(u)) => {
                     let needs = matches!(g.ty, GgmlType::Q4K | GgmlType::Q5K | GgmlType::Q4_0);
                     if needs {
                         exec.q8_sums_strided(xq, ssums, embd, batch)?;
@@ -1424,8 +1424,8 @@ pub(super) fn moe_ffn(
                     }
                 }
             }
-            match &w.down_exps {
-                ExpW::Kq(d) => {
+            match w.down_exps.kq() {
+                Some(d) => {
                     let needs = matches!(d.ty, GgmlType::Q4K | GgmlType::Q5K | GgmlType::Q4_0);
                     if needs {
                         // sums over the SORTED fq rows (PAD rows hold exact zeros)
@@ -1445,7 +1445,11 @@ pub(super) fn moe_ffn(
                         max_blocks,
                     )?;
                 }
-                ExpW::Q8(d8) => {
+                None => {
+                    let d8 = w
+                        .down_exps
+                        .q8()
+                        .expect("an expert seat is Q8 when not k-quant");
                     if mma {
                         exec.q8_0_moe_down_mma(
                             d8,
@@ -1501,8 +1505,27 @@ pub(super) fn moe_ffn(
         // riding per-16 activation sums; ssums is reused across the two
         // stages (stream-ordered: gate_up consumes the xq sums before the
         // down stage overwrites with fq sums).
-        match (&w.gate_exps, &w.up_exps) {
-            (ExpW::Kq(g), ExpW::Kq(u)) => {
+        // MoE expert offload: when the layer carries a slot cache and this
+        // launch's rows fit it, resolve ids -> slots (LRU, device-side), fill
+        // the misses from the host mirror, and run the pair over the slot
+        // planes with the remapped ids. Otherwise the host-mapped planes
+        // serve directly (zero-copy).
+        let rows = batch * dims.n_active;
+        let cache = w
+            .cache
+            .as_ref()
+            .filter(|c| rows <= c.slots && rows <= c.max_rows);
+        if let Some(c) = cache {
+            exec.moe_cache_resolve(c, idx, rows)?;
+            exec.moe_cache_fill(c, rows)?;
+        }
+        let idx: &CudaSlice<u32> = cache.map_or(idx, |c| c.idx_slot());
+        let seats = match cache {
+            Some(c) => (Some(&c.gate), Some(&c.up), Some(&c.down)),
+            None => (w.gate_exps.kq(), w.up_exps.kq(), w.down_exps.kq()),
+        };
+        match (seats.0, seats.1) {
+            (Some(g), Some(u)) => {
                 let needs = matches!(g.ty, GgmlType::Q4K | GgmlType::Q5K | GgmlType::Q4_0)
                     || matches!(u.ty, GgmlType::Q4K | GgmlType::Q5K | GgmlType::Q4_0);
                 if needs {
@@ -1527,8 +1550,8 @@ pub(super) fn moe_ffn(
             }
         }
         exec.quantize_q8(fused, fq, fs, batch * dims.n_active * dims.moe_ff)?;
-        match &w.down_exps {
-            ExpW::Kq(d) => {
+        match seats.2 {
+            Some(d) => {
                 let needs = matches!(d.ty, GgmlType::Q4K | GgmlType::Q5K | GgmlType::Q4_0);
                 if needs {
                     exec.q8_sums_strided(fq, ssums, dims.moe_ff, batch * dims.n_active)?;
@@ -1545,7 +1568,11 @@ pub(super) fn moe_ffn(
                     batch,
                 )?;
             }
-            ExpW::Q8(d) => {
+            None => {
+                let d = w
+                    .down_exps
+                    .q8()
+                    .expect("an expert seat is Q8 when not k-quant");
                 exec.q8_0_moe_down(d, idx, topk_w, fq, fs, proj, dims.n_active, batch)?;
             }
         }

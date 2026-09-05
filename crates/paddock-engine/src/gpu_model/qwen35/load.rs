@@ -25,6 +25,29 @@ fn e4m3_to_f32(b: u8) -> f32 {
     }
 }
 
+/// One routed-expert seat of block `i`: the k-quant plane repacked into
+/// VRAM, or under `[moe_offload]` into device-mapped host memory
+/// (gpu/host_plane.rs) for the slot cache to serve. `None` when the tensor
+/// is not k-quant (the caller's Q8 path) or the pack lacks the k-quant MoE
+/// pair (PADDOCK_NO_MOE_KQ=1 restores the old load error for A/B).
+fn kq_expert_seat(
+    exec: &GpuExecutor,
+    map: &MappedGguf,
+    i: usize,
+    name: &str,
+) -> Result<Option<ExpW>, GpuError> {
+    if paddock_models::dev_var_os!("PADDOCK_NO_MOE_KQ").is_some() || !exec.has_kquant_moe() {
+        return Ok(None);
+    }
+    let full = format!("blk.{i}.{name}");
+    Ok(if crate::gpu::moe_offload().enabled {
+        exec.try_repack_kquant_host_mapped(map, &full)?
+            .map(ExpW::KqHost)
+    } else {
+        exec.try_repack_kquant(map, &full)?.map(ExpW::Kq)
+    })
+}
+
 impl GpuQwen35 {
     /// Load a Qwen3.5/3.6 GGUF onto `exec`'s device. Reads the `qwen35.*`
     /// metadata, classifies each block as DeltaNet or full-attn from
@@ -261,7 +284,36 @@ impl GpuQwen35 {
         max_ctx: usize,
         fp8_native_dir: Option<&std::path::Path>,
     ) -> Result<Self, GpuModelError> {
-        exec.vram_load_gate(map.total_len(), "qwen3.5/3.6")
+        // MoE expert offload (PADDOCK_MOE_HOST=1): the k-quant routed-expert
+        // planes land in device-mapped host memory (gpu/host_plane.rs), so
+        // they are not VRAM the gate should charge. The bytes it does not
+        // charge are exactly the tensors the loader will mirror: k-quant
+        // `*_exps` planes of the backbone; Q8 experts and the nextn/MTP
+        // experts stay resident and stay charged.
+        let moe_host = crate::gpu::moe_offload().enabled
+            && paddock_models::dev_var_os!("PADDOCK_NO_MOE_KQ").is_none()
+            && exec.has_kquant_moe();
+        let host_bytes: u64 = if moe_host {
+            map.tensor_infos()
+                .filter(|t| {
+                    t.name.starts_with("blk.")
+                        && t.name.ends_with("_exps.weight")
+                        && crate::gpu::kq_params(t.ggml_type).is_some()
+                })
+                .filter_map(|t| t.byte_size())
+                .sum()
+        } else {
+            0
+        };
+        if host_bytes > 0 {
+            tracing::info!(
+                host_gib = host_bytes as f64 / (1u64 << 30) as f64,
+                "qwen35 MoE expert offload: routed-expert planes will be host-mapped (PADDOCK_MOE_HOST)"
+            );
+        }
+        // The slot cache is sized AFTER the KV plan (enable_batch), from
+        // what the plan leaves - it is not charged here.
+        exec.vram_load_gate(map.total_len().saturating_sub(host_bytes), "qwen3.5/3.6")
             .map_err(GpuModelError::WontFit)?;
         // Single-stream engine: drop cudarc's cross-stream event tracking (pure
         // overhead here, and it blocks CUDA-graph capture). Must precede all allocs.
@@ -851,26 +903,21 @@ impl GpuQwen35 {
                 // per seat. gate and up must agree in residency (one fused
                 // kernel call); down is independent. Q8_0 tensors keep qt8 +
                 // the Q8 sorted family.
-                let moe_kq = paddock_models::dev_var_os!("PADDOCK_NO_MOE_KQ").is_none()
-                    && exec.has_kquant_moe();
-                let kq_exp = |name: &str| -> Result<Option<crate::gpu::RepackedKQ>, GpuError> {
-                    if !moe_kq {
-                        return Ok(None);
-                    }
-                    exec.try_repack_kquant(map, &format!("blk.{i}.{name}"))
-                };
+                // Under [moe_offload] the k-quant seats land in host-mapped
+                // memory instead (gpu/host_plane.rs); Q8 seats stay resident.
+                let kq_exp = |name: &str| kq_expert_seat(&exec, map, i, name);
                 let (gate_exps, up_exps) = match (
                     kq_exp("ffn_gate_exps.weight")?,
                     kq_exp("ffn_up_exps.weight")?,
                 ) {
-                    (Some(g), Some(u)) => (ExpW::Kq(g), ExpW::Kq(u)),
+                    (Some(g), Some(u)) => (g, u),
                     _ => (
                         ExpW::Q8(qt8("ffn_gate_exps.weight")?),
                         ExpW::Q8(qt8("ffn_up_exps.weight")?),
                     ),
                 };
                 let down_exps = match kq_exp("ffn_down_exps.weight")? {
-                    Some(d) => ExpW::Kq(d),
+                    Some(d) => d,
                     None => ExpW::Q8(qt8("ffn_down_exps.weight")?),
                 };
                 Ffn::Moe(MoeFfnWeights {
@@ -886,6 +933,7 @@ impl GpuQwen35 {
                     up_exps_fp4: None,
                     down_exps_fp4: None,
                     moe_zero_bias: None,
+                    cache: None,
                 })
             } else if let Some(nv) = (|| -> Option<Ffn> {
                 // Checkpoint-exact NVFP4 dense FFN (the qwen3.8
@@ -1731,26 +1779,19 @@ impl GpuQwen35 {
                     // backbone (k-quant files ship k-quant nextn experts too;
                     // the spec paths pin sorted_ok=false, so kq seats ride
                     // the token-batched pair there anyway).
-                    let kq_exp = |name: &str| -> Result<Option<crate::gpu::RepackedKQ>, GpuError> {
-                        if paddock_models::dev_var_os!("PADDOCK_NO_MOE_KQ").is_some()
-                            || !exec.has_kquant_moe()
-                        {
-                            return Ok(None);
-                        }
-                        exec.try_repack_kquant(map, &format!("blk.{i}.{name}"))
-                    };
+                    let kq_exp = |name: &str| kq_expert_seat(&exec, map, i, name);
                     let (gate_exps, up_exps) = match (
                         kq_exp("ffn_gate_exps.weight")?,
                         kq_exp("ffn_up_exps.weight")?,
                     ) {
-                        (Some(g), Some(u)) => (ExpW::Kq(g), ExpW::Kq(u)),
+                        (Some(g), Some(u)) => (g, u),
                         _ => (
                             ExpW::Q8(qt8("ffn_gate_exps.weight")?),
                             ExpW::Q8(qt8("ffn_up_exps.weight")?),
                         ),
                     };
                     let down_exps = match kq_exp("ffn_down_exps.weight")? {
-                        Some(d) => ExpW::Kq(d),
+                        Some(d) => d,
                         None => ExpW::Q8(qt8("ffn_down_exps.weight")?),
                     };
                     Ffn::Moe(MoeFfnWeights {
@@ -1766,6 +1807,7 @@ impl GpuQwen35 {
                         up_exps_fp4: None,
                         down_exps_fp4: None,
                         moe_zero_bias: None,
+                        cache: None,
                     })
                 } else {
                     Ffn::Dense {

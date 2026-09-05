@@ -1481,6 +1481,8 @@ static const KernelTableV1 PD_KERNELS = {
     pd_swiglu_mir,
     pd_bf16_pad_rows,
     pd_bf16_hc_perm_pad,
+    pd_moe_cache_resolve,
+    pd_moe_cache_fill,
 };
 
 PD_EXPORT const PackInfo* paddock_pack_info(void) {
