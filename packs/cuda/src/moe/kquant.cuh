@@ -56,9 +56,10 @@ __global__ void __launch_bounds__(256) pd_kquant_moe_gate_up_kernel(
     const uint32_t e = idx[(size_t)b * n_active + slot];
     const uint32_t gdb = pd_kq_datab(gdt), udb = pd_kq_datab(udt);
     const uint8_t* grow = gd + ((size_t)e * ff + o) * n_super * gdb;
-    const uint8_t* grec = gsc + ((size_t)e * ff + o) * n_super * PD_KQ_SCB;
+    const uint32_t gscb = pd_kq_scb(gdt), uscb = pd_kq_scb(udt);
+    const uint8_t* grec = gsc + ((size_t)e * ff + o) * n_super * gscb;
     const uint8_t* urow = ud_ + ((size_t)e * ff + o) * n_super * udb;
-    const uint8_t* urec = usc + ((size_t)e * ff + o) * n_super * PD_KQ_SCB;
+    const uint8_t* urec = usc + ((size_t)e * ff + o) * n_super * uscb;
     const int8_t* xrow = xq + (size_t)b * in_dim;
     const float* xsc = xs + (size_t)b * (in_dim >> 5);
     const float* xsm = xsums + (size_t)b * (in_dim >> 4);
@@ -73,7 +74,7 @@ __global__ void __launch_bounds__(256) pd_kquant_moe_gate_up_kernel(
         int wq[4];
         float f, g;
         pd_kq_win_unpack(gdt, grow + (size_t)s * gdb,
-                         grec + (size_t)s * PD_KQ_SCB, w, wq, &f, &g);
+                         grec + (size_t)s * gscb, w, wq, &f, &g);
         int si = __dp4a(wq[0], xv.x, 0);
         si = __dp4a(wq[1], xv.y, si);
         si = __dp4a(wq[2], xv.z, si);
@@ -81,7 +82,7 @@ __global__ void __launch_bounds__(256) pd_kquant_moe_gate_up_kernel(
         accg += f * (x_s * (float)si);
         if (gmu) accg += g * (x_s * xsm[base >> 4]);
         pd_kq_win_unpack(udt, urow + (size_t)s * udb,
-                         urec + (size_t)s * PD_KQ_SCB, w, wq, &f, &g);
+                         urec + (size_t)s * uscb, w, wq, &f, &g);
         si = __dp4a(wq[0], xv.x, 0);
         si = __dp4a(wq[1], xv.y, si);
         si = __dp4a(wq[2], xv.z, si);
@@ -165,7 +166,8 @@ __global__ void __launch_bounds__(512) pd_kquant_moe_down_kernel(
         const size_t srow = (size_t)b * n_active + warp;
         const uint32_t e = idx[srow];
         const uint8_t* row = dd + ((size_t)e * embd + o) * n_super * ddb;
-        const uint8_t* rrec = dsc + ((size_t)e * embd + o) * n_super * PD_KQ_SCB;
+        const uint32_t dscb = pd_kq_scb(ddt);
+        const uint8_t* rrec = dsc + ((size_t)e * embd + o) * n_super * dscb;
         const int8_t* xrow = fq + srow * ff;
         const float* xsc = fs + srow * (ff >> 5);
         const float* xsm = fsums + srow * (ff >> 4);
@@ -176,7 +178,7 @@ __global__ void __launch_bounds__(512) pd_kquant_moe_down_kernel(
             int wq[4];
             float f, g;
             pd_kq_win_unpack(ddt, row + (size_t)s * ddb,
-                             rrec + (size_t)s * PD_KQ_SCB, w, wq, &f, &g);
+                             rrec + (size_t)s * dscb, w, wq, &f, &g);
             int si = __dp4a(wq[0], xv.x, 0);
             si = __dp4a(wq[1], xv.y, si);
             si = __dp4a(wq[2], xv.z, si);

@@ -302,6 +302,20 @@ pub(crate) fn kq_params(ty: GgmlType) -> Option<(u32, usize, usize)> {
     }
 }
 
+/// Repacked scale-record bytes per super-block (the pack's `pd_kq_scb`):
+/// the k-quant family's fixed 24, the i-quant family's slimmer records
+/// (`quant/iquant.cuh::pd_iq_scb`). The scale stream of a plane is
+/// `n_super * kq_scb(ty)` bytes.
+pub(crate) fn kq_scb(ty: GgmlType) -> usize {
+    match ty {
+        GgmlType::Iq2Xxs | GgmlType::Iq3Xxs | GgmlType::Iq1S => 4,
+        GgmlType::Iq3S => 8,
+        GgmlType::Iq2Xs | GgmlType::Iq2S | GgmlType::Iq1M => 12,
+        GgmlType::Iq4Nl => 16,
+        _ => 24,
+    }
+}
+
 /// The i-quant family + IQ4_NL: served through the k-quant repack, dequant
 /// and the token-batched MoE pair only (no dense GEMV / mma lanes yet).
 pub(crate) fn kq_is_iq(ty: GgmlType) -> bool {

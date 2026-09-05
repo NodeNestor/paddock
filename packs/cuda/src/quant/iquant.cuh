@@ -62,6 +62,24 @@ __host__ __device__ __forceinline__ uint32_t pd_iq_srcb(uint32_t dt) {
     }
 }
 
+// repacked scale-record bytes per super-block: what pd_iq_repack_super writes
+// and the window unpack reads (d f16 [+ the sub-block scale bytes]), rounded
+// to 4. The k-quant family keeps its fixed 24-byte record (PD_KQ_SCB); the
+// slimmer i-quant records are what let a 1-2 bit expert set stay near its
+// raw size in host-mapped memory (a 24-byte record is +48% on IQ1_S).
+__host__ __device__ __forceinline__ uint32_t pd_iq_scb(uint32_t dt) {
+    switch (dt) {
+        case PD_KQ_IQ2XXS: return 4u;   // d
+        case PD_KQ_IQ2XS: return 12u;   // d + scales[8]
+        case PD_KQ_IQ2S: return 12u;    // d + scales[8]
+        case PD_KQ_IQ3XXS: return 4u;   // d
+        case PD_KQ_IQ3S: return 8u;     // d + scales[4]
+        case PD_KQ_IQ1S: return 4u;     // d
+        case PD_KQ_IQ1M: return 12u;    // d (folded) + scales[8]
+        default: return 16u;            // IQ4_NL: 8 x f16 d
+    }
+}
+
 // repacked data bytes per super-block (16-byte multiples)
 __host__ __device__ __forceinline__ uint32_t pd_iq_datab(uint32_t dt) {
     switch (dt) {
@@ -104,11 +122,11 @@ __device__ __forceinline__ float pd_iq1m_d(const uint8_t* scales) {
     return __half2float(h);
 }
 
-// ---- repack: raw super-block -> (data payload, 24-byte scale record) --------
+// ---- repack: raw super-block -> (data payload, pd_iq_scb-byte scale record) --
 __device__ __forceinline__ void pd_iq_repack_super(uint32_t dt, const uint8_t* __restrict__ s,
                                                    uint8_t* __restrict__ d,
                                                    uint8_t* __restrict__ rec) {
-    for (uint32_t i = 0; i < 24u; ++i) rec[i] = 0;
+    for (uint32_t i = 0; i < pd_iq_scb(dt); ++i) rec[i] = 0;
     switch (dt) {
         case PD_KQ_IQ2XXS:
             for (uint32_t i = 0; i < 64u; ++i) d[i] = s[2u + i];

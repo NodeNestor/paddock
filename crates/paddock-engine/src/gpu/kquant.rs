@@ -197,7 +197,7 @@ impl GpuExecutor {
             )));
         }
         let mut data = self.alloc_u8(n_super * data_b)?;
-        let mut scales = self.alloc_u8(n_super * 24)?;
+        let mut scales = self.alloc_u8(n_super * kq_scb(ty))?;
         self.with_staged_raw(bytes, |sp| {
             let (dp, _g2) = data.device_ptr_mut(&self.stream);
             let (scp, _g3) = scales.device_ptr_mut(&self.stream);
@@ -307,8 +307,9 @@ impl GpuExecutor {
             .kernels
             .kquant_repack
             .ok_or(GpuError::MissingOp("kquant_repack"))?;
+        let scb = kq_scb(ty);
         let mut data = self.alloc_u8(total_super * data_b)?;
-        let mut scales = self.alloc_u8(total_super * 24)?;
+        let mut scales = self.alloc_u8(total_super * scb)?;
         let mut done = 0usize;
         for name in names {
             let (info, bytes) = map.tensor_bytes(name)?;
@@ -322,7 +323,7 @@ impl GpuExecutor {
                     f(
                         sp as *const _,
                         (dp + (done * data_b) as u64) as *mut _,
-                        (scp + (done * 24) as u64) as *mut _,
+                        (scp + (done * scb) as u64) as *mut _,
                         n_super as u64,
                         raw_id,
                         self.stream_ptr(),
