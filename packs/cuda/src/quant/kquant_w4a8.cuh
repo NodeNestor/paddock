@@ -743,6 +743,22 @@ __host__ __device__ __forceinline__ uint32_t pd_kq_datab(uint32_t dt) {
          : dt == PD_KQ_Q5K ? PD_KQ5_DATA : PD_KQ4_DATA;
 }
 
+// Bytes one weight ROW of in_dim occupies in the data / scale streams. The
+// 256-block families need a whole number of superblocks per row. IQ4_NL is
+// 32-weight blocks whose repacked form is 16 payload bytes + one f16 d, so a
+// row is simply in_dim/32 blocks laid flat: superblock s of the row is still
+// at s*128 / s*16, and a row that is not a whole number of superblocks
+// (Qwen3.8-Flash-Next's expert down, 640 = 2.5) carries no padding at all -
+// the walk over the row is bounded by in_dim, never by the superblock count.
+__host__ __device__ __forceinline__ uint32_t pd_kq_row_datab(uint32_t dt, uint32_t in_dim) {
+    if (dt == PD_KQ_IQ4NL_ID) return (in_dim >> 5) * 16u;
+    return ((in_dim + 255u) >> 8) * pd_kq_datab(dt);
+}
+__host__ __device__ __forceinline__ uint32_t pd_kq_row_scb(uint32_t dt, uint32_t in_dim) {
+    if (dt == PD_KQ_IQ4NL_ID) return (in_dim >> 5) * 2u;
+    return ((in_dim + 255u) >> 8) * pd_kq_scb(dt);
+}
+
 // Unpack one 16-weight window (window w of super sb/rec) of a k-quant row to
 // 4 packed s8 words + its (scale f, mu g) pair. Ported per-format from the
 // dense dp4a kernel's lane windows; g is 0 for the mu-free formats.

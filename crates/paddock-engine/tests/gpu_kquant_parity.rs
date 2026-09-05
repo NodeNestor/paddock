@@ -2975,3 +2975,113 @@ fn shexp_kquant_lanes_match_reference() {
         }
     }
 }
+
+/// Rows that are not a whole number of superblocks (Qwen3.8-Flash-Next's
+/// expert `down`: in_dim 640 = 2.5 superblocks, IQ4_NL only): the repack lays
+/// the row's 32-blocks flat with no padding and the token-batched MoE down
+/// strides rows by in_dim/32 blocks. Synthesized IQ4_NL rows (any 18 bytes
+/// are a valid block), f64 CPU reference over the raw blocks; the repacked
+/// dequant equals the raw dequant element for element.
+#[test]
+fn kq_moe_down_partial_superblock_rows_match_reference() {
+    let Some(exec) = common::gpu() else {
+        return;
+    };
+    if !exec.has_kquant_moe() || !exec.has_kquant_iq() {
+        eprintln!("pack lacks the k-quant MoE pair / i-quant seats - skipping");
+        return;
+    }
+    const KV: [i8; 16] = [
+        -127, -104, -83, -65, -49, -35, -22, -10, 1, 13, 25, 38, 53, 69, 89, 113,
+    ];
+    let (ff, embd, ne) = (640usize, 24usize, 5usize);
+    let blocks = ff / 32;
+    // synth_q40 emits {f16 d, 16 bytes}: the IQ4_NL block layout exactly
+    let raw = synth_q40(ne * embd * blocks, 77);
+    let down = exec
+        .repack_kquant_raw(
+            &raw,
+            vec![ff, embd, ne],
+            GgmlType::Iq4Nl,
+            "synthetic down [640, 24, 5]",
+        )
+        .expect("repack flat rows");
+    assert_eq!(
+        down.data.len(),
+        ne * embd * blocks * 16,
+        "flat data stream, no padding"
+    );
+    assert_eq!(down.scales.len(), ne * embd * blocks * 2, "flat d stream");
+    assert_eq!(down.dims, vec![ff, embd, ne]);
+    let batch = 3usize;
+    let n_active = 4usize;
+    let idx_h: Vec<u32> = (0..batch * n_active)
+        .map(|i| ((i as u32).wrapping_mul(2654435761) >> 7) % ne as u32)
+        .collect();
+    let topk_h: Vec<f32> = (0..batch * n_active)
+        .map(|i| 1.0 / (1.0 + (i % n_active) as f32))
+        .collect();
+    let d_idx = exec.to_device_u32(&idx_h).expect("idx");
+    let d_topk = exec.to_device(&topk_h).expect("topk");
+    let act = deterministic_input(batch * n_active * ff, 5);
+    let d_act = exec.to_device(&act).expect("act");
+    let mut d_fq = exec.alloc_i8(batch * n_active * ff).expect("fq");
+    let mut d_fs = exec.alloc(batch * n_active * ff / 32).expect("fs");
+    exec.quantize_q8(&d_act, &mut d_fq, &mut d_fs, batch * n_active * ff)
+        .expect("fq quant");
+    let mut d_out = exec.alloc(batch * embd).expect("out");
+    exec.kquant_moe_down(
+        &down, &d_idx, &d_topk, &d_fq, &d_fs, None, &mut d_out, n_active, batch,
+    )
+    .expect("down on flat rows");
+    let out_gpu = exec.to_host(&d_out).expect("out host");
+    let (fq, fs) = cpu_quantize_q8(&act);
+    let deq_row = |row: usize| -> Vec<f32> {
+        let mut v = Vec::with_capacity(ff);
+        for j in 0..blocks {
+            let blk = &raw[(row * blocks + j) * 18..(row * blocks + j + 1) * 18];
+            let d = f16(&blk[0..2]);
+            let lo: Vec<f32> = (0..16)
+                .map(|i| KV[(blk[2 + i] & 0xf) as usize] as f32 * d)
+                .collect();
+            let hi: Vec<f32> = (0..16)
+                .map(|i| KV[(blk[2 + i] >> 4) as usize] as f32 * d)
+                .collect();
+            v.extend(lo);
+            v.extend(hi);
+        }
+        v
+    };
+    let mut out_ref = vec![0f32; batch * embd];
+    for b in 0..batch {
+        for o in 0..embd {
+            let mut v = 0f64;
+            for slot in 0..n_active {
+                let srow = b * n_active + slot;
+                let e = idx_h[srow] as usize;
+                let w = deq_row(e * embd + o);
+                let mut dot = 0f64;
+                for i in 0..ff {
+                    dot += w[i] as f64
+                        * (fq[srow * ff + i] as f32 * fs[srow * (ff / 32) + i / 32]) as f64;
+                }
+                v += topk_h[srow] as f64 * dot;
+            }
+            out_ref[b * embd + o] = v as f32;
+        }
+    }
+    let e2 = rel_err(&out_gpu, &out_ref);
+    eprintln!("kq moe down on 640-wide flat IQ4_NL rows vs f64 ref rel_err {e2:.2e}");
+    assert!(e2 < 5e-4, "flat-row down mismatch ({e2:.2e})");
+    let mut d_dq = exec.alloc(ne * embd * ff).expect("dq");
+    exec.kquant_dequant_rp(&down, &mut d_dq)
+        .expect("dequant rp");
+    let dq = exec.to_host(&d_dq).expect("dq host");
+    for r in 0..ne * embd {
+        let want = deq_row(r);
+        assert!(
+            dq[r * ff..(r + 1) * ff] == want[..],
+            "row {r}: repacked dequant differs from raw"
+        );
+    }
+}

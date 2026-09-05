@@ -188,7 +188,35 @@ impl GpuExecutor {
             .kernels
             .kquant_repack
             .ok_or(GpuError::MissingOp("kquant_repack"))?;
-        let n_super = dims.iter().product::<usize>() / 256;
+        // Rows whose in_dim is not a whole number of 256-weight superblocks
+        // (Qwen3.8-Flash-Next's expert `down`: 640 = 2.5 superblocks) exist
+        // only in the 32-block types - the 256-block families cannot encode
+        // such a row, which is why llama.cpp falls back to IQ4_NL there. An
+        // IQ4_NL row is its in_dim/32 blocks laid flat (16 payload bytes + one
+        // f16 d each), so no padding is needed: the repack runs over the
+        // tensor's whole block stream 8 blocks at a time and the kernels
+        // stride rows by in_dim/32 blocks (`pd_kq_row_datab`). The stream is
+        // required to be a whole number of superblocks per expert so the
+        // slot cache's per-expert byte ranges stay exact.
+        let in_dim = dims[0];
+        let n_super = if in_dim.is_multiple_of(256) {
+            dims.iter().product::<usize>() / 256
+        } else {
+            if ty != GgmlType::Iq4Nl || !in_dim.is_multiple_of(32) {
+                return Err(GpuError::Driver(format!(
+                    "kquant repack {what}: in_dim {in_dim} is not superblock-aligned and {ty:?}                      has no flat 32-block row layout (IQ4_NL only)"
+                )));
+            }
+            let per_row = in_dim / 32;
+            let per_expert = per_row * dims.get(1).copied().unwrap_or(1);
+            if !per_expert.is_multiple_of(8) {
+                return Err(GpuError::Driver(format!(
+                    "kquant repack {what}: {per_expert} blocks per [{in_dim} x {}] plane is not a                      whole number of superblocks",
+                    dims.get(1).copied().unwrap_or(1)
+                )));
+            }
+            dims.iter().product::<usize>() / 32 / 8
+        };
         if bytes.len() != n_super * raw_b {
             return Err(GpuError::Driver(format!(
                 "kquant repack {what}: {} raw bytes for {n_super} superblocks (want {})",
@@ -419,7 +447,11 @@ impl GpuExecutor {
             .kquant_dequant_rp
             .ok_or(GpuError::MissingOp("kquant_dequant_rp"))?;
         let (raw_id, _, _) = kq_params(w.ty).expect("RepackedKQ holds a k-quant type");
-        let n_super = w.dims.iter().product::<usize>() / 256;
+        // off the stream, not the dims: rows padded to whole superblocks
+        // (partial-superblock in_dim, see `repack_kquant_raw`) carry more
+        // superblocks than `dims.product() / 256`
+        let (_, _, data_b) = kq_params(w.ty).expect("RepackedKQ holds a k-quant type");
+        let n_super = w.data.len() / data_b;
         debug_assert!(dst.len() >= n_super * 256);
         let (dp, _g1) = w.data.device_ptr(&self.stream);
         let (scp, _g2) = w.scales.device_ptr(&self.stream);

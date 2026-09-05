@@ -807,7 +807,7 @@ PD_EXPORT
 int pd_kquant_dequant_rp(const void* data, const void* scales, void* dst,
                          uint64_t n_super, uint32_t dtype, void* stream) {
     if (n_super == 0) return 0;
-    if (!pd_kq_valid(dtype)) return cudaErrorInvalidValue;
+    if (!pd_kq_valid(dtype) && !pd_kq_valid_iq(dtype)) return cudaErrorInvalidValue;
     uint64_t blocks = n_super < 65535u ? n_super : 65535u;
     pd_kquant_dequant_rp_kernel<<<(uint32_t)blocks, 256, 0, (cudaStream_t)stream>>>(
         (const uint8_t*)data, (const uint8_t*)scales, (float*)dst, n_super, dtype);

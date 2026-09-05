@@ -52,14 +52,15 @@ __global__ void __launch_bounds__(256) pd_kquant_moe_gate_up_kernel(
     PD_PDL_ARM();
     const uint32_t o = blockIdx.x, slot = blockIdx.y, b = blockIdx.z;
     const uint32_t tid = threadIdx.x, nth = blockDim.x;
-    const uint32_t n_super = in_dim >> 8;
     const uint32_t e = idx[(size_t)b * n_active + slot];
     const uint32_t gdb = pd_kq_datab(gdt), udb = pd_kq_datab(udt);
-    const uint8_t* grow = gd + ((size_t)e * ff + o) * n_super * gdb;
     const uint32_t gscb = pd_kq_scb(gdt), uscb = pd_kq_scb(udt);
-    const uint8_t* grec = gsc + ((size_t)e * ff + o) * n_super * gscb;
-    const uint8_t* urow = ud_ + ((size_t)e * ff + o) * n_super * udb;
-    const uint8_t* urec = usc + ((size_t)e * ff + o) * n_super * uscb;
+    // row strides by type: whole superblocks, or IQ4_NL's flat 32-block rows
+    // (a row that is not a whole number of superblocks carries no padding)
+    const uint8_t* grow = gd + ((size_t)e * ff + o) * pd_kq_row_datab(gdt, in_dim);
+    const uint8_t* grec = gsc + ((size_t)e * ff + o) * pd_kq_row_scb(gdt, in_dim);
+    const uint8_t* urow = ud_ + ((size_t)e * ff + o) * pd_kq_row_datab(udt, in_dim);
+    const uint8_t* urec = usc + ((size_t)e * ff + o) * pd_kq_row_scb(udt, in_dim);
     const int8_t* xrow = xq + (size_t)b * in_dim;
     const float* xsc = xs + (size_t)b * (in_dim >> 5);
     const float* xsm = xsums + (size_t)b * (in_dim >> 4);
@@ -114,7 +115,9 @@ int pd_kquant_moe_gate_up(const void* gate_data, const void* gate_scales,
                           uint32_t ff, uint32_t n_active, uint32_t batch,
                           uint32_t gdt, uint32_t udt, void* stream) {
     if (ff == 0 || n_active == 0 || batch == 0) return 0;
-    if ((in_dim & 255u) != 0) return cudaErrorInvalidValue;
+    if ((in_dim & 31u) != 0) return cudaErrorInvalidValue;
+    if ((in_dim & 255u) != 0 && !(gdt == PD_KQ_IQ4NL_ID && udt == PD_KQ_IQ4NL_ID))
+        return cudaErrorInvalidValue;   // partial superblocks: IQ4_NL's flat rows only
     if (!(pd_kq_valid(gdt) || pd_kq_valid_iq(gdt)) || !(pd_kq_valid(udt) || pd_kq_valid_iq(udt)))
         return cudaErrorInvalidValue;
     const bool mu = gdt == PD_KQ_Q4K || gdt == PD_KQ_Q5K || gdt == PD_KQ_Q40 ||
@@ -158,16 +161,16 @@ __global__ void __launch_bounds__(512) pd_kquant_moe_down_kernel(
     PD_PDL_ARM();
     const uint32_t o = blockIdx.x, b = blockIdx.y;
     const uint32_t lane = threadIdx.x & 31u, warp = threadIdx.x >> 5;
-    const uint32_t n_super = ff >> 8;
     const uint32_t ddb = pd_kq_datab(ddt);
     const bool mu = ddt == PD_KQ_Q4K || ddt == PD_KQ_Q5K || ddt == PD_KQ_Q40;
     __shared__ float sh[16];
     if (warp < n_active) {
         const size_t srow = (size_t)b * n_active + warp;
         const uint32_t e = idx[srow];
-        const uint8_t* row = dd + ((size_t)e * embd + o) * n_super * ddb;
         const uint32_t dscb = pd_kq_scb(ddt);
-        const uint8_t* rrec = dsc + ((size_t)e * embd + o) * n_super * dscb;
+        // row strides by type (IQ4_NL: flat 32-block rows, no padding)
+        const uint8_t* row = dd + ((size_t)e * embd + o) * pd_kq_row_datab(ddt, ff);
+        const uint8_t* rrec = dsc + ((size_t)e * embd + o) * pd_kq_row_scb(ddt, ff);
         const int8_t* xrow = fq + srow * ff;
         const float* xsc = fs + srow * (ff >> 5);
         const float* xsm = fsums + srow * (ff >> 4);
@@ -206,7 +209,9 @@ int pd_kquant_moe_down(const void* down_data, const void* down_scales,
                        uint32_t ff, uint32_t embd, uint32_t n_active,
                        uint32_t batch, uint32_t ddt, void* stream) {
     if (embd == 0 || n_active == 0 || batch == 0) return 0;
-    if ((ff & 255u) != 0 || n_active > 16u) return cudaErrorInvalidValue;
+    if ((ff & 31u) != 0 || n_active > 16u) return cudaErrorInvalidValue;
+    if ((ff & 255u) != 0 && ddt != PD_KQ_IQ4NL_ID)
+        return cudaErrorInvalidValue;   // partial superblocks: IQ4_NL's flat rows only
     if (!pd_kq_valid(ddt) && !pd_kq_valid_iq(ddt)) return cudaErrorInvalidValue;
     if ((ddt == PD_KQ_Q4K || ddt == PD_KQ_Q5K || ddt == PD_KQ_Q40) && fsums == nullptr)
         return cudaErrorInvalidValue;
