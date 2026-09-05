@@ -277,19 +277,7 @@ fn gguf_dump_prefill() {
         .expect("cache");
     let text = std::env::var("QWEN38FN_PROMPT").unwrap_or_else(|_| PROMPT.to_owned());
     let prompt = tok.encode(&text).expect("encode");
-    let logits = if std::env::var_os("QWEN38FN_DUMP_INCREMENTAL").is_some() {
-        // one dump directory per step: <dir>/step<k>
-        let base = std::env::var("PADDOCK_Q38FN_DUMP").unwrap();
-        unsafe { std::env::set_var("PADDOCK_Q38FN_DUMP", format!("{base}/step0")) };
-        let mut l = m.forward_prompt(&prompt[..1]).expect("prefill 1");
-        for (k, &t) in prompt[1..].iter().enumerate() {
-            unsafe { std::env::set_var("PADDOCK_Q38FN_DUMP", format!("{base}/step{}", k + 1)) };
-            l = m.decode_step(t).expect("decode");
-        }
-        l
-    } else {
-        m.forward_prompt(&prompt).expect("prefill")
-    };
+    let logits = m.forward_prompt(&prompt).expect("prefill");
     let mut ix: Vec<usize> = (0..logits.len()).collect();
     ix.sort_by(|&a, &b| logits[b].partial_cmp(&logits[a]).unwrap());
     eprintln!(

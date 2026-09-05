@@ -1017,22 +1017,6 @@ fn kq_matmul(
     batch: usize,
     stage: &mut DenseStage,
 ) -> Result<(), GpuError> {
-    // Localizer (PADDOCK_Q4X_KQ_ROWLOOP=1): every row through the batch-1
-    // GEMV, so a prefill disagreement can be pinned on the batched lanes.
-    if batch > 1 && std::env::var_os("PADDOCK_Q4X_KQ_ROWLOOP").is_some() {
-        let (in_dim, out_dim) = (w.dims()[0], w.dims()[1]);
-        let mut xr: CudaSlice<f32> = e.alloc(in_dim)?;
-        let mut yr: CudaSlice<f32> = e.alloc(out_dim)?;
-        for r in 0..batch {
-            e.copy_region(x, r * in_dim, &mut xr, 0, in_dim)?;
-            match w {
-                QuantW::Q8(q) => e.q8_0_gemv_repacked(q, None, &xr, &mut yr)?,
-                QuantW::Kq(k) => e.kquant_gemv(k, &xr, &mut yr)?,
-            }
-            e.copy_region(&yr, 0, y, r * out_dim, out_dim)?;
-        }
-        return Ok(());
-    }
     match w {
         QuantW::Q8(q) => {
             // the qwen35 `mm_q8` ladder: gemv, the small-batch tiled GEMM,
@@ -1128,7 +1112,7 @@ pub enum ExpertSeats {
         gate: KqSeat,
         up: KqSeat,
         down: KqSeat,
-        cache: Option<ExpertCache>,
+        cache: Option<Box<ExpertCache>>,
     },
 }
 

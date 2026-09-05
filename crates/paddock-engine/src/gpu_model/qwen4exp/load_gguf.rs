@@ -265,7 +265,7 @@ pub(super) fn load_layer(
             // the converter stores -exp(A_log); the gate kernel wants that,
             // the raw plane is kept for the graph's own use
             let ssm_a = f32_vec(map, &format!("{p}.ssm_a"), hv)?;
-            if ssm_a.iter().any(|&a| !(a < 0.0)) {
+            if !ssm_a.iter().all(|&a| a < 0.0) {
                 return Err(unsupported(format!(
                     "{p}.ssm_a: expected -exp(A_log) (all negative), got {ssm_a:?}"
                 )));

@@ -176,7 +176,7 @@ pub enum PleSource {
 /// Bytes one `width`-wide row occupies in the host row decoder's types.
 /// `None` for a type it does not decode.
 pub(super) fn ple_row_bytes(ty: GgmlType, width: usize) -> Option<usize> {
-    let blocks32 = |bytes: usize| (width % 32 == 0).then_some(width / 32 * bytes);
+    let blocks32 = |bytes: usize| width.is_multiple_of(32).then_some(width / 32 * bytes);
     match ty {
         GgmlType::F32 => Some(width * 4),
         GgmlType::F16 | GgmlType::Bf16 => Some(width * 2),
@@ -582,11 +582,8 @@ impl Qwen4ExpGpu {
         let hash = Qwen4ExpConfig::ple_hash_from_gguf(map.gguf())
             .map_err(|e| GpuModelError::Unsupported(format!("qwen4exp gguf ple: {e}")))?;
         let mut layers = Vec::with_capacity(cfg.n_layer);
-        let trace = std::env::var_os("PADDOCK_Q4X_LOAD_TRACE").is_some();
         for li in 0..cfg.n_layer {
-            if trace {
-                eprintln!("[q4x-gguf] layer {li} ({:?})", cfg.blocks[li]);
-            }
+            tracing::debug!("qwen4exp gguf: layer {li} ({:?})", cfg.blocks[li]);
             let mut layer = super::load_gguf::load_layer(exec, &map, &cfg, li)?;
             if cfg.ple_layers.contains(&li) {
                 layer.ple = Some(super::load_gguf::load_ple(exec, &map, &cfg, li, &hash)?);
@@ -594,21 +591,9 @@ impl Qwen4ExpGpu {
             }
             layers.push(layer);
         }
-        if trace {
-            eprintln!("[q4x-gguf] token_embd");
-        }
         let embed = super::load_gguf::load_embed(exec, &map, &cfg)?;
-        if trace {
-            eprintln!("[q4x-gguf] output head");
-        }
         let lm_head = super::load_gguf::load_head(exec, &map, &cfg)?;
-        if trace {
-            eprintln!("[q4x-gguf] output_hc");
-        }
         let final_mix = super::load_gguf::hc_weights(exec, &map, &cfg, "output_hc", false)?;
-        if trace {
-            eprintln!("[q4x-gguf] state + scratch");
-        }
         let src = {
             let name = super::load_gguf::PLE_TABLE.to_owned();
             let (info, _) = map
@@ -693,7 +678,7 @@ impl Qwen4ExpGpu {
             };
             vram += cache.vram_bytes();
             if let ExpertSeats::Kq { cache: c, .. } = &mut l.moe.seats {
-                *c = Some(cache);
+                *c = Some(Box::new(cache));
             }
             seated += 1;
         }
@@ -2598,10 +2583,6 @@ fn gather_ple_rows_gguf(
     let rows = table.len() / row_bytes;
     let eos = c.bos_id as i64;
     let mut out = vec![0f32; n * c.ple_embed];
-    // localizer: PADDOCK_Q4X_PLE_ZERO=1 feeds zero n-gram rows
-    if std::env::var_os("PADDOCK_Q4X_PLE_ZERO").is_some() {
-        return Ok(out);
-    }
     for t in 0..n {
         let w3 = rq::ple_window(stream, first + t, eos);
         let row_ids = rq::ple_ngram_ids(
@@ -3680,7 +3661,7 @@ fn moe_pass(
             up,
             down,
             cache,
-        } => kq_moe_routed(e, c, gate, up, down, cache.as_ref(), sc, n)?,
+        } => kq_moe_routed(e, c, gate, up, down, cache.as_deref(), sc, n)?,
     }
     if moe_forked {
         e.side_join()?;
