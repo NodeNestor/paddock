@@ -28,6 +28,10 @@ struct Cli {
     /// from 11540)
     #[arg(long, value_name = "PORT")]
     port: Option<u16>,
+    /// Behind a reverse proxy: require the API key from loopback callers too
+    /// (every caller arrives from 127.0.0.1 there)
+    #[arg(long)]
+    trusted_proxy: bool,
     /// Directory to scan for GGUF models (repeatable)
     #[arg(long = "model-dir", value_name = "PATH")]
     model_dir: Vec<std::path::PathBuf>,
@@ -667,6 +671,9 @@ fn main() -> std::process::ExitCode {
             }
             if let Some(p) = cli.port {
                 cfg.port = p;
+            }
+            if cli.trusted_proxy {
+                cfg.trusted_proxy = true;
             }
             if !cli.model_dir.is_empty() {
                 cfg.model_dirs = cli.model_dir;

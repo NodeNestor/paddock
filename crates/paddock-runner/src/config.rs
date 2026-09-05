@@ -29,8 +29,10 @@ pub struct Config {
     /// All interfaces by default: the endpoint exists for other
     /// machines. The auth policy is what makes that safe - a non-loopback
     /// bind with no key auto-generates and requires one, and loopback peers
-    /// are always exempt (auth_mw). 175k publicly exposed KEYLESS Ollama
-    /// servers is the cautionary tale we answer with keys, not with hiding.
+    /// are exempt (auth_mw) unless a proxy stands in front (`trusted_proxy`,
+    /// or a forwarding header on the request). 175k publicly exposed KEYLESS
+    /// Ollama servers is the cautionary tale we answer with keys, not with
+    /// hiding.
     pub host: IpAddr,
     pub port: u16,
     /// Directories scanned for GGUF files.
@@ -124,9 +126,14 @@ pub struct Config {
     pub ratelimit_per_minute: Option<u32>,
     /// Per-client generation-request quota, requests/day (`None` = off).
     pub ratelimit_per_day: Option<u32>,
-    /// Trust a reverse proxy's `X-Real-IP` for per-client rate-limit keying. On
-    /// behind a proxy that sets it (and overrides any client value); off for a
-    /// direct bind (key on the socket peer). Never trusts `X-Forwarded-For`.
+    /// A reverse proxy stands in front of this runner. Two things follow: the
+    /// rate limiter keys clients on the proxy's `X-Real-IP` (it overwrites any
+    /// client value; `X-Forwarded-For` is never trusted, a client can prepend
+    /// to it), and the API key is required from loopback peers too - behind a
+    /// proxy on the same host EVERY caller arrives from 127.0.0.1, so the
+    /// loopback exemption would let the whole internet in. Off for a direct
+    /// bind. nginx adds no forwarding headers unless told to, so set this
+    /// rather than relying on the runner noticing the proxy.
     pub trusted_proxy: bool,
 
     // --- Server-side sampling OVERRIDES (llama.cpp-style flags, and

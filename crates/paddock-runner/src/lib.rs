@@ -706,6 +706,7 @@ pub async fn run(
     let state = Arc::new(AppState {
         spec_off: spec_policy_off,
         auth_key,
+        trusted_proxy: cfg.trusted_proxy,
         instance_id,
         metrics,
         snapshots,

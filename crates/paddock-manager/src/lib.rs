@@ -80,8 +80,13 @@ pub async fn run(cfg: Config) -> Result<(), Box<dyn std::error::Error>> {
                 Some(key)
             }
             Err(e) => {
-                tracing::error!(%e, "failed to auto-generate api key");
-                None
+                // Fail closed. Serving a network bind keyless because the key
+                // store hiccupped is the one outcome worse than not serving.
+                return Err(format!(
+                    "network bind ({}) with no api key, and generating one failed: {e}. Refusing to start without auth: set PADDOCK_MANAGER_API_KEY, or bind loopback (--host 127.0.0.1)",
+                    cfg.host
+                )
+                .into());
             }
         },
         None => None,
@@ -247,6 +252,7 @@ pub async fn run(cfg: Config) -> Result<(), Box<dyn std::error::Error>> {
     let state = Arc::new(AppState {
         db,
         auth_key: auth_key.clone(),
+        trusted_proxy: cfg.trusted_proxy,
         mcp_allowed_hosts,
         graphs: Arc::new(graph::Bridge::new()),
         gpu,
@@ -324,6 +330,19 @@ fn print_banner(cfg: &Config, auth_key: Option<&str>, tls: Option<&paddock_tls::
         "  {dim}Studio{reset}      {cyan}{scheme}://{host}:{}{reset}",
         cfg.port
     );
+    // the URL above is what a person types; this is what the socket actually
+    // holds, and the two differ exactly when it matters
+    let bind = if cfg.host.is_unspecified() {
+        format!(
+            "{}:{}  {dim}(all interfaces - reachable from the network){reset}",
+            cfg.host, cfg.port
+        )
+    } else if cfg.host.is_loopback() {
+        format!("{}:{}  {dim}(this machine only){reset}", cfg.host, cfg.port)
+    } else {
+        format!("{}:{}", cfg.host, cfg.port)
+    };
+    println!("  {dim}Bind{reset}        {bind}");
     // where data lives must be STATED, with the mode that chose it:
     // a portable unzip and a dev checkout on the same box resolve
     // differently, and silence here is how the wrong root goes unnoticed
@@ -339,8 +358,15 @@ fn print_banner(cfg: &Config, auth_key: Option<&str>, tls: Option<&paddock_tls::
         .unwrap_or_default();
     println!("  {dim}Models dir{reset}  {first}");
     match auth_key {
-        Some(k) => println!("  {dim}API key{reset}     {cyan}{k}{reset}"),
-        None => println!("  {dim}Auth{reset}        {dim}none (loopback){reset}"),
+        Some(k) => {
+            let scope = if cfg.trusted_proxy {
+                "required from everyone (trusted_proxy)"
+            } else {
+                "required from the network, loopback callers exempt"
+            };
+            println!("  {dim}API key{reset}     {cyan}{k}{reset}  {dim}{scope}{reset}");
+        }
+        None => println!("  {dim}Auth{reset}        {dim}none (loopback bind){reset}"),
     }
     // The fingerprint is the only way a person can tell that the root they are
     // about to install came from this computer and not from whatever answered

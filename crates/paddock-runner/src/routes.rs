@@ -239,6 +239,11 @@ pub struct AppState {
     /// The runner holds exactly one key, from its config - the manager issues
     /// it at spawn (doc §5.1); there is no key store in the data plane.
     pub auth_key: Option<String>,
+    /// The operator declared a reverse proxy in front of this runner
+    /// (`trusted_proxy`). Then every caller arrives from 127.0.0.1 and the
+    /// loopback exemption in `auth_mw` would be no exemption at all, so it is
+    /// off.
+    pub trusted_proxy: bool,
     /// The config's speculation policy resolved to off - part of the admin
     /// identify self-report (`SpecInfo.off`).
     pub spec_off: bool,
@@ -348,6 +353,7 @@ impl AppState {
     pub fn for_tests(serving: Option<ServingModel>) -> Self {
         AppState {
             auth_key: None,
+            trusted_proxy: false,
             spec_off: false,
             instance_id: "test-instance".to_owned(),
             metrics: crate::metrics::Metrics::new(
@@ -1334,28 +1340,48 @@ async fn ratelimit_mw(
     next.run(req).await
 }
 
+/// Is this request from the box itself - a loopback peer, with nothing saying
+/// a proxy stood in between? Two things say so: `trusted_proxy` (the operator
+/// declared one, so every caller is 127.0.0.1 and the peer address means
+/// nothing), and a forwarding header on the request itself (`X-Forwarded-For`,
+/// `X-Real-IP`, `Forwarded` - what caddy and traefik add by default, nginx
+/// only when told to). Honouring a forged header is safe in this direction:
+/// it can only cost a caller its exemption, never grant one. A missing
+/// ConnectInfo reads as remote - when in doubt, require the key.
+pub(crate) fn peer_is_local(req: &axum::extract::Request, trusted_proxy: bool) -> bool {
+    if trusted_proxy {
+        return false;
+    }
+    let loopback = req
+        .extensions()
+        .get::<axum::extract::ConnectInfo<std::net::SocketAddr>>()
+        .is_some_and(|ci| ci.0.ip().is_loopback());
+    loopback
+        && !["x-forwarded-for", "x-real-ip", "forwarded"]
+            .iter()
+            .any(|h| req.headers().contains_key(*h))
+}
+
 /// Bearer auth for `/v1` + `/api` - but only for NETWORK callers. Loopback
-/// peers are exempt: the runner binds all interfaces by default (a serving
-/// product that hides on localhost fights its own tier-1
+/// peers are exempt (`peer_is_local`): the runner binds all interfaces by
+/// default (a serving product that hides on localhost fights its own tier-1
 /// workload), and the key is what stands between the LAN and the model. This
-/// split keeps local tools and the manager's own relay calls keyless while
-/// every non-loopback caller must present the configured key - the runner has
-/// no key store, so there is exactly one (doc §5.1: the manager issues it at
-/// spawn; inference keys never grant admin ops, which live on the local admin
-/// surface, not TCP). A missing ConnectInfo reads as not loopback - when in
-/// doubt, require the key.
+/// split keeps local tools keyless while every non-loopback caller must
+/// present the configured key - the runner has no key store, so there is
+/// exactly one (doc §5.1: the manager issues it at spawn and sends it on its
+/// own relay calls; inference keys never grant admin ops, which live on the
+/// local admin surface, not TCP). Behind a reverse proxy on the same host
+/// every caller IS loopback, which is why the exemption switches off the
+/// moment anything says a proxy is there.
 async fn auth_mw(
     State(state): State<Arc<AppState>>,
     req: axum::extract::Request,
     next: axum::middleware::Next,
 ) -> Response {
     if let Some(required) = &state.auth_key {
-        let loopback = req
-            .extensions()
-            .get::<axum::extract::ConnectInfo<std::net::SocketAddr>>()
-            .is_some_and(|ci| ci.0.ip().is_loopback());
+        let local = peer_is_local(&req, state.trusted_proxy);
         let path = req.uri().path();
-        if !loopback && (path.starts_with("/v1/") || path.starts_with("/api/")) {
+        if !local && (path.starts_with("/v1/") || path.starts_with("/api/")) {
             let ok = req
                 .headers()
                 .get(axum::http::header::AUTHORIZATION)
@@ -1618,6 +1644,54 @@ mod tests {
             .await
             .expect("response");
         assert_eq!(forced_open.status(), StatusCode::OK);
+    }
+
+    /// The loopback exemption is for the box's own callers, and only them: a
+    /// forwarding header or a declared proxy means the peer address is the
+    /// proxy's, and the key is required again.
+    #[tokio::test]
+    async fn loopback_is_exempt_only_when_nothing_says_proxy() {
+        use axum::extract::ConnectInfo;
+        let local: std::net::SocketAddr = "127.0.0.1:4242".parse().expect("addr");
+        let keyed = |trusted_proxy: bool| {
+            let mut s = AppState::for_tests(None);
+            s.auth_key = Some("pk-test".into());
+            s.trusted_proxy = trusted_proxy;
+            Arc::new(s)
+        };
+        let get = |headers: &[(&str, &str)]| {
+            let mut req = axum::http::Request::get("/v1/models");
+            for (k, v) in headers {
+                req = req.header(*k, *v);
+            }
+            let mut req = req.body(axum::body::Body::empty()).expect("request");
+            req.extensions_mut().insert(ConnectInfo(local));
+            req
+        };
+        // the box's own tools: no key needed
+        let plain = router(keyed(false))
+            .oneshot(get(&[]))
+            .await
+            .expect("response");
+        assert_eq!(plain.status(), StatusCode::OK);
+        // the same peer, but a proxy left its mark: key required
+        let forwarded = router(keyed(false))
+            .oneshot(get(&[("x-forwarded-for", "203.0.113.7")]))
+            .await
+            .expect("response");
+        assert_eq!(forwarded.status(), StatusCode::UNAUTHORIZED);
+        // the operator declared a proxy: loopback means nothing, key required
+        let declared = router(keyed(true))
+            .oneshot(get(&[]))
+            .await
+            .expect("response");
+        assert_eq!(declared.status(), StatusCode::UNAUTHORIZED);
+        // and the key still opens it
+        let with_key = router(keyed(true))
+            .oneshot(get(&[("authorization", "Bearer pk-test")]))
+            .await
+            .expect("response");
+        assert_eq!(with_key.status(), StatusCode::OK);
     }
 
     #[tokio::test]

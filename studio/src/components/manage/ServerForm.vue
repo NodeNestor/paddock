@@ -412,7 +412,7 @@ const AF_CARDS: { hd: string; fields: AfField[] }[] = [
     fields: [
       { key: 'api_key', kind: 'text', hint: 'Bearer key network callers must send (loopback never needs it)' },
       { key: 'no_auth', kind: 'switch', hint: 'serve the network with no key at all - warns on startup' },
-      { key: 'trusted_proxy', kind: 'switch', hint: 'trust X-Real-IP for rate-limit keying' },
+      { key: 'trusted_proxy', kind: 'switch', hint: 'behind a reverse proxy: rate-limit on its X-Real-IP, API key required from loopback too' },
       { key: 'ratelimit_per_minute', kind: 'num', int: true, hint: 'per-client requests/minute' },
       { key: 'ratelimit_per_day', kind: 'num', int: true, hint: 'per-client requests/day' },
     ],

@@ -1359,14 +1359,13 @@ pub async fn handle(
         )
             .into_response();
     }
-    let loopback = req
-        .extensions()
-        .get::<axum::extract::ConnectInfo<std::net::SocketAddr>>()
-        .is_some_and(|ci| ci.0.ip().is_loopback());
+    // the same "is this the box itself" test the API auth makes: behind a
+    // declared proxy, or with a forwarding header, loopback is not local
+    let local = crate::routes::peer_is_local(&req, state.trusted_proxy);
     let require = state.auth_key.is_some()
         && match state.metrics_auth {
             Some(forced) => forced,
-            None => !loopback,
+            None => !local,
         };
     if require {
         let ok = req

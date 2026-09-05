@@ -21,6 +21,9 @@ pub struct AppState {
     pub db: std::sync::Arc<crate::store::Store>,
     /// Required Bearer key for /api, or None for no auth (loopback).
     pub auth_key: Option<String>,
+    /// A reverse proxy is declared in front (`trusted_proxy`): loopback peers
+    /// are then not the box's own callers, and the key applies to them too.
+    pub trusted_proxy: bool,
     /// Host headers the MCP endpoints accept (rmcp's DNS-rebinding guard).
     /// Loopback-only on a loopback bind; the host's real names on a network
     /// bind. Never empty - rmcp reads an empty list as "allow any host".
@@ -93,6 +96,7 @@ impl AppState {
                     .expect("mem test db"),
             ),
             auth_key: None,
+            trusted_proxy: false,
             push: crate::push::Hub::new(),
             graphs: Arc::new(crate::graph::Bridge::new()),
             gpu: crate::telemetry::Telemetry::disabled(),
@@ -2801,24 +2805,41 @@ pub(crate) async fn not_found(uri: axum::http::Uri) -> Response {
         .into_response()
 }
 
+/// Is this request from the box itself? The runner's test, kept in step with
+/// `paddock_runner::routes::peer_is_local`: a loopback peer, no declared proxy
+/// (`trusted_proxy`), and no forwarding header on the request - behind a
+/// proxy on the same host every caller is 127.0.0.1, and a forged header can
+/// only cost a caller its exemption, never grant one.
+fn peer_is_local(req: &axum::extract::Request, trusted_proxy: bool) -> bool {
+    if trusted_proxy {
+        return false;
+    }
+    let loopback = req
+        .extensions()
+        .get::<axum::extract::ConnectInfo<std::net::SocketAddr>>()
+        .is_some_and(|ci| ci.0.ip().is_loopback());
+    loopback
+        && !["x-forwarded-for", "x-real-ip", "forwarded"]
+            .iter()
+            .any(|h| req.headers().contains_key(*h))
+}
+
 /// Bearer auth for `/api`. A no-op when no key is configured (loopback
 /// default); otherwise the header key must equal the configured key or match a
 /// stored (db-backed) API key. Non-API paths (the SPA) always pass so the UI
-/// can load. Loopback PEERS are always exempt - the runner's policy, and what
-/// makes a network bind usable at all: without it, --host 0.0.0.0 locked the
-/// box's own Studio out of every /api route and every page rendered empty
+/// can load. Loopback PEERS are exempt (`peer_is_local`) - the runner's
+/// policy, and what makes a network bind usable at all: without it, --host
+/// 0.0.0.0 locked the box's own Studio out of every /api route and every page
+/// rendered empty. The exemption ends where a reverse proxy begins.
 async fn auth_mw(
     State(state): State<Arc<AppState>>,
     req: axum::extract::Request,
     next: axum::middleware::Next,
 ) -> Response {
     if let Some(required) = &state.auth_key {
-        let loopback = req
-            .extensions()
-            .get::<axum::extract::ConnectInfo<std::net::SocketAddr>>()
-            .is_some_and(|ci| ci.0.ip().is_loopback());
+        let local = peer_is_local(&req, state.trusted_proxy);
         let path = req.uri().path();
-        if !loopback && path.starts_with("/api/") {
+        if !local && path.starts_with("/api/") {
             let verify = |k: &str| k == required || state.db.verify_api_key(k).unwrap_or(false);
             let bearer_ok = req
                 .headers()
@@ -2913,6 +2934,55 @@ mod tests {
     async fn body_json(res: Response) -> serde_json::Value {
         let bytes = res.into_body().collect().await.expect("body").to_bytes();
         serde_json::from_slice(&bytes).expect("json body")
+    }
+
+    /// The loopback exemption is for the box's own browser and tools, and only
+    /// them: a forwarding header or a declared proxy means the peer address is
+    /// the proxy's, and the key is required again.
+    #[tokio::test]
+    async fn loopback_is_exempt_only_when_nothing_says_proxy() {
+        use axum::extract::ConnectInfo;
+        let local: std::net::SocketAddr = "127.0.0.1:4242".parse().expect("addr");
+        let keyed = |trusted_proxy: bool| {
+            let mut s = AppState::for_tests();
+            s.auth_key = Some("pk-test".into());
+            s.trusted_proxy = trusted_proxy;
+            Arc::new(s)
+        };
+        // a real route, so the answer tells auth apart from a 404
+        let get = |headers: &[(&str, &str)]| {
+            let mut req = axum::http::Request::get("/api/definitely-not-a-route");
+            for (k, v) in headers {
+                req = req.header(*k, *v);
+            }
+            let mut req = req.body(axum::body::Body::empty()).expect("request");
+            req.extensions_mut().insert(ConnectInfo(local));
+            req
+        };
+        // the box's own browser: through to the router (which 404s this path)
+        let plain = router(keyed(false))
+            .oneshot(get(&[]))
+            .await
+            .expect("response");
+        assert_eq!(plain.status(), StatusCode::NOT_FOUND);
+        // the same peer, but a proxy left its mark: key required
+        let forwarded = router(keyed(false))
+            .oneshot(get(&[("x-forwarded-for", "203.0.113.7")]))
+            .await
+            .expect("response");
+        assert_eq!(forwarded.status(), StatusCode::UNAUTHORIZED);
+        // the operator declared a proxy: loopback means nothing, key required
+        let declared = router(keyed(true))
+            .oneshot(get(&[]))
+            .await
+            .expect("response");
+        assert_eq!(declared.status(), StatusCode::UNAUTHORIZED);
+        // and the key still opens it
+        let with_key = router(keyed(true))
+            .oneshot(get(&[("authorization", "Bearer pk-test")]))
+            .await
+            .expect("response");
+        assert_eq!(with_key.status(), StatusCode::NOT_FOUND);
     }
 
     #[tokio::test]

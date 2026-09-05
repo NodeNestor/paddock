@@ -73,7 +73,7 @@ pub struct Cli {
     #[arg(long, value_name = "PATH")]
     pub config: Option<PathBuf>,
     /// Address to bind the HTTP API to (default: 0.0.0.0 - network callers
-    /// need a key, loopback callers never do)
+    /// need a key; loopback callers are exempt unless --trusted-proxy)
     #[arg(long, value_name = "IP")]
     pub host: Option<IpAddr>,
     /// Port to bind the HTTP API to (default: 11540)
@@ -171,7 +171,8 @@ pub struct Cli {
     /// Per-client generation-request quota, requests/day
     #[arg(long = "ratelimit-per-day", value_name = "N")]
     pub ratelimit_per_day: Option<u32>,
-    /// Trust a reverse proxy's X-Real-IP for rate-limit keying
+    /// Behind a reverse proxy: key rate limits on its X-Real-IP, and require
+    /// the API key from loopback too (every caller arrives from 127.0.0.1)
     #[arg(long = "trusted-proxy")]
     pub trusted_proxy: bool,
     /// Max pages rendered per PDF (past this is dropped, surfaced, never silent)
@@ -937,6 +938,19 @@ pub fn print_startup_banner(cfg: &Config, banner: &Banner) {
         "  {dim}API{reset}         {cyan}http://{addr}{reset}  {dim}(OpenAI + Anthropic){reset}{}",
         tag(banner.sources.host_port)
     );
+    // the URL above is what a person types; this is what the socket actually
+    // holds, and the two differ exactly when it matters
+    let bind = if cfg.host.is_unspecified() {
+        format!(
+            "{}:{}  {dim}(all interfaces - reachable from the network){reset}",
+            cfg.host, cfg.port
+        )
+    } else if cfg.host.is_loopback() {
+        format!("{}:{}  {dim}(this machine only){reset}", cfg.host, cfg.port)
+    } else {
+        format!("{}:{}", cfg.host, cfg.port)
+    };
+    println!("  {dim}Bind{reset}        {bind}");
     println!(
         "  {dim}Device{reset}      {}{}",
         cfg.device,
@@ -973,9 +987,16 @@ pub fn print_startup_banner(cfg: &Config, banner: &Banner) {
         ),
     }
     if let Some(key) = &banner.auth_key {
-        println!("  {dim}API key{reset}     {cyan}{key}{reset}");
+        let scope = if cfg.trusted_proxy {
+            "required from everyone (trusted_proxy)"
+        } else {
+            "required from the network, loopback callers exempt"
+        };
+        println!("  {dim}API key{reset}     {cyan}{key}{reset}  {dim}{scope}{reset}");
+    } else if cfg.no_auth {
+        println!("  {dim}Auth{reset}        {dim}none (--no-auth){reset}");
     } else {
-        println!("  {dim}Auth{reset}        {dim}none (loopback){reset}");
+        println!("  {dim}Auth{reset}        {dim}none (loopback bind){reset}");
     }
     println!(
         "  {dim}Studio{reset}      {dim}runners are headless - run `paddock` (the manager) for the Studio{reset}"

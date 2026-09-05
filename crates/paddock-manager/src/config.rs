@@ -24,6 +24,11 @@ pub struct Config {
     pub max_batch: usize,
     /// Explicit API key for the manager surface; None + loopback = no auth.
     pub api_key: Option<String>,
+    /// A reverse proxy stands in front of the Studio. Then every caller
+    /// arrives from 127.0.0.1 and the loopback exemption in `auth_mw` would
+    /// be no exemption at all, so it is off and the key is required from
+    /// everyone. Off by default: a direct bind, the box's own browser.
+    pub trusted_proxy: bool,
     /// Runner binary override (PADDOCK_RUNNER_BIN). Default: the
     /// `paddock-runner` beside this executable; runners/<version>/ election
     /// lands with the artifact scheme (doc §11.1).
@@ -75,6 +80,7 @@ impl Default for Config {
             max_ctx: 4096,
             max_batch: 32,
             api_key: None,
+            trusted_proxy: false,
             runner_bin: None,
             device: "cuda".to_owned(),
             kernel_pack: None,
@@ -156,6 +162,9 @@ impl Config {
         if let Some(v) = get("PADDOCK_MANAGER_API_KEY") {
             self.api_key = Some(v);
         }
+        if let Some(v) = get("PADDOCK_MANAGER_TRUSTED_PROXY") {
+            self.trusted_proxy = matches!(v.as_str(), "1" | "true" | "yes" | "on");
+        }
         if let Some(v) = get("PADDOCK_RUNNER_BIN") {
             self.runner_bin = Some(PathBuf::from(v));
         }
@@ -213,6 +222,7 @@ pub const ENV_SURFACE: &[&str] = &[
     "PADDOCK_MANAGER_HOST",
     "PADDOCK_MANAGER_PORT",
     "PADDOCK_MANAGER_API_KEY",
+    "PADDOCK_MANAGER_TRUSTED_PROXY",
     "PADDOCK_MANAGER_ACTIVITY",
     "PADDOCK_MANAGER_NO_ACTIVITY",
     "PADDOCK_MANAGER_SPAWN_TIMEOUT_S",
