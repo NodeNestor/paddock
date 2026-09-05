@@ -48,14 +48,36 @@ typedef CUresult (*pd_tmap_encode_fn)(
     const cuuint64_t*, const cuuint32_t*, const cuuint32_t*, CUtensorMapInterleave,
     CUtensorMapSwizzle, CUtensorMapL2promotion, CUtensorMapFloatOOBfill);
 
+// Resolved BY VERSION, pinned at 12000, not through cudaGetDriverEntryPoint.
+// The unversioned call asks the driver for the entry point at CUDART_VERSION -
+// the toolkit the pack was COMPILED with - and a driver older than that
+// toolkit refuses outright (cudaErrorInvalidValue, no status, no pointer),
+// even though it has carried cuTensorMapEncodeTiled since 12.0 and every
+// kernel launch in the same pack works. Minor-version compatibility lets a
+// 13.x pack run on any r580+ driver, so this is the ordinary case, not an
+// edge: a pack built with nvcc 13.1+ on a 13.0 (r580) driver came up clean,
+// engaged every non-TMA route, and then refused the f8 lin GEMM with 801 on
+// the first token (a user's RTX PRO 6000 Max-Q on Windows, self-built pack).
+// cuTensorMapEncodeTiled's signature has not changed since 12.0, which is the
+// ABI the typedef above spells, so 12000 is the honest floor to ask for.
 static pd_tmap_encode_fn pd_tmap_encode() {
     static pd_tmap_encode_fn fn = [] {
         void* p = nullptr;
         cudaDriverEntryPointQueryResult st;
-        if (cudaGetDriverEntryPoint("cuTensorMapEncodeTiled", &p,
-                                    cudaEnableDefault, &st) != cudaSuccess ||
-            st != cudaDriverEntryPointSuccess)
+        if (cudaGetDriverEntryPointByVersion("cuTensorMapEncodeTiled", &p, 12000,
+                                             cudaEnableDefault, &st) != cudaSuccess ||
+            st != cudaDriverEntryPointSuccess || p == nullptr) {
+            // Route witness, once: every TMA consumer falls back silently or
+            // refuses with 801, and neither names the driver as the cause.
+            int drv = 0, rt = 0;
+            cudaDriverGetVersion(&drv);
+            cudaRuntimeGetVersion(&rt);
+            ::fprintf(stderr,
+                      "[tma] cuTensorMapEncodeTiled unavailable (driver CUDA %d, "
+                      "pack built with CUDA %d) - TMA routes off\n",
+                      drv, rt);
             return (pd_tmap_encode_fn) nullptr;
+        }
         return (pd_tmap_encode_fn)p;
     }();
     return fn;

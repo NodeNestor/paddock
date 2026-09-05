@@ -448,6 +448,13 @@ const AF_CARDS: { hd: string; fields: AfField[] }[] = [
       // real (the disk tier stores through ram, so a disk budget alone arms
       // nothing).
       { key: 'kv_offload', kind: 'json', hint: 'prefix cache kept outside VRAM · {"enabled": true, "ram_gb": 24.0, "nvme_gb": 200.0, "nvme_path": "D:/paddock-cache"}' },
+      // `[moe_offload]` (config.rs MoeOffload): the routed-expert planes of a
+      // MoE model in page-locked RAM, with a VRAM slot cache of the hot
+      // experts sized from what the KV plan leaves; vram_gb caps the cache.
+      // Table-shaped like kv_offload. No Simple-tab card yet, so this row is
+      // the only place the Studio can set it - and what keeps a round trip
+      // through Advanced from deleting a block written by hand.
+      { key: 'moe_offload', kind: 'json', hint: 'MoE experts in page-locked RAM, hot ones cached in VRAM · {"enabled": true, "vram_gb": 6.0}' },
     ],
   },
   {
