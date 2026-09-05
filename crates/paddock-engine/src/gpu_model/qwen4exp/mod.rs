@@ -1030,9 +1030,6 @@ fn kq_matmul(
             }
         }
         QuantW::Kq(k) => {
-            if batch == 1 {
-                return e.kquant_gemv(k, x, y);
-            }
             let in_dim = k.dims[0];
             let n = batch * in_dim;
             if stage.q.len() < n || stage.xs.len() < n / 32 || stage.ssums.len() < n / 16 {
@@ -1041,8 +1038,26 @@ fn kq_matmul(
                     stage.q.len() / in_dim.max(1)
                 )));
             }
+            let needs = crate::gpu::kq_needs_sums(k.ty);
+            if batch == 1 {
+                // the qwen35 serving class (`kq_w4a8_b1`): int8 activations
+                // through the W4A8 GEMV, the exact-f32 GEMV stays the oracle
+                // (PADDOCK_KQ_EXACT_GEMV=1 pins it, as there)
+                if e.has_kquant_gemv_w4a8()
+                    && paddock_models::dev_var_os!("PADDOCK_KQ_EXACT_GEMV").is_none()
+                {
+                    e.quantize_q8_sums(x, &mut stage.q, &mut stage.xs, &mut stage.ssums, in_dim)?;
+                    return e.kquant_gemv_w4a8(
+                        k,
+                        &stage.q,
+                        &stage.xs,
+                        needs.then_some(&stage.ssums),
+                        y,
+                    );
+                }
+                return e.kquant_gemv(k, x, y);
+            }
             e.quantize_q8(x, &mut stage.q, &mut stage.xs, n)?;
-            let needs = matches!(k.ty, GgmlType::Q4K | GgmlType::Q5K | GgmlType::Q4_0);
             if needs {
                 e.q8_sums_strided(&stage.q, &mut stage.ssums, in_dim, batch)?;
             }
