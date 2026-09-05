@@ -75,6 +75,21 @@ impl Reserve {
         Self { what, bytes }
     }
 }
+/// The `graph/prefill scratch` reserve, settable by the operator: the fixed
+/// 3 GiB default is sized for 16-48 GB cards and starves 8 GB cards of both
+/// KV and - since `[moe_offload]` - the slot cache the plan's leftovers seat.
+static GRAPH_SCRATCH_MIB: std::sync::OnceLock<u64> = std::sync::OnceLock::new();
+/// Arm the override once before any model loads (the same shape as
+/// `pool_tier::set_tier_ram_bytes` / `gpu::set_moe_offload`). `None` = keep
+/// the 3 GiB default.
+pub fn set_graph_scratch_mib(mib: u64) {
+    let _ = GRAPH_SCRATCH_MIB.set(mib);
+}
+/// The armed override, or the 3 GiB default. Both production call sites
+/// (qwen35 and gpt-oss `graph/prefill scratch` reserves) charge this.
+pub fn graph_scratch_reserve_bytes() -> u64 {
+    GRAPH_SCRATCH_MIB.get().copied().unwrap_or(3 * (1 << 30))
+}
 
 /// What to do when the grant cannot back a full `max_ctx` for every slot asked
 /// for. See the module note - this is the open policy question, not a detail.

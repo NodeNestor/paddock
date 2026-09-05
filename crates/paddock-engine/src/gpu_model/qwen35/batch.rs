@@ -382,7 +382,10 @@ impl GpuQwen35 {
                 // prefill scratch + graph pools + allocator headroom. The width
                 // sizer's 1.5 GB margin is a different, separately-measured
                 // budget - see width_by_vram.
-                kv_plan::Reserve::new("graph/prefill scratch", 3 * 1024 * 1024 * 1024),
+                kv_plan::Reserve::new(
+                    "graph/prefill scratch",
+                    crate::kv_plan::graph_scratch_reserve_bytes(),
+                ),
                 kv_plan::Reserve::new(
                     "kv-tier staging",
                     if crate::kv_tier::pool_tier::tier_ram_bytes().is_some() {

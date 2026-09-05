@@ -252,6 +252,13 @@ pub async fn run(
             "[moe_offload] MoE expert offload armed (slot cache auto-sized from the KV plan's leftover unless vram_gb caps it)"
         );
     }
+    if let Some(mib) = cfg.graph_scratch_mib {
+        paddock_engine::kv_plan::set_graph_scratch_mib(mib);
+        tracing::info!(
+            graph_scratch_mib = mib,
+            "graph/prefill scratch reserve overridden (default 3072 MiB)"
+        );
+    }
     if ram_armed {
         tracing::info!(
             ram_gb = kv.ram_gb,

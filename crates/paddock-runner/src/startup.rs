@@ -142,6 +142,10 @@ pub struct Cli {
     /// can't fit it refuses (co-resident servers can't oversubscribe the card)
     #[arg(long = "vram-budget", value_name = "MIB")]
     pub vram_budget: Option<u64>,
+    /// Override the fixed 3 GiB graph/prefill scratch KV-plan reserve, in MiB
+    /// (8 GB cards: the default starves KV and the moe_offload slot cache)
+    #[arg(long = "graph-scratch-mib", value_name = "MIB")]
+    pub graph_scratch_mib: Option<u64>,
     /// Default max output tokens per reply (when a request doesn't specify)
     #[arg(long = "max-output-tokens", value_name = "N")]
     pub max_output_tokens: Option<usize>,
@@ -465,6 +469,9 @@ pub fn resolve(cli: &Cli) -> Result<(Config, Banner), ConfigError> {
     }
     if let Some(b) = cli.vram_budget {
         cfg.vram_budget = Some(b);
+    }
+    if let Some(m) = cli.graph_scratch_mib {
+        cfg.graph_scratch_mib = Some(m);
     }
     if let Some(n) = cli.max_output_tokens {
         cfg.max_tokens = Some(n);
