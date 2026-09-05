@@ -6144,6 +6144,11 @@ pub struct KernelTableV1 {
     /// IQ2_XXS/XS/S, IQ3_XXS/S) and IQ4_NL (quant/iquant.cuh). The dtypes
     /// ride the existing entry points, so only this slot can say.
     pub kquant_iq: Option<unsafe extern "C" fn() -> i32>,
+    /// 540: capability marker - the dense k-quant entry points (gemv, gather,
+    /// the W4A8 gemv / nc / multi / glu, the dp4a and mma_ks GEMMs) serve
+    /// the i-quant family + IQ4_NL (quant/iquant_dense.cuh). Without it a
+    /// dense i-quant tensor is refused at load.
+    pub kquant_iq_dense: Option<unsafe extern "C" fn() -> i32>,
 }
 
 /// MoE expert-offload cache resolve (see `KernelTableV1::moe_cache_resolve`).
@@ -6521,7 +6526,7 @@ pub type AddRmsnormQ8XnFn = unsafe extern "C" fn(
 /// the copy to the smaller of declared and expected, so an old pack against a
 /// new engine (or the reverse) reads missing entries as None rather than a
 /// shifted slot.
-pub const KERNEL_TABLE_SLOTS: usize = 563;
+pub const KERNEL_TABLE_SLOTS: usize = 564;
 
 const _: () = assert!(
     core::mem::size_of::<KernelTableV1>() == 8 + KERNEL_TABLE_SLOTS * 8,

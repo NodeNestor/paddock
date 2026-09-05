@@ -298,6 +298,9 @@ pub(crate) fn kq_params(ty: GgmlType) -> Option<(u32, usize, usize)> {
         GgmlType::Iq1S => Some((19, 50, 48)),
         GgmlType::Iq1M => Some((29, 56, 48)),
         GgmlType::Iq4Nl => Some((20, 144, 128)),
+        // the low-bit k-quants on the i-quant lanes: 16-weight scale windows
+        GgmlType::Q2K => Some((10, 84, 64)),
+        GgmlType::Q3K => Some((11, 110, 96)),
         _ => None,
     }
 }
@@ -329,6 +332,18 @@ pub(crate) fn kq_is_iq(ty: GgmlType) -> bool {
             | GgmlType::Iq1S
             | GgmlType::Iq1M
             | GgmlType::Iq4Nl
+            | GgmlType::Q2K
+            | GgmlType::Q3K
+    )
+}
+
+/// Formats with a per-16 MIN (mu) term - the int8 lanes need the per-16
+/// activation sums (`q8_sums_strided`) for these. One place, mirrored by
+/// the pack's `pd_kq_has_mu`.
+pub(crate) fn kq_needs_sums(ty: GgmlType) -> bool {
+    matches!(
+        ty,
+        GgmlType::Q4K | GgmlType::Q5K | GgmlType::Q4_0 | GgmlType::Q2K
     )
 }
 

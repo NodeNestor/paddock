@@ -9,7 +9,6 @@ use crate::kv_pool::{BlockTable, KvPool};
 use crate::paged_radix::PagedRadix;
 use cudarc::driver::DevicePtr;
 use cudarc::driver::sys::CUstreamCaptureMode;
-use paddock_models::ggml_type::GgmlType;
 
 /// Max rows a tick may overdraw to absorb a prompt tail that would otherwise
 /// ride a whole extra tick (chunk-tail finding).
@@ -7649,7 +7648,7 @@ impl GpuQwen35 {
                             &mut sc.d_ssums,
                             embd,
                         )?;
-                        let needs = matches!(k.ty, GgmlType::Q4K | GgmlType::Q5K | GgmlType::Q4_0);
+                        let needs = crate::gpu::kq_needs_sums(k.ty);
                         exec.kquant_gemv_w4a8(
                             k,
                             &bs.d_xq,
@@ -7663,7 +7662,7 @@ impl GpuQwen35 {
             } else if let QuantW::Kq(k) = output {
                 // k-quant lm_head: the W4A8 dp4a GEMM (record_batch_step twin)
                 exec.quantize_q8(&sc.d_h, &mut bs.d_xq, &mut bs.d_xs, b * embd)?;
-                let needs = matches!(k.ty, GgmlType::Q4K | GgmlType::Q5K | GgmlType::Q4_0);
+                let needs = crate::gpu::kq_needs_sums(k.ty);
                 if needs {
                     exec.q8_sums_strided(&bs.d_xq, &mut sc.d_ssums, k.dims[0], b)?;
                 }
@@ -8856,8 +8855,7 @@ impl GpuQwen35 {
                                         k.dims[0],
                                     )?;
                                 }
-                                let needs =
-                                    matches!(k.ty, GgmlType::Q4K | GgmlType::Q5K | GgmlType::Q4_0);
+                                let needs = crate::gpu::kq_needs_sums(k.ty);
                                 exec.kquant_gemv_w4a8(
                                     k,
                                     &bs.d_xq,
@@ -8872,8 +8870,7 @@ impl GpuQwen35 {
                             if !$pre {
                                 exec.quantize_q8($x, &mut bs.d_xq, &mut bs.d_xs, b * k.dims[0])?;
                             }
-                            let needs =
-                                matches!(k.ty, GgmlType::Q4K | GgmlType::Q5K | GgmlType::Q4_0);
+                            let needs = crate::gpu::kq_needs_sums(k.ty);
                             if needs {
                                 exec.q8_sums_strided(&bs.d_xq, &mut sc.d_ssums, k.dims[0], b)?;
                             }
@@ -10472,7 +10469,7 @@ impl GpuQwen35 {
                             &mut sc.d_ssums,
                             embd,
                         )?;
-                        let needs = matches!(k.ty, GgmlType::Q4K | GgmlType::Q5K | GgmlType::Q4_0);
+                        let needs = crate::gpu::kq_needs_sums(k.ty);
                         exec.kquant_gemv_w4a8(
                             k,
                             &bs.d_xq,
@@ -10532,7 +10529,7 @@ impl GpuQwen35 {
             // k-quant lm_head: the W4A8 dp4a GEMM at every batched width (its
             // 4-row blocks fill the die at vocab-scale out_dims)
             exec.quantize_q8(&sc.d_h, &mut bs.d_xq, &mut bs.d_xs, b * embd)?;
-            let needs = matches!(k.ty, GgmlType::Q4K | GgmlType::Q5K | GgmlType::Q4_0);
+            let needs = crate::gpu::kq_needs_sums(k.ty);
             if needs {
                 exec.q8_sums_strided(&bs.d_xq, &mut sc.d_ssums, k.dims[0], b)?;
             }

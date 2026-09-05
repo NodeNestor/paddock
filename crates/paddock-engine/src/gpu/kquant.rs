@@ -58,6 +58,11 @@ impl GpuExecutor {
         self.kernels.kquant_iq.is_some()
     }
 
+    /// The pack serves the i-quant family on the DENSE lanes too (slot 540).
+    pub fn has_kquant_iq_dense(&self) -> bool {
+        self.kernels.kquant_iq_dense.is_some()
+    }
+
     /// True when the pack carries the K-split W4A8 mma rung (appended after
     /// the base k-quant family - older packs fall back to the dp4a z-tiling).
     pub fn has_kquant_mma_ks(&self) -> bool {
@@ -113,9 +118,17 @@ impl GpuExecutor {
                     Ok(QuantW::Q8(self.repack_q8_blocks(&q8, dims)?))
                 }
             }
-            ty if kq_is_iq(ty) => Err(GpuError::Unsupported(format!(
-                "{name} is {ty:?}: the i-quant family serves as MoE expert seats only                  (no dense GEMV / GEMM lane yet) - pick a file whose dense tensors                  are Q4_K/Q5_K/Q6_K/Q8_0"
-            ))),
+            // the i-quant family on the dense lanes needs both markers: the
+            // repack/dequant (539) and the dense entry points (540)
+            ty if kq_is_iq(ty) => {
+                if !self.has_kquant_iq() || !self.has_kquant_iq_dense() {
+                    return Err(GpuError::Unsupported(format!(
+                        "{name} is {ty:?} but the kernel pack has no dense i-quant lanes \
+                         (slots 539/540) - rebuild packs/cuda"
+                    )));
+                }
+                Ok(QuantW::Kq(self.repack_kquant(map, name)?))
+            }
             ty if kq_params(ty).is_some() => {
                 if !self.has_kquant() {
                     return Err(GpuError::NoKernel {
@@ -1191,7 +1204,7 @@ impl GpuExecutor {
             yp[i] = yy as *mut _;
             rows[i] = w.dims[1] as u32;
             dts[i] = did;
-            needs = needs || matches!(w.ty, GgmlType::Q4K | GgmlType::Q5K | GgmlType::Q4_0);
+            needs = needs || crate::gpu::kq_needs_sums(w.ty);
             guards.push(g1);
             guards.push(g2);
             guards.push(g3);
@@ -1262,8 +1275,7 @@ impl GpuExecutor {
         debug_assert!(y.len() >= out_dim);
         let (dtg, _, _) = kq_params(gate.ty).expect("RepackedKQ holds a k-quant type");
         let (dtu, _, _) = kq_params(up.ty).expect("RepackedKQ holds a k-quant type");
-        let needs = matches!(gate.ty, GgmlType::Q4K | GgmlType::Q5K | GgmlType::Q4_0)
-            || matches!(up.ty, GgmlType::Q4K | GgmlType::Q5K | GgmlType::Q4_0);
+        let needs = crate::gpu::kq_needs_sums(gate.ty) || crate::gpu::kq_needs_sums(up.ty);
         let (gd, _g1) = gate.data.device_ptr(&self.stream);
         let (gs, _g2) = gate.scales.device_ptr(&self.stream);
         let (ud, _g3) = up.data.device_ptr(&self.stream);

@@ -2738,9 +2738,9 @@ fn iq_family_matches_reference() {
 
 fn iq_pair_check(exec: &GpuExecutor, map: &MappedGguf, names: &[String; 3], raws: &[u32]) {
     use paddock_kernels::reference::iq::{dequant_iq, iq_block_bytes};
-    let gate = exec.repack_kquant(&map, &names[0]).expect("repack gate");
-    let up = exec.repack_kquant(&map, &names[1]).expect("repack up");
-    let down = exec.repack_kquant(&map, &names[2]).expect("repack down");
+    let gate = exec.repack_kquant(map, &names[0]).expect("repack gate");
+    let up = exec.repack_kquant(map, &names[1]).expect("repack up");
+    let down = exec.repack_kquant(map, &names[2]).expect("repack down");
     let (embd, ff, ne) = (gate.dims[0], gate.dims[1], gate.dims[2]);
     eprintln!(
         "i-quant expert block {} [{embd}x{ff}x{ne}] raw types {raws:?}",
@@ -3082,6 +3082,342 @@ fn kq_moe_down_partial_superblock_rows_match_reference() {
         assert!(
             dq[r * ff..(r + 1) * ff] == want[..],
             "row {r}: repacked dequant differs from raw"
+        );
+    }
+}
+
+/// The i-quant family on the DENSE lanes (quant/iquant_dense.cuh): every
+/// dense entry point the qwen35 walk takes, on a file whose dense tensors
+/// are i-quant (Qwen3.5-9B UD-IQ2_XXS), against an f64 dot over the
+/// repacked dequant. The f32 GEMV and the gather are exact classes; the
+/// int8-activation lanes are checked against the same int8-quantized
+/// activations, so they are exact too - the activation quantization itself
+/// is the caller's choice, not the lane's.
+#[test]
+fn iq_dense_lanes_match_reference() {
+    let Some(model) = common::model("QWEN35_IQ2_GGUF", common::QWEN35_9B_UD_IQ2) else {
+        return;
+    };
+    let Some(exec) = common::gpu() else {
+        return;
+    };
+    if !exec.has_kquant_iq() || !exec.has_kquant_iq_dense() {
+        eprintln!("pack lacks the dense i-quant lanes (slots 539/540) - skipping");
+        return;
+    }
+    let map = MappedGguf::open(&model).expect("open gguf");
+    let is_iq = |t: GgmlType| {
+        matches!(
+            t,
+            GgmlType::Iq1S
+                | GgmlType::Iq1M
+                | GgmlType::Iq2Xxs
+                | GgmlType::Iq2Xs
+                | GgmlType::Iq2S
+                | GgmlType::Iq3Xxs
+                | GgmlType::Iq3S
+                | GgmlType::Iq4Nl
+                | GgmlType::Q2K
+                | GgmlType::Q3K
+        )
+    };
+    let batch = 5usize;
+    let mut checked = 0usize;
+    for name in [
+        "blk.0.attn_q.weight",
+        "blk.0.attn_output.weight",
+        "blk.0.ffn_gate.weight",
+        "blk.0.ffn_down.weight",
+        "blk.4.ffn_up.weight",
+        "output.weight",
+    ] {
+        let Ok((info, _)) = map.tensor_bytes(name) else {
+            continue;
+        };
+        if !is_iq(info.ggml_type) {
+            eprintln!("{name}: {:?}, not i-quant - skipped", info.ggml_type);
+            continue;
+        }
+        let w = exec.repack_kquant(&map, name).expect("repack");
+        let (in_dim, out_dim) = (w.dims[0], w.dims[1]);
+        // the reference weights come off the RAW bytes through the Rust port
+        // of ggml's dequant - independent of the repack and of every kernel
+        let (_, raw) = map.tensor_bytes(name).expect("raw");
+        let mut deq = vec![0f32; in_dim * out_dim];
+        paddock_kernels::reference::iq::dequant_iq(w.ty.raw(), raw, &mut deq).expect("raw dequant");
+        // and the repacked dequant must agree with it (its own i-quant branch)
+        let mut d_dq = exec.alloc(in_dim * out_dim).expect("dq");
+        exec.kquant_dequant_rp(&w, &mut d_dq).expect("dequant");
+        let deq_rp = exec.to_host(&d_dq).expect("h");
+        let e_rp = rel_err(&deq_rp, &deq);
+        assert!(
+            e_rp < 1e-6,
+            "{name}: repacked dequant vs raw dequant ({e_rp:.2e})"
+        );
+        let x = deterministic_input(batch * in_dim, 21);
+        let mut xq = vec![0i8; batch * in_dim];
+        let mut xs = vec![0f32; batch * in_dim / 32];
+        for r in 0..batch {
+            let (qq, ss) = cpu_quantize_q8(&x[r * in_dim..(r + 1) * in_dim]);
+            xq[r * in_dim..(r + 1) * in_dim].copy_from_slice(&qq);
+            xs[r * (in_dim / 32)..(r + 1) * (in_dim / 32)].copy_from_slice(&ss);
+        }
+        let mut yref = vec![0f32; batch * out_dim];
+        let mut yref_q = vec![0f32; batch * out_dim];
+        for r in 0..batch {
+            for o in 0..out_dim {
+                let (mut a, mut aq) = (0f64, 0f64);
+                for i in 0..in_dim {
+                    let wv = deq[o * in_dim + i] as f64;
+                    a += wv * x[r * in_dim + i] as f64;
+                    aq += wv * (xq[r * in_dim + i] as f32 * xs[r * (in_dim / 32) + i / 32]) as f64;
+                }
+                yref[r * out_dim + o] = a as f32;
+                yref_q[r * out_dim + o] = aq as f32;
+            }
+        }
+        let d_x = exec.to_device(&x).expect("x");
+        let mut d_xq = exec.alloc_i8(batch * in_dim).expect("xq");
+        let mut d_xs = exec.alloc(batch * in_dim / 32).expect("xs");
+        exec.quantize_q8(&d_x, &mut d_xq, &mut d_xs, batch * in_dim)
+            .expect("quant");
+        // Q2_K carries a per-16 min term: the int8 lanes take the sums
+        let needs = w.ty == GgmlType::Q2K;
+        let mut d_sums = exec.alloc(batch * in_dim / 16).expect("sums");
+        exec.q8_sums_strided(&d_xq, &mut d_sums, in_dim, batch)
+            .expect("sums");
+        let mut y_gemv = vec![0f32; batch * out_dim];
+        let mut xr = exec.alloc(in_dim).expect("xr");
+        let mut yr = exec.alloc(out_dim).expect("yr");
+        for r in 0..batch {
+            exec.copy_region(&d_x, r * in_dim, &mut xr, 0, in_dim)
+                .expect("copy");
+            exec.kquant_gemv(&w, &xr, &mut yr).expect("gemv f32");
+            y_gemv[r * out_dim..(r + 1) * out_dim].copy_from_slice(&exec.to_host(&yr).expect("h"));
+        }
+        let mut d_y1 = exec.alloc(out_dim).expect("y1");
+        let mut d_xq1 = exec.alloc_i8(in_dim).expect("xq1");
+        let mut d_xs1 = exec.alloc(in_dim / 32).expect("xs1");
+        exec.copy_region(&d_xq, 0, &mut d_xq1, 0, in_dim)
+            .expect("copy");
+        exec.copy_region(&d_xs, 0, &mut d_xs1, 0, in_dim / 32)
+            .expect("copy");
+        let mut d_sums1 = exec.alloc(in_dim / 16).expect("sums1");
+        exec.copy_region(&d_sums, 0, &mut d_sums1, 0, in_dim / 16)
+            .expect("copy");
+        exec.kquant_gemv_w4a8(&w, &d_xq1, &d_xs1, needs.then_some(&d_sums1), &mut d_y1)
+            .expect("w4a8");
+        let y_w4a8 = exec.to_host(&d_y1).expect("h");
+        let mut d_y = exec.alloc(batch * out_dim).expect("y");
+        exec.kquant_gemm_dp4a(&w, &d_xq, &d_xs, needs.then_some(&d_sums), &mut d_y, batch)
+            .expect("dp4a");
+        let y_dp4a = exec.to_host(&d_y).expect("h");
+        let mut d_y3 = exec.alloc(3 * out_dim).expect("y3");
+        exec.kquant_gemv_w4a8_nc(&w, &d_xq, &d_xs, needs.then_some(&d_sums), &mut d_y3, 3)
+            .expect("nc");
+        let y_nc = exec.to_host(&d_y3).expect("h");
+        let e_gemv = rel_err(&y_gemv, &yref);
+        let e_w4a8 = rel_err(&y_w4a8, &yref_q[..out_dim]);
+        let e_dp4a = rel_err(&y_dp4a, &yref_q);
+        let e_nc = rel_err(&y_nc, &yref_q[..3 * out_dim]);
+        eprintln!(
+            "{name} {:?} [{in_dim}->{out_dim}]: gemv_f32 {e_gemv:.2e} | w4a8 {e_w4a8:.2e} dp4a {e_dp4a:.2e} nc {e_nc:.2e}",
+            w.ty
+        );
+        if e_gemv > 2e-5 || e_dp4a > 2e-5 {
+            eprintln!("  ref    {:?}", &yref[..4]);
+            eprintln!("  gemv   {:?}", &y_gemv[..4]);
+            eprintln!("  ref_q  {:?}", &yref_q[..4]);
+            eprintln!("  w4a8   {:?}", &y_w4a8[..4]);
+            eprintln!("  dp4a   {:?}", &y_dp4a[..4]);
+            eprintln!("  deq[0..4] {:?}  x[0..4] {:?}", &deq[..4], &x[..4]);
+        }
+        assert!(e_gemv < 2e-5, "{name}: f32 gemv ({e_gemv:.2e})");
+        assert!(
+            e_w4a8 < 2e-5 && e_dp4a < 2e-5 && e_nc < 2e-5,
+            "{name}: int8 lanes ({e_w4a8:.2e} {e_dp4a:.2e} {e_nc:.2e})"
+        );
+        checked += 1;
+    }
+    // the fused gate|up pair equals silu(gate . x) * (up . x) off the single lanes
+    if let (Ok((gi, _)), Ok((ui, _))) = (
+        map.tensor_bytes("blk.0.ffn_gate.weight"),
+        map.tensor_bytes("blk.0.ffn_up.weight"),
+    ) && is_iq(gi.ggml_type)
+        && is_iq(ui.ggml_type)
+    {
+        let g = exec
+            .repack_kquant(&map, "blk.0.ffn_gate.weight")
+            .expect("gate");
+        let u = exec.repack_kquant(&map, "blk.0.ffn_up.weight").expect("up");
+        let (in_dim, out_dim) = (g.dims[0], g.dims[1]);
+        let x = deterministic_input(in_dim, 33);
+        let d_x = exec.to_device(&x).expect("x");
+        let mut d_xq = exec.alloc_i8(in_dim).expect("xq");
+        let mut d_xs = exec.alloc(in_dim / 32).expect("xs");
+        exec.quantize_q8(&d_x, &mut d_xq, &mut d_xs, in_dim)
+            .expect("quant");
+        let mut d_sums = exec.alloc(in_dim / 16).expect("sums");
+        exec.q8_sums_strided(&d_xq, &mut d_sums, in_dim, 1)
+            .expect("sums");
+        let mut d_yg = exec.alloc(out_dim).expect("yg");
+        let mut d_yu = exec.alloc(out_dim).expect("yu");
+        let mut d_glu = exec.alloc(out_dim).expect("glu");
+        let (ng, nu) = (g.ty == GgmlType::Q2K, u.ty == GgmlType::Q2K);
+        exec.kquant_gemv_w4a8(&g, &d_xq, &d_xs, ng.then_some(&d_sums), &mut d_yg)
+            .expect("g");
+        exec.kquant_gemv_w4a8(&u, &d_xq, &d_xs, nu.then_some(&d_sums), &mut d_yu)
+            .expect("u");
+        exec.kquant_gemv_w4a8_glu(&g, &u, &d_xq, &d_xs, &d_sums, &mut d_glu)
+            .expect("glu");
+        let (yg, yu, glu) = (
+            exec.to_host(&d_yg).expect("h"),
+            exec.to_host(&d_yu).expect("h"),
+            exec.to_host(&d_glu).expect("h"),
+        );
+        let want: Vec<f32> = yg
+            .iter()
+            .zip(&yu)
+            .map(|(&a, &b)| (a / (1.0 + (-a).exp())) * b)
+            .collect();
+        let e = rel_err(&glu, &want);
+        eprintln!("blk.0 ffn gate|up glu vs split lanes rel_err {e:.2e}");
+        assert!(e < 1e-5, "glu pair ({e:.2e})");
+        checked += 1;
+    }
+    // the token gather: rows equal the dequant
+    if let Ok((ti, _)) = map.tensor_bytes("token_embd.weight")
+        && is_iq(ti.ggml_type)
+    {
+        let t = exec.repack_kquant(&map, "token_embd.weight").expect("embd");
+        let (embd, vocab) = (t.dims[0], t.dims[1]);
+        let toks: Vec<u32> = vec![0, 1, 17, 1000, (vocab - 1) as u32];
+        let d_tok = exec.to_device_u32(&toks).expect("tok");
+        let mut d_out = exec.alloc(toks.len() * embd).expect("out");
+        exec.kquant_gather(&t, &d_tok, &mut d_out, embd, toks.len())
+            .expect("gather");
+        let got = exec.to_host(&d_out).expect("h");
+        let (_, raw) = map.tensor_bytes("token_embd.weight").expect("raw");
+        let mut deq = vec![0f32; embd * vocab];
+        paddock_kernels::reference::iq::dequant_iq(t.ty.raw(), raw, &mut deq).expect("raw dequant");
+        for (i, &tk) in toks.iter().enumerate() {
+            let row = &deq[tk as usize * embd..(tk as usize + 1) * embd];
+            assert!(
+                got[i * embd..(i + 1) * embd] == *row,
+                "token {tk}: gather differs from dequant"
+            );
+        }
+        eprintln!("token_embd {:?} gather: {} rows exact", t.ty, toks.len());
+        checked += 1;
+    }
+    assert!(
+        checked > 0,
+        "no i-quant dense tensor found in {}",
+        model.display()
+    );
+}
+
+/// Bandwidth of the dense i-quant lanes vs the k-quant GEMV on the same
+/// shapes: bytes of the repacked plane per call over the measured time.
+/// `cargo test ... iq_dense_gemv_bench -- --ignored --nocapture`.
+#[test]
+#[ignore]
+fn iq_dense_gemv_bench() {
+    let Some(exec) = common::gpu() else {
+        return;
+    };
+    // Four layers' copies of each plane, cycled per launch, so every launch
+    // streams from DRAM (54-70 MB per set vs the 5060 Ti's 32 MB L2); the
+    // single-plane numbers are the L2-resident ceiling.
+    const LAYERS: [usize; 4] = [0, 8, 16, 24];
+    let mut planes: Vec<(String, Vec<paddock_engine::gpu::RepackedKQ>)> = Vec::new();
+    let mut add = |label: &str, map: &MappedGguf, base: &str| {
+        let mut set = Vec::new();
+        for l in LAYERS {
+            let n = format!("blk.{l}.{base}");
+            match exec.repack_kquant(map, &n) {
+                Ok(w) => set.push(w),
+                Err(e) => eprintln!("{n}: {e}"),
+            }
+        }
+        if !set.is_empty() {
+            planes.push((format!("{label} {base}"), set));
+        }
+    };
+    if let Some(m) = common::model("QWEN35_IQ2_GGUF", common::QWEN35_9B_UD_IQ2) {
+        let map = MappedGguf::open(&m).expect("open");
+        for n in ["ffn_gate.weight", "ffn_down.weight", "attn_q.weight"] {
+            add("9B-IQ2", &map, n);
+        }
+    }
+    if let Some(m) = common::model("QWEN36_MOE_IQ2_GGUF", common::QWEN36_35B_A3B_UD_IQ2) {
+        let map = MappedGguf::open(&m).expect("open");
+        for n in [
+            "attn_qkv.weight",
+            "ffn_gate_shexp.weight",
+            "ssm_out.weight",
+            "attn_q.weight",
+        ] {
+            add("35B-IQ2-dense", &map, n);
+        }
+    }
+    for (name, set) in &planes {
+        let w = &set[0];
+        let (in_dim, out_dim) = (w.dims[0], w.dims[1]);
+        let bytes = (w.data.len() + w.scales.len()) as f64;
+        let x = deterministic_input(in_dim, 3);
+        let d_x = exec.to_device(&x).expect("x");
+        let mut d_y = exec.alloc(out_dim).expect("y");
+        let mut d_xq = exec.alloc_i8(in_dim).expect("xq");
+        let mut d_xs = exec.alloc(in_dim / 32).expect("xs");
+        let mut d_sums = exec.alloc(in_dim / 16).expect("sums");
+        exec.quantize_q8_sums(&d_x, &mut d_xq, &mut d_xs, &mut d_sums, in_dim)
+            .expect("q");
+        let needs = matches!(
+            w.ty,
+            GgmlType::Q4K | GgmlType::Q5K | GgmlType::Q4_0 | GgmlType::Q2K
+        );
+        let time = |f: &mut dyn FnMut(&paddock_engine::gpu::RepackedKQ), cold: bool| -> f64 {
+            let pick = |i: usize| if cold { &set[i % set.len()] } else { &set[0] };
+            // best of 3 x 100 launches: the card's clocks ramp under load and
+            // a single short burst reads 20-40% low
+            let iters = 100;
+            let mut best = f64::MAX;
+            for _ in 0..3 {
+                for i in 0..8 {
+                    f(pick(i));
+                }
+                exec.stream.synchronize().unwrap();
+                let t0 = std::time::Instant::now();
+                for i in 0..iters {
+                    f(pick(i));
+                }
+                exec.stream.synchronize().unwrap();
+                best = best.min(t0.elapsed().as_secs_f64() / iters as f64);
+            }
+            best
+        };
+        let mut f32_lane =
+            |w: &paddock_engine::gpu::RepackedKQ| exec.kquant_gemv(w, &d_x, &mut d_y).unwrap();
+        let t_f32 = time(&mut f32_lane, false);
+        let t_f32c = time(&mut f32_lane, true);
+        let mut w4a8_lane = |w: &paddock_engine::gpu::RepackedKQ| {
+            exec.kquant_gemv_w4a8(w, &d_xq, &d_xs, needs.then_some(&d_sums), &mut d_y)
+                .unwrap()
+        };
+        let t_w4a8 = time(&mut w4a8_lane, false);
+        let t_w4a8c = time(&mut w4a8_lane, true);
+        eprintln!(
+            "{name} {:?} [{in_dim}->{out_dim}] {:.1} MB: gemv_f32 {:.1} us = {:.0} GB/s (cold {:.0}) | w4a8 {:.1} us = {:.0} GB/s (cold {:.1} us = {:.0})",
+            w.ty,
+            bytes / 1e6,
+            t_f32 * 1e6,
+            bytes / t_f32 / 1e9,
+            bytes / t_f32c / 1e9,
+            t_w4a8 * 1e6,
+            bytes / t_w4a8 / 1e9,
+            t_w4a8c * 1e6,
+            bytes / t_w4a8c / 1e9
         );
     }
 }

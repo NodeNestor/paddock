@@ -64,8 +64,8 @@ __global__ void __launch_bounds__(256) pd_kquant_moe_gate_up_kernel(
     const int8_t* xrow = xq + (size_t)b * in_dim;
     const float* xsc = xs + (size_t)b * (in_dim >> 5);
     const float* xsm = xsums + (size_t)b * (in_dim >> 4);
-    const bool gmu = gdt == PD_KQ_Q4K || gdt == PD_KQ_Q5K || gdt == PD_KQ_Q40;
-    const bool umu = udt == PD_KQ_Q4K || udt == PD_KQ_Q5K || udt == PD_KQ_Q40;
+    const bool gmu = pd_kq_has_mu(gdt);
+    const bool umu = pd_kq_has_mu(udt);
 
     float accg = 0.0f, accu = 0.0f;
     for (uint32_t base = tid * 16u; base < in_dim; base += nth * 16u) {
@@ -120,8 +120,8 @@ int pd_kquant_moe_gate_up(const void* gate_data, const void* gate_scales,
         return cudaErrorInvalidValue;   // partial superblocks: IQ4_NL's flat rows only
     if (!(pd_kq_valid(gdt) || pd_kq_valid_iq(gdt)) || !(pd_kq_valid(udt) || pd_kq_valid_iq(udt)))
         return cudaErrorInvalidValue;
-    const bool mu = gdt == PD_KQ_Q4K || gdt == PD_KQ_Q5K || gdt == PD_KQ_Q40 ||
-                    udt == PD_KQ_Q4K || udt == PD_KQ_Q5K || udt == PD_KQ_Q40;
+    const bool mu = pd_kq_has_mu(gdt) ||
+                    pd_kq_has_mu(udt);
     if (mu && xsums == nullptr) return cudaErrorInvalidValue;
     dim3 grid(ff, n_active, batch);
     // Block width = one thread per 16-weight window, warp-rounded, capped at
@@ -162,7 +162,7 @@ __global__ void __launch_bounds__(512) pd_kquant_moe_down_kernel(
     const uint32_t o = blockIdx.x, b = blockIdx.y;
     const uint32_t lane = threadIdx.x & 31u, warp = threadIdx.x >> 5;
     const uint32_t ddb = pd_kq_datab(ddt);
-    const bool mu = ddt == PD_KQ_Q4K || ddt == PD_KQ_Q5K || ddt == PD_KQ_Q40;
+    const bool mu = pd_kq_has_mu(ddt);
     __shared__ float sh[16];
     if (warp < n_active) {
         const size_t srow = (size_t)b * n_active + warp;
@@ -213,7 +213,7 @@ int pd_kquant_moe_down(const void* down_data, const void* down_scales,
     if ((ff & 255u) != 0 && ddt != PD_KQ_IQ4NL_ID)
         return cudaErrorInvalidValue;   // partial superblocks: IQ4_NL's flat rows only
     if (!pd_kq_valid(ddt) && !pd_kq_valid_iq(ddt)) return cudaErrorInvalidValue;
-    if ((ddt == PD_KQ_Q4K || ddt == PD_KQ_Q5K || ddt == PD_KQ_Q40) && fsums == nullptr)
+    if ((pd_kq_has_mu(ddt)) && fsums == nullptr)
         return cudaErrorInvalidValue;
     dim3 grid(embd, batch);
     pd_pdl_go(pd_kquant_moe_down_kernel, grid, 32u * n_active, 0u, (cudaStream_t)stream,
@@ -639,7 +639,7 @@ int pd_kquant_moe_gate_up_mma(const void* gate_data, const void* gate_scales,
     if (ff == 0 || max_blocks == 0) return 0;
     if ((in_dim & 255u) != 0 || (ff & 31u) != 0) return cudaErrorInvalidValue;
     if (!pd_kq_valid(dtype)) return cudaErrorInvalidValue;
-    if ((dtype == PD_KQ_Q4K || dtype == PD_KQ_Q5K || dtype == PD_KQ_Q40) && xsums == nullptr)
+    if ((pd_kq_has_mu(dtype)) && xsums == nullptr)
         return cudaErrorInvalidValue;
     dim3 grid(max_blocks, (ff + 63u) / 64u);
     cudaStream_t st = (cudaStream_t)stream;
@@ -672,7 +672,7 @@ int pd_kquant_moe_down_mma(const void* down_data, const void* down_scales,
     if (embd == 0 || max_blocks == 0) return 0;
     if ((ff & 255u) != 0 || (embd & 31u) != 0) return cudaErrorInvalidValue;
     if (!pd_kq_valid(dtype)) return cudaErrorInvalidValue;
-    if ((dtype == PD_KQ_Q4K || dtype == PD_KQ_Q5K || dtype == PD_KQ_Q40) && fsums == nullptr)
+    if ((pd_kq_has_mu(dtype)) && fsums == nullptr)
         return cudaErrorInvalidValue;
     dim3 grid(max_blocks, (embd + 63u) / 64u);
     cudaStream_t st = (cudaStream_t)stream;

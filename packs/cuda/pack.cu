@@ -53,6 +53,7 @@
 #include "src/quant/iquant.cuh"     // IQ1/IQ2/IQ3/IQ4_NL on the k-quant streams: repack, dequant, window unpack (needs abi.cuh only)
 #include "src/quant/kquant.cuh"     // must precede exports.cuh (which closes the table)
 #include "src/quant/kquant_w4a8.cuh"  // stage-2 W4A8 (needs kquant layouts + gemm/mmq constants)
+#include "src/quant/iquant_dense.cuh" // i-quant DENSE lanes: the k-quant exports dispatch IQ types here (needs kquant_w4a8's window unpack)
 #include "src/asr/whisper.cuh"      // whisper decode lane (flash-decoding attn + fused decode epilogues)
 #include "src/asr/granite_speech.cuh"  // granite-speech conformer tower (macaron FFN, GLU, centered dwconv, Shaw-RPE attention)
 #include "src/moe/kquant.cuh"       // k-quant MoE expert seats (needs the two kquant segments)

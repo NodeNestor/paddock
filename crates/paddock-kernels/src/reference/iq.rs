@@ -13,6 +13,8 @@ pub const IQ2_XS: u32 = 17;
 pub const IQ3_XXS: u32 = 18;
 pub const IQ1_S: u32 = 19;
 pub const IQ4_NL: u32 = 20;
+pub const Q2_K: u32 = 10;
+pub const Q3_K: u32 = 11;
 pub const IQ3_S: u32 = 21;
 pub const IQ2_S: u32 = 22;
 pub const IQ1_M: u32 = 29;
@@ -31,6 +33,8 @@ pub fn iq_block_bytes(raw_type: u32) -> Option<usize> {
         IQ1_S => 50,
         IQ1_M => 56,
         IQ4_NL => 144,
+        Q2_K => 84,
+        Q3_K => 110,
         _ => return None,
     })
 }
@@ -66,8 +70,70 @@ fn iq1m_d(scales: &[u8]) -> f32 {
 }
 
 /// One 256-weight super-block of `raw_type` -> 256 f32.
+/// Q3_K's 16 six-bit scales out of the packed 12 bytes (ggml's kmask shuffle),
+/// with the -32 applied.
+fn q3k_scales(sc: &[u8]) -> [i32; 16] {
+    let mut aux = [u32le(&sc[0..]), u32le(&sc[4..]), 0u32, 0u32];
+    let tmp = u32le(&sc[8..]);
+    let (k1, k2) = (0x0303_0303u32, 0x0f0f_0f0fu32);
+    aux[2] = ((aux[0] >> 4) & k2) | (((tmp >> 4) & k1) << 4);
+    aux[3] = ((aux[1] >> 4) & k2) | (((tmp >> 6) & k1) << 4);
+    aux[0] = (aux[0] & k2) | ((tmp & k1) << 4);
+    aux[1] = (aux[1] & k2) | (((tmp >> 2) & k1) << 4);
+    let mut out = [0i32; 16];
+    for (i, o) in out.iter_mut().enumerate() {
+        *o = ((aux[i >> 2] >> (8 * (i & 3))) & 0xff) as i32 - 32;
+    }
+    out
+}
+
 pub fn dequant_iq_super(raw_type: u32, s: &[u8], y: &mut [f32]) {
     match raw_type {
+        Q2_K => {
+            // ggml dequantize_row_q2_K: y = d*sc*q - dmin*m, sub-blocks of 16
+            let d = f16(&s[80..]);
+            let dmin = f16(&s[82..]);
+            let q = &s[16..80];
+            let mut is = 0usize;
+            for n in (0..256).step_by(128) {
+                for j in 0..4 {
+                    for lb in 0..2 {
+                        let sc = s[is];
+                        is += 1;
+                        let dl = d * (sc & 0xf) as f32;
+                        let ml = dmin * (sc >> 4) as f32;
+                        for l in 0..16 {
+                            y[n + 32 * j + 16 * lb + l] =
+                                dl * ((q[n / 4 + 16 * lb + l] >> (2 * j)) & 3) as f32 - ml;
+                        }
+                    }
+                }
+            }
+        }
+        Q3_K => {
+            // ggml dequantize_row_q3_K: q = low2 - (hbit ? 0 : 4), y = d*scale*q
+            let d = f16(&s[108..]);
+            let hm = &s[0..32];
+            let q = &s[32..96];
+            let scs = q3k_scales(&s[96..108]);
+            let (mut is, mut mbit) = (0usize, 0u32);
+            for n in (0..256).step_by(128) {
+                for j in 0..4 {
+                    for lb in 0..2 {
+                        let dl = d * scs[is] as f32;
+                        is += 1;
+                        for l in 0..16 {
+                            let i = 16 * lb + l;
+                            let hb = (hm[i] >> mbit) & 1;
+                            let qv = ((q[n / 4 + i] >> (2 * j)) & 3) as i32
+                                - if hb == 1 { 0 } else { 4 };
+                            y[n + 32 * j + i] = dl * qv as f32;
+                        }
+                    }
+                    mbit += 1;
+                }
+            }
+        }
         IQ2_XXS => {
             let d = f16(s);
             let qs = &s[2..];

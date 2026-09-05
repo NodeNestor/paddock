@@ -10,8 +10,6 @@
 
 use cudarc::driver::CudaSlice;
 
-use paddock_models::ggml_type::GgmlType;
-
 use crate::generator::{GenError, Generator};
 use crate::gpu::KvDtype;
 use crate::gpu_model::gpt_oss::GpuModelError;
@@ -326,11 +324,7 @@ impl GpuLaguna {
                     match (&w.gate_exps, &w.up_exps) {
                         (ExpW::Kq(g), ExpW::Kq(u)) => {
                             let needs =
-                                matches!(g.ty, GgmlType::Q4K | GgmlType::Q5K | GgmlType::Q4_0)
-                                    || matches!(
-                                        u.ty,
-                                        GgmlType::Q4K | GgmlType::Q5K | GgmlType::Q4_0
-                                    );
+                                crate::gpu::kq_needs_sums(g.ty) || crate::gpu::kq_needs_sums(u.ty);
                             if needs {
                                 exec.q8_sums_strided(&sc.d_moe_xq, &mut sc.d_ssums, embd, 1)?;
                             }
@@ -375,8 +369,7 @@ impl GpuLaguna {
                     )?;
                     match &w.down_exps {
                         ExpW::Kq(d) => {
-                            let needs =
-                                matches!(d.ty, GgmlType::Q4K | GgmlType::Q5K | GgmlType::Q4_0);
+                            let needs = crate::gpu::kq_needs_sums(d.ty);
                             if needs {
                                 exec.q8_sums_strided(
                                     &sc.d_moe_fq,
