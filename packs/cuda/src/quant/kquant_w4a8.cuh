@@ -1613,8 +1613,15 @@ __global__ void __launch_bounds__(256) pd_kquant_gemv_w4a8_nc_kernel(
     // single-column kernel, is preserved. in_dim <= win degenerates to the
     // single-stage shape exactly.
     constexpr uint32_t WIN = PD_KGN_WIN;
-    const uint32_t wxi = WIN >> 2u;                // ints per window x plane
-    const uint32_t w32 = WIN >> 5u, w16 = WIN >> 4u;
+    // The plane strides follow the STAGED window, min(in_dim, WIN) - the
+    // launcher sizes dynamic shared from that same expression. Deriving
+    // them from WIN put every in_dim < 4096 plane's xs / sums planes past
+    // the allocation: ILLEGAL_ADDRESS on a 2048-wide Q5_K shexp plane at
+    // ncols 2 (issue #19), on sm_86 and sm_120 alike, since the windowed
+    // staging landed. The 4096+ production planes never reached it.
+    const uint32_t win = in_dim < WIN ? in_dim : WIN;
+    const uint32_t wxi = win >> 2u;                // ints per window x plane
+    const uint32_t w32 = win >> 5u, w16 = win >> 4u;
     extern __shared__ int pd_kgn_sh[];
     int* sxq = pd_kgn_sh;
     float* sxs = (float*)(pd_kgn_sh + NCOLS * wxi);
