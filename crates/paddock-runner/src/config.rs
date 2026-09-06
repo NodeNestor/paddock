@@ -108,6 +108,12 @@ pub struct Config {
     pub kv_offload: KvOffload,
     /// See [`MoeOffload`].
     pub moe_offload: MoeOffload,
+    /// Override the fixed 3 GiB `graph/prefill scratch` KV-plan reserve, in
+    /// MiB. The default is sized for 16-48 GB cards; on 8 GB cards it alone
+    /// exhausts the grant and starves both the KV pool and the
+    /// `[moe_offload]` slot cache (which is sized from the plan's leftovers).
+    /// None = keep the 3 GiB default.
+    pub graph_scratch_mib: Option<u64>,
     /// Default max output tokens per reply when a request doesn't specify.
     pub max_tokens: Option<usize>,
     /// API key for Bearer auth. Empty + loopback bind = no auth; empty +
@@ -323,6 +329,7 @@ impl Default for Config {
             vram_budget: None,
             kv_offload: KvOffload::default(),
             moe_offload: MoeOffload::default(),
+            graph_scratch_mib: None,
             max_tokens: None,
             api_key: None,
             no_auth: false,
@@ -471,6 +478,12 @@ impl Config {
         }
         if let Some(v) = env_str("PADDOCK_DEVICE") {
             self.device = v;
+        }
+        if let Some(v) = env_str("PADDOCK_GRAPH_SCRATCH_MIB") {
+            self.graph_scratch_mib = Some(
+                v.parse()
+                    .map_err(|_| bad_env("PADDOCK_GRAPH_SCRATCH_MIB", &v))?,
+            );
         }
         if let Some(v) = env_str("PADDOCK_GPU") {
             self.gpu = Some(v);
@@ -670,6 +683,7 @@ pub const ENV_SURFACE: &[&str] = &[
     "PADDOCK_FORCE_PARAMS",
     "PADDOCK_FP8_NATIVE",
     "PADDOCK_GPU",
+    "PADDOCK_GRAPH_SCRATCH_MIB",
     "PADDOCK_HOST",
     "PADDOCK_KERNEL_PACK",
     "PADDOCK_KV_CACHE_DTYPE",
@@ -785,6 +799,15 @@ mod tests {
         // key requirement for non-loopback peers (auth_mw) is the guard.
         let cfg = Config::default();
         assert!(cfg.host.is_unspecified(), "default must serve the network");
+    }
+    #[test]
+    fn graph_scratch_mib_parses_and_defaults_to_none() {
+        // absent -> None (the 3 GiB engine default stands)
+        let c: Config = toml::from_str("").expect("empty config");
+        assert!(c.graph_scratch_mib.is_none());
+        // explicit value
+        let c: Config = toml::from_str("graph_scratch_mib = 512").expect("parse");
+        assert_eq!(c.graph_scratch_mib, Some(512));
     }
 
     #[test]

@@ -1141,7 +1141,10 @@ impl GpuGptOss {
                 ),
                 // prefill/graph-capture scratch + allocator headroom (the qwen35
                 // sizer's measured margin on this card class)
-                kv_plan::Reserve::new("graph/prefill scratch", 3 * 1024 * 1024 * 1024),
+                kv_plan::Reserve::new(
+                    "graph/prefill scratch",
+                    crate::kv_plan::graph_scratch_reserve_bytes(),
+                ),
             ],
             // qwen35's Issue-2 guard: a pool that cannot back --max-ctx ×
             // --max-batch refuses loudly rather than under-sizing into unbounded
