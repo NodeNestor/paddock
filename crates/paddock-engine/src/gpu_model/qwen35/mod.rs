@@ -1199,6 +1199,37 @@ impl GpuQwen35 {
             .iter()
             .any(|l| matches!(&l.ffn, Ffn::Moe(m) if m.cache.is_some()))
     }
+    /// Release everything a failed `enable_batch` attempt seated. The
+    /// width-retry ladder halves the width and calls again; a half-built
+    /// attempt holding its BatchState (pool + tier), per-layer MoE caches,
+    /// overlap stream, dflash device state and scratch reads as
+    /// `0.0 GB free after weights`, and every retry then refuses regardless
+    /// of width. Same teardown list as `set_kv_dtype` (the established
+    /// "nuke serving state" precedent) plus what only `enable_batch` seats;
+    /// the attached DFlash drafter survives - only its device state drops,
+    /// `dflash_ensure_state` rebuilds it on the next attempt.
+    pub(super) fn release_batch_attempt(&mut self) {
+        self.pipe_abort();
+        self.batch = None;
+        self.spec = None;
+        self.spec_batch = None;
+        self.scratch = None;
+        self.overlap_exec = None;
+        if let Some(df) = &mut self.dflash {
+            df.state = None;
+        }
+        for layer in &mut self.layers {
+            if let Ffn::Moe(m) = &mut layer.ffn {
+                m.cache = None;
+            }
+        }
+        if let Some(mtp) = &mut self.mtp {
+            if let Ffn::Moe(m) = &mut mtp.ffn {
+                m.cache = None;
+            }
+        }
+        self.exec.trim_mem_pool();
+    }
 
     /// Cache counters summed over the layers: `(rows resolved, misses)` since
     /// load; `None` without a cache. Syncs the stream - for gates and logs.
