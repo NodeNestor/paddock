@@ -1487,6 +1487,7 @@ static const KernelTableV1 PD_KERNELS = {
     pd_kquant_iq,
     pd_kquant_iq_dense,
     pd_q4x_gdn_split_widen_tiled,
+    pd_kquant_iq_tile,
 };
 
 PD_EXPORT const PackInfo* paddock_pack_info(void) {

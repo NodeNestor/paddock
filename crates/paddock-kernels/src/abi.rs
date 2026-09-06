@@ -6154,6 +6154,11 @@ pub struct KernelTableV1 {
     /// converter writes); `q4x_gdn_split_widen` keeps the raw-safetensors
     /// interleave map. Same signature.
     pub q4x_gdn_split_widen_tiled: Option<Q4xGdnSplitWidenFn>,
+    /// 580: capability marker - `kquant_gemm_w4a8_pipe2` (and the v1 / pipe
+    /// launchers, which forward to it) serve the i-quant family + Q2_K /
+    /// Q3_K / IQ4_NL: the >64-row prefill tile for dense i-quant planes.
+    /// Without it such a plane stays on the per-token dp4a walk.
+    pub kquant_iq_tile: Option<unsafe extern "C" fn() -> i32>,
 }
 
 /// MoE expert-offload cache resolve (see `KernelTableV1::moe_cache_resolve`).
@@ -6531,7 +6536,7 @@ pub type AddRmsnormQ8XnFn = unsafe extern "C" fn(
 /// the copy to the smaller of declared and expected, so an old pack against a
 /// new engine (or the reverse) reads missing entries as None rather than a
 /// shifted slot.
-pub const KERNEL_TABLE_SLOTS: usize = 565;
+pub const KERNEL_TABLE_SLOTS: usize = 566;
 
 const _: () = assert!(
     core::mem::size_of::<KernelTableV1>() == 8 + KERNEL_TABLE_SLOTS * 8,
