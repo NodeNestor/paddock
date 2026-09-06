@@ -42,8 +42,6 @@ use std::collections::HashMap;
 use cudarc::driver::CudaSlice;
 use cudarc::driver::sys::CUstreamCaptureMode;
 
-use paddock_models::ggml_type::GgmlType;
-
 use crate::gpu::{GpuError, KvDtype};
 use crate::gpu_model::gpt_oss::GpuModelError;
 use crate::gpu_model::qwen35::{gemv_any, mmq_kq_pre, mmq_pre, mmq_pre_any, prefill_mm_pre};
@@ -360,7 +358,7 @@ fn pf_mm(
 ) -> Result<(), GpuModelError> {
     match w {
         QuantW::Kq(k) => {
-            let needs = matches!(k.ty, GgmlType::Q4K | GgmlType::Q5K | GgmlType::Q4_0);
+            let needs = crate::gpu::kq_needs_sums(k.ty);
             exec.kquant_gemm_w4a8(k, yq, needs.then_some(xsums), y, r)?;
             Ok(())
         }
@@ -392,7 +390,7 @@ fn gemv8_any(
 ) -> Result<(), GpuModelError> {
     match w {
         QuantW::Kq(k) => {
-            let needs = matches!(k.ty, GgmlType::Q4K | GgmlType::Q5K | GgmlType::Q4_0);
+            let needs = crate::gpu::kq_needs_sums(k.ty);
             exec.kquant_gemv_w4a8(k, xq, xs, needs.then_some(ssums), y)?;
             Ok(())
         }
@@ -2000,7 +1998,7 @@ impl GpuLaguna {
             if qk_fused {
                 let qkg = layer.qkg.as_ref().expect("checked");
                 if g8 {
-                    let needs = matches!(qkg.ty, GgmlType::Q4K | GgmlType::Q5K | GgmlType::Q4_0);
+                    let needs = crate::gpu::kq_needs_sums(qkg.ty);
                     exec.kquant_gemv_w4a8(
                         qkg,
                         &sc.xq,
@@ -2879,8 +2877,7 @@ impl GpuLaguna {
                     // (pd_quantize_q8_sums - bit-identical to the two-step).
                     let needs_gu = match (&w.gate_exps, &w.up_exps) {
                         (ExpW::Kq(g), ExpW::Kq(u)) => {
-                            matches!(g.ty, GgmlType::Q4K | GgmlType::Q5K | GgmlType::Q4_0)
-                                || matches!(u.ty, GgmlType::Q4K | GgmlType::Q5K | GgmlType::Q4_0)
+                            crate::gpu::kq_needs_sums(g.ty) || crate::gpu::kq_needs_sums(u.ty)
                         }
                         _ => false,
                     };
@@ -2966,8 +2963,7 @@ impl GpuLaguna {
                         let ExpW::Kq(d) = &w.down_exps else {
                             unreachable!("kq_pair checked")
                         };
-                        let needs_d =
-                            matches!(d.ty, GgmlType::Q4K | GgmlType::Q5K | GgmlType::Q4_0);
+                        let needs_d = crate::gpu::kq_needs_sums(d.ty);
                         if needs_d {
                             // sums over the SORTED fq rows (PAD rows are zeros)
                             exec.q8_sums_strided(
@@ -3030,7 +3026,8 @@ impl GpuLaguna {
                                 )?;
                             }
                         }
-                        let needs_d = matches!(&w.down_exps, ExpW::Kq(d) if matches!(d.ty, GgmlType::Q4K | GgmlType::Q5K | GgmlType::Q4_0));
+                        let needs_d =
+                            matches!(&w.down_exps, ExpW::Kq(d) if crate::gpu::kq_needs_sums(d.ty));
                         if needs_d {
                             exec.quantize_q8_sums(
                                 &sc.moe_fused,
@@ -3083,7 +3080,7 @@ impl GpuLaguna {
                         // quantize writes moe_ssums, so xn's ssums survive);
                         // the down's sh_up input quantizes into its own tiny
                         // planes
-                        let needs = matches!(gu.ty, GgmlType::Q4K | GgmlType::Q5K | GgmlType::Q4_0);
+                        let needs = crate::gpu::kq_needs_sums(gu.ty);
                         exec.kquant_gemv_w4a8(
                             gu,
                             &sc.xq,
@@ -3291,7 +3288,7 @@ impl GpuLaguna {
                 && let QuantW::Kq(k) = &self.lm_head
             {
                 exec.quantize_q8_sums(&sc.xn, &mut sc.xq, &mut sc.xs, &mut sc.ssums, hp.n_embd)?;
-                let needs = matches!(k.ty, GgmlType::Q4K | GgmlType::Q5K | GgmlType::Q4_0);
+                let needs = crate::gpu::kq_needs_sums(k.ty);
                 exec.kquant_gemv_w4a8(
                     k,
                     &sc.xq,
@@ -3951,8 +3948,8 @@ impl GpuLaguna {
                 )?;
                 match (&w.gate_exps, &w.up_exps) {
                     (ExpW::Kq(g), ExpW::Kq(u)) => {
-                        let needs = matches!(g.ty, GgmlType::Q4K | GgmlType::Q5K | GgmlType::Q4_0)
-                            || matches!(u.ty, GgmlType::Q4K | GgmlType::Q5K | GgmlType::Q4_0);
+                        let needs =
+                            crate::gpu::kq_needs_sums(g.ty) || crate::gpu::kq_needs_sums(u.ty);
                         if needs {
                             exec.q8_sums_strided(&sc.xq, &mut sc.ssums, embd, 1)?;
                         }
@@ -3978,7 +3975,7 @@ impl GpuLaguna {
                 )?;
                 match &w.down_exps {
                     ExpW::Kq(d) => {
-                        let needs = matches!(d.ty, GgmlType::Q4K | GgmlType::Q5K | GgmlType::Q4_0);
+                        let needs = crate::gpu::kq_needs_sums(d.ty);
                         if needs {
                             exec.q8_sums_strided(&sc.moe_fq, &mut sc.ssums, m.moe_ff, m.n_active)?;
                         }
@@ -4179,8 +4176,7 @@ impl GpuLaguna {
                 let Ffn::Moe(w) = &layer.ffn else { continue };
                 let sc = &mut bs.sc;
                 if let (ExpW::Kq(g), ExpW::Kq(u)) = (&w.gate_exps, &w.up_exps) {
-                    let needs = matches!(g.ty, GgmlType::Q4K | GgmlType::Q5K | GgmlType::Q4_0)
-                        || matches!(u.ty, GgmlType::Q4K | GgmlType::Q5K | GgmlType::Q4_0);
+                    let needs = crate::gpu::kq_needs_sums(g.ty) || crate::gpu::kq_needs_sums(u.ty);
                     exec.kquant_moe_gate_up(
                         g,
                         u,
@@ -4194,7 +4190,7 @@ impl GpuLaguna {
                     )?;
                 }
                 if let ExpW::Kq(d) = &w.down_exps {
-                    let needs = matches!(d.ty, GgmlType::Q4K | GgmlType::Q5K | GgmlType::Q4_0);
+                    let needs = crate::gpu::kq_needs_sums(d.ty);
                     exec.kquant_moe_down(
                         d,
                         &sc.moe_idx,

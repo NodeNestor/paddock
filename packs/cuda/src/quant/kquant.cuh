@@ -77,7 +77,35 @@
 #define PD_KQ5_DATA 160u
 #define PD_KQ6_DATA 192u
 #define PD_IQ4_DATA 128u
-#define PD_KQ_SCB 24u   // repacked scale-record bytes (all four types)
+#define PD_KQ_SCB 24u   // repacked scale-record bytes (the k-quant family + IQ4_XS + Q4_0)
+
+// i-quant DENSE lanes (quant/iquant_dense.cuh, included after quant/kquant_w4a8.cuh):
+// the k-quant exports below dispatch the IQ1/IQ2/IQ3 family + IQ4_NL to
+// these by type, so the k-quant kernels stay as they are.
+int pd_kq_iq_dense_dp4a(const void* data, const void* scales, const void* xq,
+                        const void* xs, const void* xsums, void* y, uint32_t in_dim,
+                        uint32_t out_dim, uint32_t batch, uint32_t dtype, void* stream);
+int pd_kq_iq_dense_glu(const void* gd, const void* gs, const void* ud, const void* us,
+                       const void* xq, const void* xs, const void* xsums, void* y,
+                       uint32_t in_dim, uint32_t out_dim, uint32_t dtg, uint32_t dtu,
+                       void* stream);
+int pd_kq_iq_dense_gemv_f32(const void* data, const void* scales, const void* x, void* y,
+                            uint32_t in_dim, uint32_t out_dim, uint32_t dtype, void* stream);
+int pd_kq_iq_dense_gather(const void* data, const void* scales, const void* tokens, void* out,
+                          uint32_t embd, uint32_t n_tokens, uint32_t dtype, void* stream);
+// Record stride by type: the k-quant family's fixed 24 bytes, the i-quant
+// family's slimmer records (quant/iquant.cuh). Every lane an i-quant seat can
+// reach (repack, repacked dequant, the token-batched MoE pair, the dense gemv
+// and gather) indexes records through this; the W4A8 / mma / sorted lanes
+// never see an i-quant type and keep PD_KQ_SCB.
+__host__ __device__ __forceinline__ uint32_t pd_kq_scb(uint32_t dt) {
+    return pd_kq_valid_iq(dt) ? pd_iq_scb(dt) : PD_KQ_SCB;
+}
+// Formats with a per-16 MIN (mu) term: the int8 lanes need the per-16
+// activation sums for these (Q4_K, Q5_K, Q4_0's folded -8, Q2_K's dmin*m).
+__host__ __device__ constexpr bool pd_kq_has_mu(uint32_t dt) {
+    return dt == PD_KQ_Q4K || dt == PD_KQ_Q5K || dt == PD_KQ_Q40 || dt == PD_KQ_Q2K_ID;
+}
 
 __host__ __device__ __forceinline__ bool pd_kq_valid(uint32_t dtype) {
     return dtype == PD_KQ_Q4K || dtype == PD_KQ_Q5K || dtype == PD_KQ_Q6K ||
@@ -118,6 +146,10 @@ __global__ void pd_kquant_dequant_kernel(const uint8_t* __restrict__ src,
     for (uint64_t b = (uint64_t)blockIdx.x * blockDim.x + threadIdx.x; b < n_super;
          b += (uint64_t)gridDim.x * blockDim.x) {
         float* y = dst + b * 256u;
+        if (pd_kq_valid_iq(dtype)) {
+            pd_iq_dequant_super(dtype, src + b * pd_iq_srcb(dtype), y);
+            continue;
+        }
         if (dtype == PD_KQ_Q6K) {
             const uint8_t* s = src + b * PD_KQ6_SRC;
             const uint8_t* ql = s;
@@ -207,7 +239,7 @@ PD_EXPORT
 int pd_kquant_dequant(const void* src, void* dst, uint64_t n_super, uint32_t dtype,
                       void* stream) {
     if (n_super == 0) return 0;
-    if (!pd_kq_valid(dtype)) return cudaErrorInvalidValue;
+    if (!pd_kq_valid(dtype) && !pd_kq_valid_iq(dtype)) return cudaErrorInvalidValue;
     uint32_t threads = 256;
     uint64_t blocks = (n_super + threads - 1) / threads;
     if (blocks > 65535u) blocks = 65535u;
@@ -225,7 +257,11 @@ __global__ void pd_kquant_repack_kernel(const uint8_t* __restrict__ src,
                                         uint64_t n_super, uint32_t dtype) {
     uint64_t b = (uint64_t)blockIdx.x * blockDim.x + threadIdx.x;
     if (b >= n_super) return;
-    uint8_t* rec = dst_scales + b * PD_KQ_SCB;
+    uint8_t* rec = dst_scales + b * pd_kq_scb(dtype);
+    if (pd_kq_valid_iq(dtype)) {
+        pd_iq_repack_super(dtype, src + b * pd_iq_srcb(dtype), dst_data + b * pd_iq_datab(dtype), rec);
+        return;
+    }
     if (dtype == PD_KQ_Q6K) {
         const uint8_t* s = src + b * PD_KQ6_SRC;
         uint8_t* d = dst_data + b * PD_KQ6_DATA;
@@ -299,7 +335,7 @@ PD_EXPORT
 int pd_kquant_repack(const void* src, void* dst_data, void* dst_scales,
                      uint64_t n_super, uint32_t dtype, void* stream) {
     if (n_super == 0) return 0;
-    if (!pd_kq_valid(dtype)) return cudaErrorInvalidValue;
+    if (!pd_kq_valid(dtype) && !pd_kq_valid_iq(dtype)) return cudaErrorInvalidValue;
     uint32_t threads = 256;
     uint64_t blocks = (n_super + threads - 1) / threads;
     pd_kquant_repack_kernel<<<(uint32_t)blocks, threads, 0, (cudaStream_t)stream>>>(
@@ -345,7 +381,8 @@ __global__ void pd_kquant_gemv_kernel(const uint8_t* __restrict__ data,
     const uint32_t datab = dtype == PD_KQ_Q6K ? PD_KQ6_DATA
                          : dtype == PD_KQ_Q5K ? PD_KQ5_DATA : PD_KQ4_DATA;
     const uint8_t* rowd = data + (size_t)o * n_super * datab;
-    const uint8_t* rows = scales + (size_t)o * n_super * PD_KQ_SCB;
+    const uint32_t scb = pd_kq_scb(dtype);
+    const uint8_t* rows = scales + (size_t)o * n_super * scb;
     // x staged into PADDED shared, one tile per pass (coalesced global read,
     // shared by the 4 rows). The chunk walk's per-thread x runs are 32-float
     // strided across lanes - as global loads that is 32 L1 transactions per
@@ -385,7 +422,7 @@ __global__ void pd_kquant_gemv_kernel(const uint8_t* __restrict__ data,
             const uint4 qa = *(const uint4*)(sb + n * 64u + h * 16u);
             const uint4 qb_ = *(const uint4*)(sb + n * 64u + 32u + h * 16u);
             const uint4 hv = *(const uint4*)(sb + 128u + n * 32u + h * 16u);
-            const uint8_t* rec = rows + (size_t)s * PD_KQ_SCB;
+            const uint8_t* rec = rows + (size_t)s * scb;
             __half hd;
             memcpy(&hd, rec, 2u);
             const float d = __half2float(hd);
@@ -437,7 +474,7 @@ __global__ void pd_kquant_gemv_kernel(const uint8_t* __restrict__ data,
             const uint8_t* sb = rowd + (size_t)s * PD_KQ6_DATA;
             const uint4 qv = *(const uint4*)(sb + n * 64u + a * 32u + h * 16u);
             const uint4 hv = *(const uint4*)(sb + 128u + n * 32u + h * 16u);
-            const uint8_t* rec = rows + (size_t)s * PD_KQ_SCB;
+            const uint8_t* rec = rows + (size_t)s * scb;
             __half hd;
             memcpy(&hd, rec, 2u);
             const float d = __half2float(hd);
@@ -475,7 +512,7 @@ __global__ void pd_kquant_gemv_kernel(const uint8_t* __restrict__ data,
         for (uint32_t c = tc0 + tt; c < tc1; c += nth) {
             const uint32_t s = c >> 3u, ib = c & 7u;
             const uint4 qv = *(const uint4*)(rowd + (size_t)s * PD_IQ4_DATA + ib * 16u);
-            const uint8_t* rec = rows + (size_t)s * PD_KQ_SCB;
+            const uint8_t* rec = rows + (size_t)s * scb;
             __half hd;
             memcpy(&hd, rec, 2u);
             const float dl =
@@ -538,7 +575,7 @@ __global__ void pd_kquant_gemv_kernel(const uint8_t* __restrict__ data,
             const uint4 qv = *(const uint4*)(sb + g * 32u + h * 16u);
             uint4 hv = make_uint4(0u, 0u, 0u, 0u);
             if (q5) hv = *(const uint4*)(sb + 128u + h * 16u);
-            const uint8_t* rec = rows + (size_t)s * PD_KQ_SCB;
+            const uint8_t* rec = rows + (size_t)s * scb;
             __half hd, hm;
             memcpy(&hd, rec, 2u);
             memcpy(&hm, rec + 2u, 2u);
@@ -599,6 +636,8 @@ PD_EXPORT
 int pd_kquant_gemv(const void* data, const void* scales, const void* x, void* y,
                    uint32_t in_dim, uint32_t out_dim, uint32_t dtype, void* stream) {
     if (out_dim == 0) return 0;
+    if (pd_kq_valid_iq(dtype))
+        return pd_kq_iq_dense_gemv_f32(data, scales, x, y, in_dim, out_dim, dtype, stream);
     if ((in_dim & 255u) != 0u) return cudaErrorInvalidValue;
     if (!pd_kq_valid(dtype)) return cudaErrorInvalidValue;
     // padded x staging for one tile: min(in_dim, tile) floats + 1 pad per 32.
@@ -629,7 +668,8 @@ __global__ void pd_kquant_gather_kernel(const uint8_t* __restrict__ data,
                          : dtype == PD_KQ_Q5K ? PD_KQ5_DATA : PD_KQ4_DATA;
     const size_t row = tokens[i];
     const uint8_t* rowd = data + row * n_super * datab;
-    const uint8_t* rows = scales + row * n_super * PD_KQ_SCB;
+    const uint32_t scb = pd_kq_scb(dtype);
+    const uint8_t* rows = scales + row * n_super * scb;
     float* y = out + (size_t)i * embd;
     if (dtype == PD_KQ_Q6K) {
         const uint32_t n_grp = embd >> 4u;
@@ -640,7 +680,7 @@ __global__ void pd_kquant_gather_kernel(const uint8_t* __restrict__ data,
             const uint8_t* sb = rowd + (size_t)s * PD_KQ6_DATA;
             const uint8_t* ql = sb + n * 64u + ((rw & 1u) ? 32u : 0u);
             const uint8_t* qh = sb + 128u + n * 32u;
-            const uint8_t* rec = rows + (size_t)s * PD_KQ_SCB;
+            const uint8_t* rec = rows + (size_t)s * scb;
             __half hd;
             memcpy(&hd, rec, 2u);
             const float d = __half2float(hd);
@@ -661,7 +701,7 @@ __global__ void pd_kquant_gather_kernel(const uint8_t* __restrict__ data,
         for (uint32_t jj = tid; jj < n_sub; jj += nth) {
             const uint32_t s = jj >> 3u, ib = jj & 7u;
             const uint8_t* q = rowd + (size_t)s * PD_IQ4_DATA + ib * 16u;
-            const uint8_t* rec = rows + (size_t)s * PD_KQ_SCB;
+            const uint8_t* rec = rows + (size_t)s * scb;
             __half hd;
             memcpy(&hd, rec, 2u);
             const float dl =
@@ -682,7 +722,7 @@ __global__ void pd_kquant_gather_kernel(const uint8_t* __restrict__ data,
         const uint8_t* sb = rowd + (size_t)s * datab;
         const uint8_t* qg = sb + (j >> 1u) * 32u;
         const uint8_t* qh = sb + 128u;
-        const uint8_t* rec = rows + (size_t)s * PD_KQ_SCB;
+        const uint8_t* rec = rows + (size_t)s * scb;
         __half hd, hm;
         memcpy(&hd, rec, 2u);
         memcpy(&hm, rec + 2u, 2u);
@@ -704,6 +744,8 @@ int pd_kquant_gather(const void* data, const void* scales, const void* tokens,
                      void* out, uint32_t embd, uint32_t n_tokens, uint32_t dtype,
                      void* stream) {
     if (n_tokens == 0) return 0;
+    if (pd_kq_valid_iq(dtype))
+        return pd_kq_iq_dense_gather(data, scales, tokens, out, embd, n_tokens, dtype, stream);
     if ((embd & 255u) != 0u) return cudaErrorInvalidValue;
     if (!pd_kq_valid(dtype)) return cudaErrorInvalidValue;
     pd_kquant_gather_kernel<<<n_tokens, 256, 0, (cudaStream_t)stream>>>(
@@ -724,8 +766,20 @@ __global__ void pd_kquant_dequant_rp_kernel(const uint8_t* __restrict__ data,
                                             uint64_t n_super, uint32_t dtype) {
     const uint32_t t = threadIdx.x;  // 256 = one weight each
     for (uint64_t b = blockIdx.x; b < n_super; b += gridDim.x) {
-        const uint8_t* rec = scales + b * PD_KQ_SCB;
+        const uint8_t* rec = scales + b * pd_kq_scb(dtype);
         float* y = dst + b * 256u;
+        if (pd_kq_valid_iq(dtype)) {
+            // the i-quant family off its repacked (payload + record) form:
+            // one 16-weight window per 16 threads through the same unpack the
+            // serving lanes read
+            const uint8_t* sb = data + b * pd_iq_datab(dtype);
+            const uint32_t w = t >> 4u, j = t & 15u;
+            int wq[4];
+            float f, g;
+            pd_iq_win_unpack(dtype, sb, rec, w, wq, &f, &g);
+            y[t] = f * (float)((int8_t)((wq[j >> 2u] >> (8u * (j & 3u))) & 0xffu)) + g;
+            continue;
+        }
         if (dtype == PD_KQ_Q6K) {
             const uint8_t* sb = data + b * PD_KQ6_DATA;
             const uint32_t n = t >> 7u, idx = t & 127u;
@@ -778,11 +832,18 @@ __global__ void pd_kquant_dequant_rp_kernel(const uint8_t* __restrict__ data,
 PD_EXPORT
 int pd_kquant_q40(void) { return 0; }
 
+// Capability marker (slot 539): present iff the k-quant repack, dequant and
+// token-batched MoE pair serve the ggml i-quant family (IQ1_S/M, IQ2_XXS/XS/S,
+// IQ3_XXS/S) and IQ4_NL - see quant/iquant.cuh. Same reason as the Q4_0
+// marker: the dtypes ride existing entry points.
+PD_EXPORT
+int pd_kquant_iq(void) { return 0; }
+
 PD_EXPORT
 int pd_kquant_dequant_rp(const void* data, const void* scales, void* dst,
                          uint64_t n_super, uint32_t dtype, void* stream) {
     if (n_super == 0) return 0;
-    if (!pd_kq_valid(dtype)) return cudaErrorInvalidValue;
+    if (!pd_kq_valid(dtype) && !pd_kq_valid_iq(dtype)) return cudaErrorInvalidValue;
     uint64_t blocks = n_super < 65535u ? n_super : 65535u;
     pd_kquant_dequant_rp_kernel<<<(uint32_t)blocks, 256, 0, (cudaStream_t)stream>>>(
         (const uint8_t*)data, (const uint8_t*)scales, (float*)dst, n_super, dtype);

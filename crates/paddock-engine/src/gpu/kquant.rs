@@ -51,6 +51,18 @@ impl GpuExecutor {
         self.kernels.kquant_q40.is_some()
     }
 
+    /// True when the pack serves the i-quant family (IQ1/IQ2/IQ3, IQ4_NL)
+    /// on the k-quant streams - repack, dequant and the token-batched MoE
+    /// pair. Capability marker slot 539.
+    pub fn has_kquant_iq(&self) -> bool {
+        self.kernels.kquant_iq.is_some()
+    }
+
+    /// The pack serves the i-quant family on the DENSE lanes too (slot 540).
+    pub fn has_kquant_iq_dense(&self) -> bool {
+        self.kernels.kquant_iq_dense.is_some()
+    }
+
     /// True when the pack carries the K-split W4A8 mma rung (appended after
     /// the base k-quant family - older packs fall back to the dp4a z-tiling).
     pub fn has_kquant_mma_ks(&self) -> bool {
@@ -106,6 +118,17 @@ impl GpuExecutor {
                     Ok(QuantW::Q8(self.repack_q8_blocks(&q8, dims)?))
                 }
             }
+            // the i-quant family on the dense lanes needs both markers: the
+            // repack/dequant (539) and the dense entry points (540)
+            ty if kq_is_iq(ty) => {
+                if !self.has_kquant_iq() || !self.has_kquant_iq_dense() {
+                    return Err(GpuError::Unsupported(format!(
+                        "{name} is {ty:?} but the kernel pack has no dense i-quant lanes \
+                         (slots 539/540) - rebuild packs/cuda"
+                    )));
+                }
+                Ok(QuantW::Kq(self.repack_kquant(map, name)?))
+            }
             ty if kq_params(ty).is_some() => {
                 if !self.has_kquant() {
                     return Err(GpuError::NoKernel {
@@ -133,6 +156,12 @@ impl GpuExecutor {
         let (info, _) = map.tensor_bytes(name)?;
         if kq_params(info.ggml_type).is_none() {
             return Ok(None);
+        }
+        if kq_is_iq(info.ggml_type) && !self.has_kquant_iq() {
+            return Err(GpuError::NoKernel {
+                name: name.to_owned(),
+                ty: info.ggml_type,
+            });
         }
         Ok(Some(self.repack_kquant(map, name)?))
     }
@@ -172,7 +201,35 @@ impl GpuExecutor {
             .kernels
             .kquant_repack
             .ok_or(GpuError::MissingOp("kquant_repack"))?;
-        let n_super = dims.iter().product::<usize>() / 256;
+        // Rows whose in_dim is not a whole number of 256-weight superblocks
+        // (Qwen3.8-Flash-Next's expert `down`: 640 = 2.5 superblocks) exist
+        // only in the 32-block types - the 256-block families cannot encode
+        // such a row, which is why llama.cpp falls back to IQ4_NL there. An
+        // IQ4_NL row is its in_dim/32 blocks laid flat (16 payload bytes + one
+        // f16 d each), so no padding is needed: the repack runs over the
+        // tensor's whole block stream 8 blocks at a time and the kernels
+        // stride rows by in_dim/32 blocks (`pd_kq_row_datab`). The stream is
+        // required to be a whole number of superblocks per expert so the
+        // slot cache's per-expert byte ranges stay exact.
+        let in_dim = dims[0];
+        let n_super = if in_dim.is_multiple_of(256) {
+            dims.iter().product::<usize>() / 256
+        } else {
+            if ty != GgmlType::Iq4Nl || !in_dim.is_multiple_of(32) {
+                return Err(GpuError::Driver(format!(
+                    "kquant repack {what}: in_dim {in_dim} is not superblock-aligned and {ty:?}                      has no flat 32-block row layout (IQ4_NL only)"
+                )));
+            }
+            let per_row = in_dim / 32;
+            let per_expert = per_row * dims.get(1).copied().unwrap_or(1);
+            if !per_expert.is_multiple_of(8) {
+                return Err(GpuError::Driver(format!(
+                    "kquant repack {what}: {per_expert} blocks per [{in_dim} x {}] plane is not a                      whole number of superblocks",
+                    dims.get(1).copied().unwrap_or(1)
+                )));
+            }
+            dims.iter().product::<usize>() / 32 / 8
+        };
         if bytes.len() != n_super * raw_b {
             return Err(GpuError::Driver(format!(
                 "kquant repack {what}: {} raw bytes for {n_super} superblocks (want {})",
@@ -181,7 +238,7 @@ impl GpuExecutor {
             )));
         }
         let mut data = self.alloc_u8(n_super * data_b)?;
-        let mut scales = self.alloc_u8(n_super * 24)?;
+        let mut scales = self.alloc_u8(n_super * kq_scb(ty))?;
         self.with_staged_raw(bytes, |sp| {
             let (dp, _g2) = data.device_ptr_mut(&self.stream);
             let (scp, _g3) = scales.device_ptr_mut(&self.stream);
@@ -291,8 +348,9 @@ impl GpuExecutor {
             .kernels
             .kquant_repack
             .ok_or(GpuError::MissingOp("kquant_repack"))?;
+        let scb = kq_scb(ty);
         let mut data = self.alloc_u8(total_super * data_b)?;
-        let mut scales = self.alloc_u8(total_super * 24)?;
+        let mut scales = self.alloc_u8(total_super * scb)?;
         let mut done = 0usize;
         for name in names {
             let (info, bytes) = map.tensor_bytes(name)?;
@@ -306,7 +364,7 @@ impl GpuExecutor {
                     f(
                         sp as *const _,
                         (dp + (done * data_b) as u64) as *mut _,
-                        (scp + (done * 24) as u64) as *mut _,
+                        (scp + (done * scb) as u64) as *mut _,
                         n_super as u64,
                         raw_id,
                         self.stream_ptr(),
@@ -402,7 +460,11 @@ impl GpuExecutor {
             .kquant_dequant_rp
             .ok_or(GpuError::MissingOp("kquant_dequant_rp"))?;
         let (raw_id, _, _) = kq_params(w.ty).expect("RepackedKQ holds a k-quant type");
-        let n_super = w.dims.iter().product::<usize>() / 256;
+        // off the stream, not the dims: rows padded to whole superblocks
+        // (partial-superblock in_dim, see `repack_kquant_raw`) carry more
+        // superblocks than `dims.product() / 256`
+        let (_, _, data_b) = kq_params(w.ty).expect("RepackedKQ holds a k-quant type");
+        let n_super = w.data.len() / data_b;
         debug_assert!(dst.len() >= n_super * 256);
         let (dp, _g1) = w.data.device_ptr(&self.stream);
         let (scp, _g2) = w.scales.device_ptr(&self.stream);
@@ -1142,7 +1204,7 @@ impl GpuExecutor {
             yp[i] = yy as *mut _;
             rows[i] = w.dims[1] as u32;
             dts[i] = did;
-            needs = needs || matches!(w.ty, GgmlType::Q4K | GgmlType::Q5K | GgmlType::Q4_0);
+            needs = needs || crate::gpu::kq_needs_sums(w.ty);
             guards.push(g1);
             guards.push(g2);
             guards.push(g3);
@@ -1213,8 +1275,7 @@ impl GpuExecutor {
         debug_assert!(y.len() >= out_dim);
         let (dtg, _, _) = kq_params(gate.ty).expect("RepackedKQ holds a k-quant type");
         let (dtu, _, _) = kq_params(up.ty).expect("RepackedKQ holds a k-quant type");
-        let needs = matches!(gate.ty, GgmlType::Q4K | GgmlType::Q5K | GgmlType::Q4_0)
-            || matches!(up.ty, GgmlType::Q4K | GgmlType::Q5K | GgmlType::Q4_0);
+        let needs = crate::gpu::kq_needs_sums(gate.ty) || crate::gpu::kq_needs_sums(up.ty);
         let (gd, _g1) = gate.data.device_ptr(&self.stream);
         let (gs, _g2) = gate.scales.device_ptr(&self.stream);
         let (ud, _g3) = up.data.device_ptr(&self.stream);

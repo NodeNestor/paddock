@@ -128,7 +128,8 @@
 # device, inside the decode graphs). The cache takes whatever VRAM the KV
 # plan leaves after the context/batch you configured - lower max_ctx or
 # max_batch to give it more room; vram_gb caps it. Only k-quant expert seats
-# (Q4_K/Q5_K/Q6_K/IQ4_XS GGUFs) offload today; Q8_0 experts stay resident.
+# (Q4_K/Q5_K/Q6_K/IQ4_XS and the 1-3 bit IQ1/IQ2/IQ3 GGUFs) offload today;
+# Q8_0 experts stay resident.
 # Needs enough RAM to hold the experts page-locked (Windows allows roughly
 # half of system RAM).
 # [moe_offload]

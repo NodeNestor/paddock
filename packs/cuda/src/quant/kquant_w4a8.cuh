@@ -445,7 +445,7 @@ __global__ void __launch_bounds__(256) pd_kquant_gemm_dp4a_kernel(
     __shared__ float sss[PD_KDP_ROWS * (PD_KDP_CHUNK / 16u)]; // per-16 sums (mu)
     __shared__ int s_lut[16];
     if (dtype == PD_KQ_IQ4XS && tid < 16u) s_lut[tid] = (int)PD_KQ_IQ4NL[tid];
-    const bool want_mu = dtype == PD_KQ_Q4K || dtype == PD_KQ_Q5K || dtype == PD_KQ_Q40;
+    const bool want_mu = pd_kq_has_mu(dtype);
 
     // compile-time-indexed accumulators (runtime indices would spill to local)
     float acc0[PD_KDP_ROWS], acc1[PD_KDP_ROWS];
@@ -635,9 +635,11 @@ int pd_kquant_gemm_dp4a(const void* data, const void* scales, const void* xq,
                         uint32_t out_dim, uint32_t batch, uint32_t dtype,
                         void* stream) {
     if (out_dim == 0 || batch == 0) return 0;
+    if (pd_kq_valid_iq(dtype))
+        return pd_kq_iq_dense_dp4a(data, scales, xq, xs, xsums, y, in_dim, out_dim, batch, dtype, stream);
     if ((in_dim & 255u) != 0u) return cudaErrorInvalidValue;
     if (!pd_kq_valid(dtype)) return cudaErrorInvalidValue;
-    if ((dtype == PD_KQ_Q4K || dtype == PD_KQ_Q5K || dtype == PD_KQ_Q40) && xsums == nullptr)
+    if ((pd_kq_has_mu(dtype)) && xsums == nullptr)
         return cudaErrorInvalidValue;
     dim3 grid((out_dim + 15u) / 16u, 1u, (batch + PD_KDP_ROWS - 1u) / PD_KDP_ROWS);
     pd_kquant_gemm_dp4a_kernel<<<grid, 256, 0, (cudaStream_t)stream>>>(
@@ -655,7 +657,7 @@ int pd_kquant_gemm_w4a8(const void* data, const void* scales, const void* yq,
     if (out_dim == 0 || batch == 0) return 0;
     if ((in_dim & 255u) != 0u) return cudaErrorInvalidValue;
     if (!pd_kq_valid(dtype)) return cudaErrorInvalidValue;
-    const bool mu = dtype == PD_KQ_Q4K || dtype == PD_KQ_Q5K || dtype == PD_KQ_Q40;
+    const bool mu = pd_kq_has_mu(dtype);
     if (mu && xsums == nullptr) return cudaErrorInvalidValue;
     const uint32_t batch_pad = (batch + 127u) & ~127u;
     const uint32_t ntiles = ((out_dim + 127u) / 128u) * (batch_pad >> 7u);
@@ -738,8 +740,25 @@ __device__ __forceinline__ int pd_kq_iq4_prmt(uint32_t idx4) {
 }
 
 __host__ __device__ __forceinline__ uint32_t pd_kq_datab(uint32_t dt) {
+    if (pd_kq_valid_iq(dt)) return pd_iq_datab(dt);
     return dt == PD_KQ_Q6K ? PD_KQ6_DATA
          : dt == PD_KQ_Q5K ? PD_KQ5_DATA : PD_KQ4_DATA;
+}
+
+// Bytes one weight ROW of in_dim occupies in the data / scale streams. The
+// 256-block families need a whole number of superblocks per row. IQ4_NL is
+// 32-weight blocks whose repacked form is 16 payload bytes + one f16 d, so a
+// row is simply in_dim/32 blocks laid flat: superblock s of the row is still
+// at s*128 / s*16, and a row that is not a whole number of superblocks
+// (Qwen3.8-Flash-Next's expert down, 640 = 2.5) carries no padding at all -
+// the walk over the row is bounded by in_dim, never by the superblock count.
+__host__ __device__ __forceinline__ uint32_t pd_kq_row_datab(uint32_t dt, uint32_t in_dim) {
+    if (dt == PD_KQ_IQ4NL_ID) return (in_dim >> 5) * 16u;
+    return ((in_dim + 255u) >> 8) * pd_kq_datab(dt);
+}
+__host__ __device__ __forceinline__ uint32_t pd_kq_row_scb(uint32_t dt, uint32_t in_dim) {
+    if (dt == PD_KQ_IQ4NL_ID) return (in_dim >> 5) * 2u;
+    return ((in_dim + 255u) >> 8) * pd_kq_scb(dt);
 }
 
 // Unpack one 16-weight window (window w of super sb/rec) of a k-quant row to
@@ -751,6 +770,83 @@ __device__ __forceinline__ void pd_kq_win_unpack(
         const uint8_t* __restrict__ rec, uint32_t w, int wq[4], float* f,
         float* g) {
     *g = 0.0f;
+    if (pd_kq_valid_iq(dtype)) {
+        pd_iq_win_unpack(dtype, sb, rec, w, wq, f, g);
+        return;
+    }
+    if (dtype == PD_KQ_Q6K) {
+        const uint32_t n = w >> 3u, rw = (w >> 1u) & 3u, h = w & 1u;
+        const uint32_t qoff = n * 64u + (rw & 1u) * 32u + h * 16u;
+        const uint32_t hoff = 128u + n * 32u + h * 16u;
+        const uint32_t sh = 2u * rw;
+        const bool hi = rw >= 2u;
+        const uint4 qa = __ldcs((const uint4*)(sb + qoff));
+        const uint4 ha = __ldcs((const uint4*)(sb + hoff));
+        const uint32_t qw[4] = {qa.x, qa.y, qa.z, qa.w};
+        const uint32_t hw[4] = {ha.x, ha.y, ha.z, ha.w};
+        #pragma unroll
+        for (uint32_t v = 0; v < 4u; ++v) {
+            const uint32_t nib = hi ? (qw[v] >> 4u) & 0x0F0F0F0Fu : qw[v] & 0x0F0F0F0Fu;
+            wq[v] = (int)__vsub4(nib | (((hw[v] >> sh) & 0x03030303u) << 4u),
+                                 0x20202020u);
+        }
+        const uint32_t si = n * 8u + rw * 2u + h;
+        __half hd;
+        memcpy(&hd, rec, 2u);
+        *f = __half2float(hd) * (float)((const int8_t*)rec)[4u + si];
+    } else if (dtype == PD_KQ_IQ4XS) {
+        const uint32_t ib = w >> 1u, h = w & 1u;
+        const uint4 qa = __ldcs((const uint4*)(sb + ib * 16u));
+        const uint32_t qw[4] = {qa.x, qa.y, qa.z, qa.w};
+        #pragma unroll
+        for (uint32_t v = 0; v < 4u; ++v)
+            wq[v] = pd_kq_iq4_prmt((h ? qw[v] >> 4u : qw[v]) & 0x0F0F0F0Fu);
+        __half hd;
+        memcpy(&hd, rec, 2u);
+        *f = __half2float(hd) * (float)((const int8_t*)rec)[4u + ib];
+    } else {  // Q4_K / Q5_K / Q4_0 (Q4_0 shares the Q4_K data convention)
+        const bool q5 = dtype == PD_KQ_Q5K;
+        const bool q40 = dtype == PD_KQ_Q40;
+        const uint32_t j = w >> 1u, h = w & 1u;  // sub-block, 16-half
+        const uint32_t qoff = (j >> 1u) * 32u + h * 16u;
+        const bool hi = (j & 1u) != 0u;
+        const uint32_t C = q5 ? 0x10101010u : 0x08080808u;
+        const uint4 qa = __ldcs((const uint4*)(sb + qoff));
+        uint4 ha = make_uint4(0u, 0u, 0u, 0u);
+        if (q5) ha = __ldcs((const uint4*)(sb + 128u + h * 16u));
+        const uint32_t qw[4] = {qa.x, qa.y, qa.z, qa.w};
+        const uint32_t hw[4] = {ha.x, ha.y, ha.z, ha.w};
+        #pragma unroll
+        for (uint32_t v = 0; v < 4u; ++v) {
+            uint32_t nib = hi ? (qw[v] >> 4u) & 0x0F0F0F0Fu : qw[v] & 0x0F0F0F0Fu;
+            if (q5) nib |= ((hw[v] >> j) & 0x01010101u) << 4u;
+            wq[v] = (int)__vsub4(nib, C);
+        }
+        __half hd, hm;
+        memcpy(&hd, rec, 2u);
+        memcpy(&hm, rec + 2u, 2u);
+        const float d = __half2float(hd);
+        const float dj = q40 ? pd_kq40_dj(rec, j) : d * (float)rec[4u + j];
+        *f = dj;
+        // Q4_0's value is the centered dj*(q-8): no mu term at all (a
+        // nonzero one would re-add the 8-center a second time)
+        *g = q40 ? 0.0f
+                 : (q5 ? 16.0f : 8.0f) * dj
+                       - __half2float(hm) * (float)rec[12u + j];
+    }
+}
+
+// The same window unpack with the i-quant tables supplied by the caller
+// (a shared-memory copy, see quant/iquant_dense.cuh).
+__device__ __forceinline__ void pd_kq_win_unpack_t(
+        uint32_t dtype, const uint8_t* __restrict__ sb,
+        const uint8_t* __restrict__ rec, uint32_t w, int wq[4], float* f,
+        float* g, const PdIqTabs& tabs) {
+    *g = 0.0f;
+    if (pd_kq_valid_iq(dtype)) {
+        pd_iq_win_unpack_t(dtype, sb, rec, w, wq, f, g, tabs);
+        return;
+    }
     if (dtype == PD_KQ_Q6K) {
         const uint32_t n = w >> 3u, rw = (w >> 1u) & 3u, h = w & 1u;
         const uint32_t qoff = n * 64u + (rw & 1u) * 32u + h * 16u;
@@ -1027,7 +1123,7 @@ __global__ void __launch_bounds__(NT) pd_kquant_gemv_w4a8_kernel(
     const uint32_t tt = tid % TPR;                 // thread-in-row
     const uint32_t n_super = in_dim >> 8u;
     const uint32_t datab = pd_kq_datab(dtype);
-    const bool mu = dtype == PD_KQ_Q4K || dtype == PD_KQ_Q5K || dtype == PD_KQ_Q40;
+    const bool mu = pd_kq_has_mu(dtype);
     // packed int8 x | per-32 scales | per-16 sums (mu formats only)
     extern __shared__ int pd_kg8_sh[];
     int* sxq = pd_kg8_sh;
@@ -1092,9 +1188,11 @@ int pd_kquant_gemv_w4a8(const void* data, const void* scales, const void* xq,
                         uint32_t in_dim, uint32_t out_dim, uint32_t dtype,
                         void* stream) {
     if (out_dim == 0) return 0;
+    if (pd_kq_valid_iq(dtype))
+        return pd_kq_iq_dense_dp4a(data, scales, xq, xs, xsums, y, in_dim, out_dim, 1u, dtype, stream);
     if ((in_dim & 255u) != 0u) return cudaErrorInvalidValue;
     if (!pd_kq_valid(dtype)) return cudaErrorInvalidValue;
-    const bool mu = dtype == PD_KQ_Q4K || dtype == PD_KQ_Q5K || dtype == PD_KQ_Q40;
+    const bool mu = pd_kq_has_mu(dtype);
     if (mu && xsums == nullptr) return cudaErrorInvalidValue;
     // int8 x + per-32 f32 scales (+ per-16 f32 sums): 1.375*in_dim B max
     const uint32_t smem = in_dim + (in_dim >> 3u) + (mu ? in_dim >> 2u : 0u);
@@ -1292,6 +1390,23 @@ int pd_kquant_gemv_w4a8_multi(
         const void* xq, const void* xs, const void* xsums,
         uint32_t in_dim, uint32_t n_segs, void* stream) {
     if (n_segs < 2u || n_segs > 3u) return cudaErrorInvalidValue;
+    if (pd_kq_valid_iq(dt0) || pd_kq_valid_iq(dt1) || (n_segs == 3u && pd_kq_valid_iq(dt2))) {
+        // one launch per segment: the i-quant ones on their lane, the rest on
+        // the single-plane W4A8 GEMV (the fused walk's per-column math)
+        const void* ds[3] = {d0, d1, d2};
+        const void* ss[3] = {s0, s1, s2};
+        void* ys[3] = {y0, y1, y2};
+        const uint32_t ods[3] = {od0, od1, od2};
+        const uint32_t dts[3] = {dt0, dt1, dt2};
+        for (uint32_t i = 0; i < n_segs; ++i) {
+            if (ods[i] == 0u) continue;
+            const int rc = pd_kq_valid_iq(dts[i])
+                ? pd_kq_iq_dense_dp4a(ds[i], ss[i], xq, xs, xsums, ys[i], in_dim, ods[i], 1u, dts[i], stream)
+                : pd_kquant_gemv_w4a8(ds[i], ss[i], xq, xs, xsums, ys[i], in_dim, ods[i], dts[i], stream);
+            if (rc != 0) return rc;
+        }
+        return 0;
+    }
     if ((in_dim & 255u) != 0u) return cudaErrorInvalidValue;
     PdKqGemvSegs3 segs;
     segs.s[0] = PdKqGemvSeg{(const uint8_t*)d0, (const uint8_t*)s0, (float*)y0, od0, dt0};
@@ -1306,7 +1421,7 @@ int pd_kquant_gemv_w4a8_multi(
     for (uint32_t i = 0; i < n_segs; ++i) {
         if (!pd_kq_valid(segs.s[i].dtype) || segs.s[i].out_dim == 0u)
             return cudaErrorInvalidValue;
-        mu = mu || segs.s[i].dtype == PD_KQ_Q4K || segs.s[i].dtype == PD_KQ_Q5K || segs.s[i].dtype == PD_KQ_Q40;
+        mu = mu || pd_kq_has_mu(segs.s[i].dtype);
         total += segs.s[i].out_dim;
     }
     if (mu && xsums == nullptr) return cudaErrorInvalidValue;
@@ -1400,10 +1515,13 @@ int pd_kquant_gemv_w4a8_glu(
         uint32_t in_dim, uint32_t out_dim, uint32_t dtg, uint32_t dtu,
         void* stream) {
     if (out_dim == 0u) return cudaErrorInvalidValue;
+    if (pd_kq_valid_iq(dtg) || pd_kq_valid_iq(dtu))
+        return pd_kq_iq_dense_glu(gate_data, gate_scales, up_data, up_scales, xq, xs, xsums, y,
+                                  in_dim, out_dim, dtg, dtu, stream);
     if ((in_dim & 255u) != 0u) return cudaErrorInvalidValue;
     if (!pd_kq_valid(dtg) || !pd_kq_valid(dtu)) return cudaErrorInvalidValue;
-    const bool mu = dtg == PD_KQ_Q4K || dtg == PD_KQ_Q5K || dtg == PD_KQ_Q40 ||
-                    dtu == PD_KQ_Q4K || dtu == PD_KQ_Q5K || dtu == PD_KQ_Q40;
+    const bool mu = pd_kq_has_mu(dtg) ||
+                    pd_kq_has_mu(dtu);
     if (mu && xsums == nullptr) return cudaErrorInvalidValue;
     const uint32_t smem = in_dim + (in_dim >> 3u) + (mu ? in_dim >> 2u : 0u);
     // <4,128> to match the multi's election on the same in_dim class (the
@@ -1485,7 +1603,7 @@ __global__ void __launch_bounds__(256) pd_kquant_gemv_w4a8_nc_kernel(
     const uint32_t tt = tid % TPR;                 // thread-in-row
     const uint32_t n_super = in_dim >> 8u;
     const uint32_t datab = pd_kq_datab(dtype);
-    const bool mu = dtype == PD_KQ_Q4K || dtype == PD_KQ_Q5K || dtype == PD_KQ_Q40;
+    const bool mu = pd_kq_has_mu(dtype);
     const uint32_t nb32 = in_dim >> 5u, nb16 = in_dim >> 4u;
     // Windowed x staging (PD_KGN_WIN elems per span): the full-plane variant
     // at r=4/5 cost 67-84 KB -> 1 block/SM and went latency-bound (266-423
@@ -1774,10 +1892,12 @@ int pd_kquant_gemv_w4a8_nc(const void* data, const void* scales, const void* xq,
                            uint32_t in_dim, uint32_t out_dim, uint32_t ncols,
                            uint32_t dtype, void* stream) {
     if (out_dim == 0) return 0;
+    if (pd_kq_valid_iq(dtype))
+        return pd_kq_iq_dense_dp4a(data, scales, xq, xs, xsums, y, in_dim, out_dim, ncols, dtype, stream);
     if ((in_dim & 255u) != 0u) return cudaErrorInvalidValue;
     if (!pd_kq_valid(dtype)) return cudaErrorInvalidValue;
     if (ncols < 2u || ncols > 5u) return cudaErrorInvalidValue;
-    const bool mu = dtype == PD_KQ_Q4K || dtype == PD_KQ_Q5K || dtype == PD_KQ_Q40;
+    const bool mu = pd_kq_has_mu(dtype);
     if (mu && xsums == nullptr) return cudaErrorInvalidValue;
     // windowed staging: smem is bounded by the WINDOW, not in_dim (max
     // 5 * 5632 B = 27.5 KB - under the 48 KB default, no opt-in needed)
@@ -1821,7 +1941,7 @@ __host__ __device__ constexpr uint32_t pd_km_smem_bytes(uint32_t dt, uint32_t bn
                  + 64u * PD_KQ_SCB
                  + bn * (PD_KM_BSTR * 4u)
                  + bn * 48u
-                 + ((dt == PD_KQ_Q4K || dt == PD_KQ_Q5K || dt == PD_KQ_Q40) ? bn * 80u : 0u));
+                 + ((pd_kq_has_mu(dt)) ? bn * 80u : 0u));
 }
 
 template <uint32_t DT, uint32_t BN, uint32_t ST>
@@ -2147,10 +2267,12 @@ int pd_kquant_gemm_mma_ks(const void* data, const void* scales, const void* xq,
                           uint32_t in_dim, uint32_t out_dim, uint32_t batch,
                           uint32_t dtype, void* stream) {
     if (out_dim == 0 || batch == 0) return 0;
+    if (pd_kq_valid_iq(dtype))
+        return pd_kq_iq_dense_dp4a(data, scales, xq, xs, xsums, y, in_dim, out_dim, batch, dtype, stream);
     if ((in_dim & 255u) != 0u) return cudaErrorInvalidValue;
     if (!pd_kq_valid(dtype)) return cudaErrorInvalidValue;
     if (batch > 64u) return cudaErrorInvalidValue;  // >64 is the mmq tile's rung
-    if ((dtype == PD_KQ_Q4K || dtype == PD_KQ_Q5K || dtype == PD_KQ_Q40) && xsums == nullptr)
+    if ((pd_kq_has_mu(dtype)) && xsums == nullptr)
         return cudaErrorInvalidValue;
     auto st = (cudaStream_t)stream;
     static int nsm = 0;
@@ -2254,7 +2376,7 @@ int pd_kquant_gemm_mma_ks(const void* data, const void* scales, const void* xq,
 // tile_y/tile_s/the raw buffer under 48 KB if any of them are static.
 __host__ __device__ __forceinline__ uint32_t pd_kwp_smem_bytes(uint32_t dt) {
     const uint32_t datab = pd_kq_datab(dt);
-    const bool mu = dt == PD_KQ_Q4K || dt == PD_KQ_Q5K || dt == PD_KQ_Q40;
+    const bool mu = pd_kq_has_mu(dt);
     const uint32_t tile_x_sz = 128u * PD_KW_XK * 4u;
     const uint32_t tile_y_sz = 128u * PD_MMQ_YK * 4u;
     const uint32_t tile_s_sz = mu ? 128u * 4u * 4u : 16u;  // 16B-aligned placeholder when unused
@@ -2634,7 +2756,7 @@ int pd_kquant_gemm_w4a8_pipe(const void* data, const void* scales, const void* y
     if (out_dim == 0 || batch == 0) return 0;
     if ((in_dim & 255u) != 0u) return cudaErrorInvalidValue;
     if (!pd_kq_valid(dtype)) return cudaErrorInvalidValue;
-    const bool mu = dtype == PD_KQ_Q4K || dtype == PD_KQ_Q5K || dtype == PD_KQ_Q40;
+    const bool mu = pd_kq_has_mu(dtype);
     if (mu && xsums == nullptr) return cudaErrorInvalidValue;
     const uint32_t batch_pad = (batch + 127u) & ~127u;
     const uint32_t ntiles = ((out_dim + 127u) / 128u) * (batch_pad >> 7u);
@@ -2702,7 +2824,7 @@ int pd_kquant_gemm_w4a8_pipe(const void* data, const void* scales, const void* y
 // consume; wait_group(0) drains the last chunk once there's no next one.
 __host__ __device__ __forceinline__ uint32_t pd_kwh2_smem_bytes(uint32_t dt) {
     const uint32_t datab = pd_kq_datab(dt);
-    const bool mu = dt == PD_KQ_Q4K || dt == PD_KQ_Q5K || dt == PD_KQ_Q40;
+    const bool mu = pd_kq_has_mu(dt);
     const uint32_t raw_w2 = 2u * 128u * datab;
     const uint32_t raw_r2 = 2u * 128u * PD_KQ_SCB;
     const uint32_t tile_x_sz = 128u * 40u * 4u;       // 32 payload + 8 scale/mu
@@ -3089,7 +3211,7 @@ int pd_kquant_gemm_w4a8_pipe2(const void* data, const void* scales, const void* 
     if (out_dim == 0 || batch == 0) return 0;
     if ((in_dim & 255u) != 0u) return cudaErrorInvalidValue;
     if (!pd_kq_valid(dtype)) return cudaErrorInvalidValue;
-    const bool mu = dtype == PD_KQ_Q4K || dtype == PD_KQ_Q5K || dtype == PD_KQ_Q40;
+    const bool mu = pd_kq_has_mu(dtype);
     if (mu && xsums == nullptr) return cudaErrorInvalidValue;
     const uint32_t batch_pad = (batch + 127u) & ~127u;
     const uint32_t ntiles = ((out_dim + 127u) / 128u) * (batch_pad >> 7u);

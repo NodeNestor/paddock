@@ -2803,6 +2803,13 @@ struct KernelTableV1 {
     // bytes[6] (host u64 arrays), stream).
     int (*moe_cache_fill)(const void*, const void*, uint32_t, const void*,
                           const void*, const void*, void*);
+    // 539: kquant_iq - capability marker: the k-quant repack/dequant and the
+    // token-batched MoE pair serve the ggml i-quant family + IQ4_NL.
+    int (*kquant_iq)(void);
+    // 540: kquant_iq_dense - capability marker: the dense k-quant entry points
+    // (gemv, gather, the W4A8 gemv / nc / multi / glu, the dp4a and mma_ks
+    // GEMMs) serve the i-quant family + IQ4_NL (quant/iquant_dense.cuh).
+    int (*kquant_iq_dense)(void);
 };
 
 } // extern "C"

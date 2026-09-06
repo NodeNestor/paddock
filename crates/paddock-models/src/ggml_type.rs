@@ -91,6 +91,48 @@ impl GgmlType {
     /// (elements per block, bytes per block) - the pair that turns dims into
     /// byte sizes. None = we haven't verified the layout yet; callers must treat
     /// that as "cannot size", never assume.
+    /// The GGUF `ggml_type` id (the inverse of [`GgmlType::from_raw`]).
+    pub fn raw(&self) -> u32 {
+        use GgmlType::*;
+        match *self {
+            F32 => 0,
+            F16 => 1,
+            Q4_0 => 2,
+            Q4_1 => 3,
+            Q5_0 => 6,
+            Q5_1 => 7,
+            Q8_0 => 8,
+            Q8_1 => 9,
+            Q2K => 10,
+            Q3K => 11,
+            Q4K => 12,
+            Q5K => 13,
+            Q6K => 14,
+            Q8K => 15,
+            Iq2Xxs => 16,
+            Iq2Xs => 17,
+            Iq3Xxs => 18,
+            Iq1S => 19,
+            Iq4Nl => 20,
+            Iq3S => 21,
+            Iq2S => 22,
+            Iq4Xs => 23,
+            I8 => 24,
+            I16 => 25,
+            I32 => 26,
+            I64 => 27,
+            F64 => 28,
+            Iq1M => 29,
+            Bf16 => 30,
+            Tq1_0 => 34,
+            Tq2_0 => 35,
+            Mxfp4 => 39,
+            Nvfp4 => 40,
+            Q1_0 => 41,
+            Unknown(other) => other,
+        }
+    }
+
     pub fn block_layout(&self) -> Option<(usize, usize)> {
         use GgmlType::*;
         Some(match self {
@@ -114,6 +156,14 @@ impl GgmlType {
             Q8K => (256, 292),
             Iq4Nl => (32, 18),
             Iq4Xs => (256, 136),
+            // the i-quant family: codebook-indexed 8-weight groups (ggml-common.h)
+            Iq2Xxs => (256, 66),
+            Iq2Xs => (256, 74),
+            Iq2S => (256, 82),
+            Iq3Xxs => (256, 98),
+            Iq3S => (256, 110),
+            Iq1S => (256, 50),
+            Iq1M => (256, 56),
             // 32 elems: 1-byte shared E8M0 scale + 16 bytes of packed FP4
             Mxfp4 => (32, 17),
             // iq1/iq2/iq3/tq/nvfp4/q1_0 layouts not yet verified against ggml -

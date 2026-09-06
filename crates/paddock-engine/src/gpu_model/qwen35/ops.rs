@@ -5,7 +5,6 @@ use super::*;
 use crate::gpu::{GpuError, GpuExecutor, KvDtype, QuantW, RepackedKQ, RepackedQ8};
 use crate::gpu_model::gpt_oss::GpuModelError;
 use cudarc::driver::CudaSlice;
-use paddock_models::ggml_type::GgmlType;
 use paddock_models::gguf::Value;
 use paddock_models::mapped::MappedGguf;
 
@@ -239,7 +238,7 @@ pub(crate) fn gemv8_any(
 ) -> Result<(), GpuModelError> {
     match w {
         QuantW::Kq(k) => {
-            let needs = matches!(k.ty, GgmlType::Q4K | GgmlType::Q5K | GgmlType::Q4_0);
+            let needs = crate::gpu::kq_needs_sums(k.ty);
             exec.kquant_gemv_w4a8(k, xq, xs, needs.then_some(ssums), y)?;
             Ok(())
         }
@@ -334,7 +333,7 @@ pub(crate) fn mmq(
             if r == 1 {
                 if exec.has_kquant_gemv_w4a8() {
                     exec.quantize_q8_sums(x, xq, xs, ssums, k.dims[0])?;
-                    let needs = matches!(k.ty, GgmlType::Q4K | GgmlType::Q5K | GgmlType::Q4_0);
+                    let needs = crate::gpu::kq_needs_sums(k.ty);
                     return Ok(exec.kquant_gemv_w4a8(k, xq, xs, needs.then_some(&*ssums), y)?);
                 }
                 return Ok(exec.kquant_gemv(k, x, y)?);
@@ -361,7 +360,7 @@ pub(crate) fn mmq_kq_pre(
     y: &mut CudaSlice<f32>,
     r: usize,
 ) -> Result<(), GpuModelError> {
-    let needs = matches!(k.ty, GgmlType::Q4K | GgmlType::Q5K | GgmlType::Q4_0);
+    let needs = crate::gpu::kq_needs_sums(k.ty);
     if needs {
         exec.q8_sums_strided(xq, ssums, k.dims[0], r)?;
     }
@@ -412,6 +411,36 @@ pub(crate) fn mmq_pre_any(
     match w {
         QuantW::Q8(q) => mmq_pre(exec, q, xq, xs, part, y, r),
         QuantW::Kq(k) => mmq_kq_pre(exec, k, xq, xs, ssums, part, y, r),
+    }
+}
+
+/// The shared expert's wide-prefill (>64 rows) matmul per seat: Q8_0 keeps
+/// its exact int8 ladder; a k-quant seat rides the dp4a GEMM off the same
+/// staged activations (the w4a8 pipes want a per-32 sums plane this call
+/// site does not carry, and the shared expert is ~1 MB per matrix, so the
+/// dp4a class is a few percent of a prefill chunk, not a bottleneck).
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn shexp_mm_wide(
+    exec: &GpuExecutor,
+    w: &QuantW,
+    xq: &CudaSlice<i8>,
+    xs: &CudaSlice<f32>,
+    yq: &CudaSlice<u8>,
+    ssums: &mut CudaSlice<f32>,
+    skfix: &mut CudaSlice<f32>,
+    y: &mut CudaSlice<f32>,
+    batch: usize,
+) -> Result<(), GpuModelError> {
+    match w {
+        QuantW::Q8(q) => prefill_mm_pre(exec, q, xq, xs, yq, skfix, y, batch),
+        QuantW::Kq(k) => {
+            let needs = crate::gpu::kq_needs_sums(k.ty);
+            if needs {
+                exec.q8_sums_strided(xq, ssums, k.dims[0], batch)?;
+            }
+            exec.kquant_gemm_dp4a(k, xq, xs, needs.then_some(&*ssums), y, batch)?;
+            Ok(())
+        }
     }
 }
 
@@ -1152,9 +1181,14 @@ pub(super) fn moe_ffn(
         };
         let all_kq =
             w.gate_exps.q8().is_none() && w.up_exps.q8().is_none() && w.down_exps.q8().is_none();
+        // i-quant seats have no mma lane: they stay token-batched at every width
+        let any_iq = [&w.gate_exps, &w.up_exps, &w.down_exps]
+            .iter()
+            .any(|e| e.kq().is_some_and(|k| crate::gpu::kq_is_iq(k.ty)));
         exec.has_kquant_moe_mma()
             && paddock_models::dev_var_os!("PADDOCK_NO_KQMOE_MMA").is_none()
             && pair_ok
+            && !any_iq
             && (all_kq || q8_mma)
     };
     // k-quant seats keep the MEASURED mma boundary regardless of the
@@ -1391,7 +1425,7 @@ pub(super) fn moe_ffn(
             }
             match (w.gate_exps.kq(), w.up_exps.kq()) {
                 (Some(g), Some(u)) => {
-                    let needs = matches!(g.ty, GgmlType::Q4K | GgmlType::Q5K | GgmlType::Q4_0);
+                    let needs = crate::gpu::kq_needs_sums(g.ty);
                     if needs {
                         exec.q8_sums_strided(xq, ssums, embd, batch)?;
                     }
@@ -1426,7 +1460,7 @@ pub(super) fn moe_ffn(
             }
             match w.down_exps.kq() {
                 Some(d) => {
-                    let needs = matches!(d.ty, GgmlType::Q4K | GgmlType::Q5K | GgmlType::Q4_0);
+                    let needs = crate::gpu::kq_needs_sums(d.ty);
                     if needs {
                         // sums over the SORTED fq rows (PAD rows hold exact zeros)
                         exec.q8_sums_strided(fq, ssums, dims.moe_ff, max_blocks * 32)?;
@@ -1526,8 +1560,7 @@ pub(super) fn moe_ffn(
         };
         match (seats.0, seats.1) {
             (Some(g), Some(u)) => {
-                let needs = matches!(g.ty, GgmlType::Q4K | GgmlType::Q5K | GgmlType::Q4_0)
-                    || matches!(u.ty, GgmlType::Q4K | GgmlType::Q5K | GgmlType::Q4_0);
+                let needs = crate::gpu::kq_needs_sums(g.ty) || crate::gpu::kq_needs_sums(u.ty);
                 if needs {
                     exec.q8_sums_strided(xq, ssums, embd, batch)?;
                 }
@@ -1552,7 +1585,7 @@ pub(super) fn moe_ffn(
         exec.quantize_q8(fused, fq, fs, batch * dims.n_active * dims.moe_ff)?;
         match seats.2 {
             Some(d) => {
-                let needs = matches!(d.ty, GgmlType::Q4K | GgmlType::Q5K | GgmlType::Q4_0);
+                let needs = crate::gpu::kq_needs_sums(d.ty);
                 if needs {
                     exec.q8_sums_strided(fq, ssums, dims.moe_ff, batch * dims.n_active)?;
                 }
@@ -1591,54 +1624,87 @@ pub(super) fn moe_ffn(
     // branch's use (sorted engages only past sorted_min >= 128 rows).
     if batch > 64 {
         prefill_quant(exec, pxq, pxs, yq, xn, embd, batch)?;
-        prefill_mm_pre(exec, &w.shexp_gate, pxq, pxs, yq, skfix, shexp_gate, batch)?;
-        prefill_mm_pre(exec, &w.shexp_up, pxq, pxs, yq, skfix, shexp_up, batch)?;
-        exec.swiglu(shexp_gate, shexp_up, batch * dims.shexp_ff)?;
-        prefill_mm(
+        shexp_mm_wide(
             exec,
-            &w.shexp_down,
+            &w.shexp_gate,
             pxq,
             pxs,
             yq,
+            ssums,
             skfix,
             shexp_gate,
-            shexp_out,
             batch,
         )?;
-    } else if batch > 1 {
-        mmq_q8(exec, &w.shexp_gate, xn, pxq, pxs, part, shexp_gate, batch)?;
-        mmq_q8(exec, &w.shexp_up, xn, pxq, pxs, part, shexp_up, batch)?;
-        exec.swiglu(shexp_gate, shexp_up, batch * dims.shexp_ff)?;
-        mmq_q8(
+        shexp_mm_wide(
             exec,
-            &w.shexp_down,
-            shexp_gate,
+            &w.shexp_up,
             pxq,
             pxs,
-            part,
-            shexp_out,
+            yq,
+            ssums,
+            skfix,
+            shexp_up,
             batch,
         )?;
+        exec.swiglu(shexp_gate, shexp_up, batch * dims.shexp_ff)?;
+        match &w.shexp_down {
+            QuantW::Q8(q) => {
+                prefill_mm(exec, q, pxq, pxs, yq, skfix, shexp_gate, shexp_out, batch)?
+            }
+            QuantW::Kq(_) => {
+                prefill_quant(exec, pxq, pxs, yq, shexp_gate, dims.shexp_ff, batch)?;
+                shexp_mm_wide(
+                    exec,
+                    &w.shexp_down,
+                    pxq,
+                    pxs,
+                    yq,
+                    ssums,
+                    skfix,
+                    shexp_out,
+                    batch,
+                )?;
+            }
+        }
+    } else if batch > 1 {
+        exec.quantize_q8(xn, pxq, pxs, batch * embd)?;
+        mmq_pre_any(
+            exec,
+            &w.shexp_gate,
+            pxq,
+            pxs,
+            ssums,
+            part,
+            shexp_gate,
+            batch,
+        )?;
+        mmq_pre_any(exec, &w.shexp_up, pxq, pxs, ssums, part, shexp_up, batch)?;
+        exec.swiglu(shexp_gate, shexp_up, batch * dims.shexp_ff)?;
+        exec.quantize_q8(shexp_gate, pxq, pxs, batch * dims.shexp_ff)?;
+        mmq_pre_any(exec, &w.shexp_down, pxq, pxs, ssums, part, shexp_out, batch)?;
     } else {
         // b=1 gate|up launch merge (entry 317): two [2048 -> shexp_ff] GEMVs
         // sit at the small-gemv latency floor (~4 us each on sm_120a for
         // ~1 MB of bytes); one merged launch pays the toll once. Bit-identical
         // per row to the splits. down reads the swiglu output, so it cannot
-        // join. Kill: PADDOCK_NO_GEMV_MULTI.
-        if exec.has_q8_0_gemv_repacked_multi() && !no_gemv_multi() {
-            exec.q8_0_gemv_repacked_multi(
-                &mut [
-                    (&w.shexp_gate, &mut *shexp_gate),
-                    (&w.shexp_up, &mut *shexp_up),
-                ],
-                xn,
-            )?;
-        } else {
-            mm_q8(exec, &w.shexp_gate, xn, shexp_gate, batch)?;
-            mm_q8(exec, &w.shexp_up, xn, shexp_up, batch)?;
+        // join. Kill: PADDOCK_NO_GEMV_MULTI. Q8_0 seats only - the k-quant
+        // GEMV has no merged form.
+        match (&w.shexp_gate, &w.shexp_up) {
+            (QuantW::Q8(g), QuantW::Q8(u))
+                if exec.has_q8_0_gemv_repacked_multi() && !no_gemv_multi() =>
+            {
+                exec.q8_0_gemv_repacked_multi(
+                    &mut [(g, &mut *shexp_gate), (u, &mut *shexp_up)],
+                    xn,
+                )?;
+            }
+            _ => {
+                gemv_any(exec, &w.shexp_gate, xn, shexp_gate)?;
+                gemv_any(exec, &w.shexp_up, xn, shexp_up)?;
+            }
         }
         exec.swiglu(shexp_gate, shexp_up, batch * dims.shexp_ff)?;
-        mm_q8(exec, &w.shexp_down, shexp_gate, shexp_out, batch)?;
+        gemv_any(exec, &w.shexp_down, shexp_gate, shexp_out)?;
     }
     exec.shexp_gate_add(
         proj,
@@ -2003,7 +2069,7 @@ pub(crate) fn kq_mm_pre(
     y: &mut CudaSlice<f32>,
     batch: usize,
 ) -> Result<(), GpuModelError> {
-    let needs = matches!(k.ty, GgmlType::Q4K | GgmlType::Q5K | GgmlType::Q4_0);
+    let needs = crate::gpu::kq_needs_sums(k.ty);
     if batch > 64 {
         if needs {
             exec.mmq_sums(yq, xsums, k.dims[0], batch)?;
