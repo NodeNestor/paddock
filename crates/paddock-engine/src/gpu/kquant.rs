@@ -635,13 +635,27 @@ impl GpuExecutor {
         y: &mut CudaSlice<f32>,
         batch: usize,
     ) -> Result<(), GpuError> {
+        self.kquant_gemm_w4a8_pipe2_rows(w, yq, xsums, y, 0, batch)
+    }
+
+    /// [`Self::kquant_gemm_w4a8_pipe2`] writing from row `y_row0` of `y` -
+    /// a chunk-sized `yq` landing in its rows of a wider output.
+    pub fn kquant_gemm_w4a8_pipe2_rows(
+        &self,
+        w: &RepackedKQ,
+        yq: &CudaSlice<u8>,
+        xsums: Option<&CudaSlice<f32>>,
+        y: &mut CudaSlice<f32>,
+        y_row0: usize,
+        batch: usize,
+    ) -> Result<(), GpuError> {
         let f = self
             .kernels
             .kquant_gemm_w4a8_pipe2
             .ok_or(GpuError::MissingOp("kquant_gemm_w4a8_pipe2"))?;
         let (raw_id, _, _) = kq_params(w.ty).expect("RepackedKQ holds a k-quant type");
         let (in_dim, out_dim) = (w.dims[0], w.dims[1]);
-        debug_assert!(y.len() >= out_dim * batch);
+        debug_assert!(y.len() >= out_dim * (y_row0 + batch));
         let (dp, _g1) = w.data.device_ptr(&self.stream);
         let (scp, _g2) = w.scales.device_ptr(&self.stream);
         let (yqp, _g3) = yq.device_ptr(&self.stream);
@@ -661,7 +675,7 @@ impl GpuExecutor {
                 scp as *const _,
                 yqp as *const _,
                 sp,
-                yp as *mut _,
+                (yp + (y_row0 * out_dim * 4) as u64) as *mut _,
                 in_dim as u32,
                 out_dim as u32,
                 batch as u32,
