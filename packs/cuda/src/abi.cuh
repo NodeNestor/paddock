@@ -2810,6 +2810,11 @@ struct KernelTableV1 {
     // (gemv, gather, the W4A8 gemv / nc / multi / glu, the dp4a and mma_ks
     // GEMMs) serve the i-quant family + IQ4_NL (quant/iquant_dense.cuh).
     int (*kquant_iq_dense)(void);
+    // 541: q4x_gdn_split_widen_tiled - the GDN conv split with the GGUF
+    // lane's tiled value-head order (key head vh % hk); same signature as
+    // q4x_gdn_split_widen (slot for the interleave map).
+    int (*q4x_gdn_split_widen_tiled)(const void*, void*, void*, void*, uint32_t,
+                                     uint32_t, uint32_t, uint32_t, uint32_t, void*);
 };
 
 } // extern "C"

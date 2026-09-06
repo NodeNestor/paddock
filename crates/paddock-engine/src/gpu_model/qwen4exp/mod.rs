@@ -17,13 +17,18 @@
 
 mod forward;
 mod load;
+mod load_gguf;
 
 pub use forward::Qwen4ExpGpu;
 pub use load::{load_layer, load_ple_projections, load_ple_table};
 
 use cudarc::driver::CudaSlice;
 
-use crate::gpu::{DeviceTensor, F8RowPlane, GpuError, GpuExecutor, Nvf4MoePlane, QuantTensor};
+use crate::gpu::{
+    DeviceTensor, ExpertCache, F8RowPlane, GpuError, GpuExecutor, HostMappedKq, Nvf4MoePlane,
+    QuantTensor, QuantW, RepackedKQ,
+};
+use paddock_models::ggml_type::GgmlType;
 
 /// Which class the dense projections load in. bf16 is the parity class and
 /// the default; anything else is the chartered throughput lane and is LOSSY,
@@ -205,6 +210,16 @@ pub enum DensePlane {
         in_dim: usize,
         out_dim: usize,
     },
+    /// GGUF k-quant / Q8_0 plane (the Unsloth exports): the repacked
+    /// streams the qwen35 dense lanes read - fused GEMV at batch 1, the
+    /// int8 dp4a GEMM above it (activations quantized per 32). Exact int
+    /// dots with f32 block scales, the same numeric class as qwen35's
+    /// k-quant dense seats. Carries its dims like the 8-bit classes do.
+    Kq {
+        w: QuantW,
+        in_dim: usize,
+        out_dim: usize,
+    },
 }
 
 /// Staging the 8-bit classes need when the activation must be quantized too
@@ -213,6 +228,11 @@ pub enum DensePlane {
 pub struct DenseStage {
     pub q: cudarc::driver::CudaSlice<i8>,
     pub rs: CudaSlice<f32>,
+    /// `Kq` class only: per-32 activation scales for `q` (`quantize_q8`),
+    /// the per-16 int sums the Q4/Q5 min term reads, and the split-K
+    /// partials the ks GEMM wants. Empty (len 0) when no Kq plane loaded.
+    pub xs: CudaSlice<f32>,
+    pub ssums: CudaSlice<f32>,
     /// f16 view of the activation the F16 class feeds `pd_f16_gemm`. One cast
     /// per (plane, tick); the same buffer serves every plane because the walk
     /// is strictly sequential inside a layer.
@@ -840,6 +860,16 @@ impl DensePlane {
                     e.f8row_gemm(plane, &stage.q, &stage.rs, y, *in_dim, *out_dim, batch)
                 }
             }
+            DensePlane::Kq { w, in_dim, out_dim } => {
+                dense_site(
+                    site,
+                    *in_dim,
+                    *out_dim,
+                    batch,
+                    if batch == 1 { "kq_gemv" } else { "kq_gemm" },
+                );
+                kq_matmul(e, w, x, y, batch, stage)
+            }
         }
     }
 
@@ -880,7 +910,7 @@ impl DensePlane {
             }
             // no f16 twin of the segmented store; the caller's two-call
             // fallback is correct and each half still rides the tc5 GEMM
-            DensePlane::F16 { .. } | DensePlane::F8Row { .. } => Ok(false),
+            DensePlane::F16 { .. } | DensePlane::F8Row { .. } | DensePlane::Kq { .. } => Ok(false),
         }
     }
 
@@ -929,8 +959,8 @@ impl DensePlane {
                 e.convert_f32_f16(x, &mut stage.x16, batch * *in_dim)?;
                 e.f16_gemm_rows(w, first_row, *in_dim, out_dim, &stage.x16, y, batch)
             }
-            DensePlane::F8Row { .. } => Err(GpuError::Unsupported(
-                "matmul_rows: the 8-bit dense class holds no folded planes".into(),
+            DensePlane::F8Row { .. } | DensePlane::Kq { .. } => Err(GpuError::Unsupported(
+                "matmul_rows: the 8-bit and k-quant dense classes hold no folded planes".into(),
             )),
         }
     }
@@ -941,7 +971,7 @@ impl DensePlane {
     pub fn raw_bf16(&self) -> Option<&CudaSlice<u8>> {
         match self {
             DensePlane::Bf16(w) | DensePlane::Dual { w, .. } => Some(&w.bytes),
-            DensePlane::F16 { .. } | DensePlane::F8Row { .. } => None,
+            DensePlane::F16 { .. } | DensePlane::F8Row { .. } | DensePlane::Kq { .. } => None,
         }
     }
 
@@ -958,6 +988,7 @@ impl DensePlane {
             DensePlane::F8Row {
                 in_dim, out_dim, ..
             } => in_dim * out_dim + out_dim * 4,
+            DensePlane::Kq { w, .. } => w.bytes() as usize,
         }
     }
 
@@ -968,8 +999,136 @@ impl DensePlane {
             DensePlane::Dual { .. } => "bf16+f16",
             DensePlane::F16 { .. } => "f16",
             DensePlane::F8Row { .. } => "f8row",
+            DensePlane::Kq { .. } => "kq",
         }
     }
+}
+
+/// `y = W x` over `batch` rows on a GGUF-quantized plane. Batch 1 rides the
+/// fused k-quant / Q8_0 GEMV off f32 activations; above it the activations
+/// quantize per-32 into `stage.q`/`stage.xs` and the int8 dp4a GEMM runs
+/// (the Q4/Q5 min term needs the per-16 sums). Q8_0 planes take the
+/// repacked GEMM off f32 rows directly, as qwen35's `mm_q8` does.
+fn kq_matmul(
+    e: &GpuExecutor,
+    w: &QuantW,
+    x: &CudaSlice<f32>,
+    y: &mut CudaSlice<f32>,
+    batch: usize,
+    stage: &mut DenseStage,
+) -> Result<(), GpuError> {
+    match w {
+        QuantW::Q8(q) => {
+            // the qwen35 `mm_q8` ladder: gemv, the small-batch tiled GEMM,
+            // the plain per-row GEMM above 12 rows
+            if batch == 1 {
+                e.q8_0_gemv_repacked(q, None, x, y)
+            } else if batch <= 12 {
+                e.q8_0_gemm_repacked_mt(q, None, x, y, batch)
+            } else {
+                e.q8_0_gemm_repacked(q, None, x, y, batch)
+            }
+        }
+        QuantW::Kq(k) => {
+            let in_dim = k.dims[0];
+            let n = batch * in_dim;
+            if stage.q.len() < n || stage.xs.len() < n / 32 || stage.ssums.len() < n / 16 {
+                return Err(GpuError::Unsupported(format!(
+                    "kq_matmul: stage scratch holds {} rows of {in_dim}, launch wants {batch}",
+                    stage.q.len() / in_dim.max(1)
+                )));
+            }
+            let needs = crate::gpu::kq_needs_sums(k.ty);
+            if batch == 1 {
+                // the qwen35 serving class (`kq_w4a8_b1`): int8 activations
+                // through the W4A8 GEMV, the exact-f32 GEMV stays the oracle
+                // (PADDOCK_KQ_EXACT_GEMV=1 pins it, as there)
+                if e.has_kquant_gemv_w4a8()
+                    && paddock_models::dev_var_os!("PADDOCK_KQ_EXACT_GEMV").is_none()
+                {
+                    e.quantize_q8_sums(x, &mut stage.q, &mut stage.xs, &mut stage.ssums, in_dim)?;
+                    return e.kquant_gemv_w4a8(
+                        k,
+                        &stage.q,
+                        &stage.xs,
+                        needs.then_some(&stage.ssums),
+                        y,
+                    );
+                }
+                return e.kquant_gemv(k, x, y);
+            }
+            e.quantize_q8(x, &mut stage.q, &mut stage.xs, n)?;
+            if needs {
+                e.q8_sums_strided(&stage.q, &mut stage.ssums, in_dim, batch)?;
+            }
+            e.kquant_gemm_dp4a(
+                k,
+                &stage.q,
+                &stage.xs,
+                needs.then_some(&stage.ssums),
+                y,
+                batch,
+            )
+        }
+    }
+}
+
+/// The token embedding table: bf16 as shipped (safetensors), or the GGUF's
+/// k-quant plane on the k-quant gather.
+pub enum Embed {
+    Bf16(QuantTensor),
+    Kq(RepackedKQ),
+}
+
+/// One routed-expert plane of the GGUF lane: in VRAM, or in device-mapped
+/// host memory under `[moe_offload]` (same `RepackedKQ` view either way, so
+/// every launch is unchanged - the qwen35 `ExpW` shape).
+pub enum KqSeat {
+    Dev(RepackedKQ),
+    Host(HostMappedKq),
+}
+
+impl KqSeat {
+    pub fn kq(&self) -> &RepackedKQ {
+        match self {
+            KqSeat::Dev(w) => w,
+            KqSeat::Host(w) => w,
+        }
+    }
+    pub fn host(&self) -> Option<&HostMappedKq> {
+        match self {
+            KqSeat::Dev(_) => None,
+            KqSeat::Host(w) => Some(w),
+        }
+    }
+    /// Bytes this seat holds, and where (device, host).
+    pub fn bytes(&self) -> (u64, u64) {
+        match self {
+            KqSeat::Dev(w) => ((w.data.len() + w.scales.len()) as u64, 0),
+            KqSeat::Host(w) => (0, w.host_bytes()),
+        }
+    }
+}
+
+/// The routed experts of one layer, by residency class.
+pub enum ExpertSeats {
+    /// NVFP4 safetensors planes, checkpoint nibbles unchanged (the parity
+    /// lane).
+    Nvf4 {
+        gate: Nvf4MoePlane,
+        up: Nvf4MoePlane,
+        down: Nvf4MoePlane,
+    },
+    /// GGUF k-quant / i-quant expert seats on the repacked stream
+    /// (`moe/kquant.cuh`, IQ1_S..IQ4_NL through `quant/iquant.cuh`), with
+    /// the optional VRAM slot cache over host-mapped planes
+    /// (`gpu/moe_cache.rs`) that `enable_moe_cache` seats.
+    Kq {
+        gate: KqSeat,
+        up: KqSeat,
+        down: KqSeat,
+        cache: Option<Box<ExpertCache>>,
+    },
 }
 
 /// One hyper-connection sub-block (attn_ and mlp_ each have one; the final
@@ -1036,6 +1195,12 @@ pub struct GdnW {
     pub norm: DeviceTensor,
     /// out_proj [hidden, 6144]
     pub out: DensePlane,
+    /// Value-head order of the planes above: `false` = the checkpoint's
+    /// (HF) order, key head `vh / (hv/hk)` serves value head `vh`; `true` =
+    /// the GGUF lane's tiled order (llama.cpp's converter), key head
+    /// `vh % hk`. Selects the conv split kernel; no permutation of the key
+    /// heads converts one into the other.
+    pub tiled_heads: bool,
 }
 
 /// Gated attention + QSA indexer mixer.
@@ -1077,10 +1242,8 @@ pub struct MoeW {
     /// bf16 twin of the router plane for the TGV lane (slot 547);
     /// built at load only when PADDOCK_Q38FN_TGV armed the loader.
     pub router16: Option<CudaSlice<u8>>,
-    /// routed expert planes, 512 experts each, checkpoint nibbles unchanged
-    pub gate: Nvf4MoePlane,
-    pub up: Nvf4MoePlane,
-    pub down: Nvf4MoePlane,
+    /// routed expert planes, 512 experts each, by residency class
+    pub seats: ExpertSeats,
     /// shared expert [640, hidden] x2 + [hidden, 640]
     pub sh_gate: DensePlane,
     /// sh_gate|sh_up fused at load (rows: gate then up) - None unless

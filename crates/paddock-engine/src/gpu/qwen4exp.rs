@@ -1011,4 +1011,46 @@ impl GpuExecutor {
             )
         })
     }
+
+    /// The GGUF lane's twin of `q4x_gdn_split_widen`: tiled value-head order.
+    pub fn q4x_gdn_split_widen_tiled(
+        &self,
+        conv: &CudaSlice<f32>,
+        q: &mut CudaSlice<f32>,
+        k: &mut CudaSlice<f32>,
+        v: &mut CudaSlice<f32>,
+        rows: usize,
+        k_heads: usize,
+        v_heads: usize,
+        k_dim: usize,
+        v_dim: usize,
+    ) -> Result<(), GpuError> {
+        let f = self
+            .kernels
+            .q4x_gdn_split_widen_tiled
+            .ok_or(GpuError::MissingOp("q4x_gdn_split_widen_tiled"))?;
+        let (cp, _g1) = conv.device_ptr(&self.stream);
+        let (qp, _g2) = q.device_ptr_mut(&self.stream);
+        let (kp, _g3) = k.device_ptr_mut(&self.stream);
+        let (vp, _g4) = v.device_ptr_mut(&self.stream);
+        // SAFETY: ABI contract
+        check(unsafe {
+            f(
+                cp as *const _,
+                qp as *mut _,
+                kp as *mut _,
+                vp as *mut _,
+                rows as u32,
+                k_heads as u32,
+                v_heads as u32,
+                k_dim as u32,
+                v_dim as u32,
+                self.stream_ptr(),
+            )
+        })
+    }
+
+    pub fn has_q4x_gdn_split_widen_tiled(&self) -> bool {
+        self.kernels.q4x_gdn_split_widen_tiled.is_some()
+    }
 }

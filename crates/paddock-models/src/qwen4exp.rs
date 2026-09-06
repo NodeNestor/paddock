@@ -282,6 +282,223 @@ impl Qwen4ExpConfig {
     }
 }
 
+/// The PLE n-gram hash constants a GGUF carries as metadata arrays (the
+/// safetensors checkpoint ships them as I64 tensors instead).
+#[derive(Debug, Clone)]
+pub struct Qwen4ExpPleHash {
+    pub multipliers: Vec<i64>,
+    pub head_offsets: Vec<i64>,
+    pub head_vocab_sizes: Vec<i64>,
+}
+
+impl Qwen4ExpConfig {
+    /// The same config off a llama.cpp `qwen4exp` GGUF's metadata (the
+    /// Unsloth exports). Every key is required; a missing or ill-typed one
+    /// is an error, never a default - the only derivations are the ones the
+    /// GGUF vocabulary does not spell out: the block kinds come from
+    /// `attention.compress_ratios` (non-zero = the QSA attention layer),
+    /// the GDN value head dim from `ssm.inner_size / time_step_rank`, the
+    /// indexer kv-head count from the first `indexer.k_proj` tensor, the
+    /// vocab from `token_embd`, and the PLE width from
+    /// `embedding_length_per_layer_input` x the head count.
+    pub fn from_gguf(
+        g: &crate::gguf::GgufFile,
+        tensor_dims_of: impl Fn(&str) -> Option<Vec<usize>>,
+    ) -> Result<Self, StError> {
+        use crate::gguf::Value;
+        let arch = g.architecture().unwrap_or("");
+        if arch != "qwen4exp" {
+            return Err(StError::Header(format!(
+                "qwen4exp: general.architecture is {arch:?}, not qwen4exp"
+            )));
+        }
+        let miss = |k: &str| StError::Header(format!("qwen4exp gguf: missing {arch}.{k}"));
+        let u = |k: &str| -> Result<usize, StError> {
+            g.arch_field(k)
+                .and_then(Value::as_u64)
+                .map(|x| x as usize)
+                .ok_or_else(|| miss(k))
+        };
+        let f = |k: &str| -> Result<f32, StError> {
+            g.arch_field(k)
+                .and_then(Value::as_f32)
+                .ok_or_else(|| miss(k))
+        };
+        let arr_u = |k: &str| -> Result<Vec<u64>, StError> {
+            match g.arch_field(k) {
+                Some(Value::Array(items)) => items
+                    .iter()
+                    .map(|v| v.as_u64().ok_or_else(|| miss(k)))
+                    .collect(),
+                _ => Err(miss(k)),
+            }
+        };
+        // tensor geometry comes through the caller's lookup: a split family's
+        // first shard carries the metadata and none of the tensors
+        let tensor_dims = |name: &str| -> Result<Vec<usize>, StError> {
+            tensor_dims_of(name)
+                .ok_or_else(|| StError::Header(format!("qwen4exp gguf: no tensor {name}")))
+        };
+
+        let n_layer = u("block_count")?;
+        let hidden = u("embedding_length")?;
+        // block kinds: the QSA compress ratio is written per layer and is
+        // non-zero exactly on the full-attention layers
+        let ratios = arr_u("attention.compress_ratios")?;
+        if ratios.len() != n_layer {
+            return Err(StError::Header(format!(
+                "qwen4exp gguf: attention.compress_ratios has {} entries for {n_layer} layers",
+                ratios.len()
+            )));
+        }
+        let blocks: Vec<Qwen4ExpBlock> = ratios
+            .iter()
+            .map(|&r| {
+                if r > 0 {
+                    Qwen4ExpBlock::Attention
+                } else {
+                    Qwen4ExpBlock::Gdn
+                }
+            })
+            .collect();
+        let idx_compress = ratios.iter().copied().max().unwrap_or(0) as usize;
+        let first_attn = blocks
+            .iter()
+            .position(|b| *b == Qwen4ExpBlock::Attention)
+            .ok_or_else(|| StError::Header("qwen4exp gguf: no attention layer".into()))?;
+        let idx_head_dim = u("attention.indexer.key_length")?;
+        let idx_kv_heads = {
+            let d = tensor_dims(&format!("blk.{first_attn}.indexer.k_proj.weight"))?;
+            if d.len() != 2 || d[1] % idx_head_dim != 0 {
+                return Err(StError::Header(format!(
+                    "qwen4exp gguf: indexer.k_proj is {d:?}, want [hidden, n*{idx_head_dim}]"
+                )));
+            }
+            d[1] / idx_head_dim
+        };
+        let vocab = {
+            let d = tensor_dims("token_embd.weight")?;
+            if d.len() != 2 || d[0] != hidden {
+                return Err(StError::Header(format!(
+                    "qwen4exp gguf: token_embd is {d:?}, want [{hidden}, vocab]"
+                )));
+            }
+            d[1]
+        };
+        let gdn_v_heads = u("ssm.time_step_rank")?;
+        let gdn_inner = u("ssm.inner_size")?;
+        if gdn_v_heads == 0 || gdn_inner % gdn_v_heads != 0 {
+            return Err(StError::Header(format!(
+                "qwen4exp gguf: ssm.inner_size {gdn_inner} is not a multiple of {gdn_v_heads} value heads"
+            )));
+        }
+        let ple_layers: Vec<usize> = arr_u("ple.layers")?
+            .into_iter()
+            .map(|x| x as usize)
+            .collect();
+        let ngram_size = u("ple.ngram_size")?;
+        let heads_per_ngram = u("ple.heads_per_ngram")?;
+        let ple_heads = (ngram_size - 1) * heads_per_ngram;
+        let ple_row = u("embedding_length_per_layer_input")?;
+        let head_vocab = arr_u("ple.head_vocab_sizes")?;
+        if head_vocab.len() != ple_heads {
+            return Err(StError::Header(format!(
+                "qwen4exp gguf: ple.head_vocab_sizes has {} entries for {ple_heads} heads",
+                head_vocab.len()
+            )));
+        }
+        let ngram_vocab_base = head_vocab.iter().copied().min().unwrap_or(0);
+        let eos_ids: Vec<u32> = {
+            let mut v = Vec::new();
+            if let Some(e) = g
+                .metadata
+                .get("tokenizer.ggml.eos_token_id")
+                .and_then(Value::as_u64)
+            {
+                v.push(e as u32);
+            }
+            if let Some(Value::Array(items)) = g.metadata.get("tokenizer.ggml.eos_token_ids") {
+                v.extend(items.iter().filter_map(Value::as_u64).map(|x| x as u32));
+            }
+            if v.is_empty() {
+                return Err(StError::Header(
+                    "qwen4exp gguf: no tokenizer.ggml.eos_token_id".into(),
+                ));
+            }
+            v.sort_unstable();
+            v.dedup();
+            v
+        };
+        // the PLE hash primes its n-gram window with this id (vLLM's
+        // `ngram_context`); the converter writes it from the HF eos, which is
+        // the checkpoint's bos as well
+        let bos_id = u("ple.eos_token_id")? as u32;
+        Ok(Self {
+            hidden,
+            n_layer,
+            blocks,
+            vocab,
+            max_pos: u("context_length")?,
+            eps: f("attention.layer_norm_rms_epsilon")?,
+            n_heads: u("attention.head_count")?,
+            n_kv_heads: u("attention.head_count_kv")?,
+            head_dim: u("attention.key_length")?,
+            rotary_dim: u("rope.dimension_count")?,
+            rope_theta: f("rope.freq_base")?,
+            idx_heads: u("attention.indexer.head_count")?,
+            idx_kv_heads,
+            idx_head_dim,
+            idx_budget: u("attention.indexer.top_k")?,
+            idx_compress,
+            gdn_k_heads: u("ssm.group_count")?,
+            gdn_v_heads,
+            gdn_k_dim: u("ssm.state_size")?,
+            gdn_v_dim: gdn_inner / gdn_v_heads,
+            gdn_conv: u("ssm.conv_kernel")?,
+            n_expert: u("expert_count")?,
+            n_active: u("expert_used_count")?,
+            moe_ff: u("expert_feed_forward_length")?,
+            shared_ff: u("expert_shared_feed_forward_length")?,
+            hc_count: u("hyper_connection.count")?,
+            hc_lowrank: u("hyper_connection.low_rank")?,
+            ple_layers,
+            ple_embed: ple_row * ple_heads,
+            ple_conv: u("ple.conv_kernel")?,
+            ngram_size,
+            heads_per_ngram,
+            ngram_vocab_base,
+            // one tensor, not the checkpoint's 128 shards
+            ngram_split: 1,
+            ple_dtype: "gguf".to_owned(),
+            mtp_layers: 0,
+            eos_ids,
+            bos_id,
+        })
+    }
+
+    /// The PLE hash constants off the GGUF metadata (see [`Qwen4ExpPleHash`]).
+    pub fn ple_hash_from_gguf(g: &crate::gguf::GgufFile) -> Result<Qwen4ExpPleHash, StError> {
+        use crate::gguf::Value;
+        let arr_i = |k: &str| -> Result<Vec<i64>, StError> {
+            match g.arch_field(k) {
+                Some(Value::Array(items)) => items
+                    .iter()
+                    .map(|v| {
+                        v.as_i64()
+                            .ok_or_else(|| StError::Header(format!("qwen4exp gguf: {k}: not i64")))
+                    })
+                    .collect(),
+                _ => Err(StError::Header(format!("qwen4exp gguf: missing {k}"))),
+            }
+        };
+        Ok(Qwen4ExpPleHash {
+            multipliers: arr_i("ple.layer_multipliers")?,
+            head_offsets: arr_i("ple.head_offsets")?,
+            head_vocab_sizes: arr_i("ple.head_vocab_sizes")?,
+        })
+    }
+}
+
 #[cfg(test)]
 pub(super) mod tests {
     use super::*;

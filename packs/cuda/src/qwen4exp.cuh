@@ -474,7 +474,10 @@ int pd_q4x_gdn_gated_norm(const void* x, const void* z, const void* w, void* out
 // `hk = vh % n_k_heads` (deltanet/core.cuh:317), which is the GGUF lane's
 // load-permuted head order; raw safetensors planes need this map instead, and
 // no permutation of the key heads can convert one into the other.
-// grid.x = v_heads, grid.y = rows.
+// grid.x = v_heads, grid.y = rows. TILED = the GGUF lane's head order
+// (llama.cpp's converter tiles the value heads: key head `vh % hk` serves
+// value head `vh`), INTERLEAVE = raw safetensors planes.
+template <bool TILED>
 __global__ void pd_q4x_gdn_split_widen_kernel(const float* __restrict__ conv,
                                               float* __restrict__ q,
                                               float* __restrict__ k,
@@ -484,7 +487,7 @@ __global__ void pd_q4x_gdn_split_widen_kernel(const float* __restrict__ conv,
     const uint32_t vh = blockIdx.x, r = blockIdx.y;
     const uint32_t kdim = hk * kd;
     const float* row = conv + (size_t)r * (2u * kdim + hv * vd);
-    const uint32_t kh = vh / (hv / hk);
+    const uint32_t kh = TILED ? (vh % hk) : (vh / (hv / hk));
     const size_t qo = ((size_t)r * hv + vh) * kd;
     for (uint32_t i = threadIdx.x; i < kd; i += blockDim.x) {
         q[qo + i] = row[(size_t)kh * kd + i];
@@ -503,7 +506,21 @@ int pd_q4x_gdn_split_widen(const void* conv, void* q, void* k, void* v,
     if (rows == 0 || v_heads == 0 || k_heads == 0) return 0;
     if (v_heads % k_heads != 0) return cudaErrorInvalidValue;
     dim3 grid(v_heads, rows);
-    pd_q4x_gdn_split_widen_kernel<<<grid, 256, 0, (cudaStream_t)stream>>>(
+    pd_q4x_gdn_split_widen_kernel<false><<<grid, 256, 0, (cudaStream_t)stream>>>(
+        (const float*)conv, (float*)q, (float*)k, (float*)v,
+        k_heads, v_heads, k_dim, v_dim);
+    return pd_launch_status();
+}
+
+// slot 540: the same split with the TILED head map (GGUF lane).
+PD_EXPORT
+int pd_q4x_gdn_split_widen_tiled(const void* conv, void* q, void* k, void* v,
+                           uint32_t rows, uint32_t k_heads, uint32_t v_heads,
+                           uint32_t k_dim, uint32_t v_dim, void* stream) {
+    if (rows == 0 || v_heads == 0 || k_heads == 0) return 0;
+    if (v_heads % k_heads != 0) return cudaErrorInvalidValue;
+    dim3 grid(v_heads, rows);
+    pd_q4x_gdn_split_widen_kernel<true><<<grid, 256, 0, (cudaStream_t)stream>>>(
         (const float*)conv, (float*)q, (float*)k, (float*)v,
         k_heads, v_heads, k_dim, v_dim);
     return pd_launch_status();
