@@ -6139,17 +6139,17 @@ pub struct KernelTableV1 {
     /// (gate/up/down x data/scales). (jobs, n_jobs (device), max_jobs,
     /// src[6], dst[6], bytes[6] (HOST u64 arrays), stream).
     pub moe_cache_fill: Option<MoeCacheFillFn>,
-    /// Slot 539: capability marker - present iff the k-quant repack, dequant
+    /// Slot 577: capability marker - present iff the k-quant repack, dequant
     /// and token-batched MoE pair serve the ggml i-quant family (IQ1_S/M,
     /// IQ2_XXS/XS/S, IQ3_XXS/S) and IQ4_NL (quant/iquant.cuh). The dtypes
     /// ride the existing entry points, so only this slot can say.
     pub kquant_iq: Option<unsafe extern "C" fn() -> i32>,
-    /// 540: capability marker - the dense k-quant entry points (gemv, gather,
+    /// 578: capability marker - the dense k-quant entry points (gemv, gather,
     /// the W4A8 gemv / nc / multi / glu, the dp4a and mma_ks GEMMs) serve
     /// the i-quant family + IQ4_NL (quant/iquant_dense.cuh). Without it a
     /// dense i-quant tensor is refused at load.
     pub kquant_iq_dense: Option<unsafe extern "C" fn() -> i32>,
-    /// 541: the GDN conv split with the GGUF lane's TILED value-head order
+    /// 579: the GDN conv split with the GGUF lane's TILED value-head order
     /// (key head `vh % hk` serves value head `vh` - what llama.cpp's
     /// converter writes); `q4x_gdn_split_widen` keeps the raw-safetensors
     /// interleave map. Same signature.
@@ -9795,7 +9795,7 @@ mod tests {
         // 253: add_rmsnorm_e4m3_xn (decode norm+quant fuse).
         // 575/576: moe_cache_resolve + moe_cache_fill (MoE expert offload,
         // device-managed LRU slot cache over host-mapped expert planes).
-        // 539: kquant_iq - i-quant family capability marker.
+        // 577: kquant_iq - i-quant family capability marker.
         // 254..256: the tile-linear f8 lane (f8w_repack_lin / f8_gemm_lin /
         // f8_gemm_lin_kt - access-pattern fix).
         // 257: add_rmsnorm_e4m3_xn_b16 (prefill glue fusion).

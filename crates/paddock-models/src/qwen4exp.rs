@@ -367,6 +367,11 @@ impl Qwen4ExpConfig {
             .position(|b| *b == Qwen4ExpBlock::Attention)
             .ok_or_else(|| StError::Header("qwen4exp gguf: no attention layer".into()))?;
         let idx_head_dim = u("attention.indexer.key_length")?;
+        if idx_head_dim == 0 {
+            return Err(StError::Header(
+                "qwen4exp gguf: attention.indexer.key_length is 0".into(),
+            ));
+        }
         let idx_kv_heads = {
             let d = tensor_dims(&format!("blk.{first_attn}.indexer.k_proj.weight"))?;
             if d.len() != 2 || d[1] % idx_head_dim != 0 {
@@ -398,6 +403,14 @@ impl Qwen4ExpConfig {
             .collect();
         let ngram_size = u("ple.ngram_size")?;
         let heads_per_ngram = u("ple.heads_per_ngram")?;
+        // a malformed file must refuse, not underflow (ngram_size - 1) or
+        // divide by a zero head count downstream; llama.cpp draws the same
+        // line (ngram_size < 2 is rejected at load)
+        if ngram_size < 2 || heads_per_ngram == 0 {
+            return Err(StError::Header(format!(
+                "qwen4exp gguf: ple.ngram_size {ngram_size} / ple.heads_per_ngram {heads_per_ngram} - need >= 2 and >= 1"
+            )));
+        }
         let ple_heads = (ngram_size - 1) * heads_per_ngram;
         let ple_row = u("embedding_length_per_layer_input")?;
         let head_vocab = arr_u("ple.head_vocab_sizes")?;

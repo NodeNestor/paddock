@@ -1223,10 +1223,10 @@ impl GpuQwen35 {
                 m.cache = None;
             }
         }
-        if let Some(mtp) = &mut self.mtp {
-            if let Ffn::Moe(m) = &mut mtp.ffn {
-                m.cache = None;
-            }
+        if let Some(mtp) = &mut self.mtp
+            && let Ffn::Moe(m) = &mut mtp.ffn
+        {
+            m.cache = None;
         }
         self.exec.trim_mem_pool();
     }

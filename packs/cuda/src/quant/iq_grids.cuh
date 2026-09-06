@@ -1,3 +1,4 @@
+// Transcribed by NodeNestor (github.com/Nodenester) for truespar/paddock PR #17.
 // quant/iq_grids.cuh - codebooks of the ggml i-quant family (IQ1/IQ2/IQ3,
 // IQ4_NL), transcribed from llama.cpp ggml-common.h (MIT). The values ARE
 // the format definition, not a tuning choice: a differing entry is a
@@ -1079,10 +1080,6 @@ __device__ const unsigned long long PD_IQ1S_GRID[2048] = {
     0x010101010000ff00ull, 0x01010101000000ffull, 0x0101010100000001ull, 0x0101010101ffffffull,
     0x0101010101ffff01ull, 0x0101010101ff01ffull, 0x0101010101ff0101ull, 0x0101010101000000ull,
     0x010101010101ffffull, 0x010101010101ff01ull, 0x01010101010101ffull, 0x0101010101010101ull,
-};
-
-__device__ const unsigned char PD_KMASK_IQ2XS[8] = {
-    1, 2, 4, 8, 16, 32, 64, 128,
 };
 
 __device__ const signed char PD_KVALUES_IQ4NL[16] = {

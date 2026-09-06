@@ -1,3 +1,4 @@
+// Contributed by NodeNestor (github.com/Nodenester) in truespar/paddock PR #17.
 // quant/iquant.cuh - the ggml i-quant family (IQ1_S, IQ1_M, IQ2_XXS, IQ2_XS,
 // IQ2_S, IQ3_XXS, IQ3_S) and IQ4_NL on the k-quant streams.
 //
@@ -12,9 +13,14 @@
 // into the integers as 8*grid +- 1 with the scale divided by 8 (exact in
 // f32: a power-of-two rescale), so no mu term is needed.
 //
-// Layouts are ggml's (ggml-common.h); the dequant is a line-for-line port of
-// ggml-quants.c's dequantize_row_* so the reference gate in
-// tests/gpu_kquant_parity.rs is a bit-identity check, not a tolerance.
+// Layouts are ggml's (ggml-common.h): the block byte order and the codebooks
+// ARE the format. The decoders are ours, written from those layouts - one
+// window unpack serves every lane, and the load-time dequant goes through
+// it too (repack, unpack, widen), so there is exactly one place the bits
+// are read. Every product in the family is exact in f32 (an f16 d times a
+// few-bit scale times a few-bit grid value), which is why the reference
+// gate in tests/gpu_kquant_parity.rs is a bit-identity check against the
+// CPU reference (paddock-kernels/src/reference/iq.rs) rather than a tolerance.
 //
 // Repacked data per 256-weight super-block (offsets inside the payload):
 //   IQ2_XXS  64: qs u16[32]                                   rec: d
@@ -27,9 +33,11 @@
 //   IQ1_M    48: qs[32] @0, qh[16] @32                         rec: d (from scales) @0, scales u16[4] @2
 //   IQ4_NL  128: 8 x qs[16] (per 32-weight block)             rec: d[8] f16 @0
 //
-// Not served here: the dense GEMV / mma lanes (quant/kquant.cuh,
-// kquant_w4a8.cuh) - the engine routes i-quant tensors to the token-batched
-// MoE pair only and refuses them as dense weights.
+// The dense lanes (quant/iquant_dense.cuh) read the same streams through
+// the same window unpack; the k-quant exports dispatch i-quant types there.
+// Not yet an mma tile lane: prefill over 64 rows on a dense i-quant plane
+// takes the dp4a class, which re-reads the plane per token (see the note
+// at qwen35/ops.rs kq_mm_pre) - the int8-mma tile loader is the open item.
 
 #define PD_KQ_IQ2XXS 16u
 #define PD_KQ_IQ2XS 17u
@@ -157,21 +165,18 @@ __device__ __forceinline__ float pd_iq1m_d(const uint8_t* scales) {
     return __half2float(h);
 }
 
-// Q3_K's 16 six-bit scales out of the packed 12 bytes (ggml dequantize_row_q3_K's
-// kmask1/kmask2 shuffle), as signed int8 with the -32 applied.
+// Q3_K keeps its 16 six-bit sub-block scales in 12 bytes: the low nibble of
+// scale i is in byte (i & 7) - the lower half for i < 8, the upper half for
+// i >= 8 - and its top two bits are in byte 8 + (i & 3) at bit 2 * (i >> 2).
+// Stored unsigned around a zero point of 32.
 __device__ __forceinline__ void pd_q3k_unpack_scales(const uint8_t* __restrict__ sc,
-                                                              int8_t out[16]) {
-    uint32_t aux[4];
-    aux[0] = pd_iq_u32(sc);
-    aux[1] = pd_iq_u32(sc + 4u);
-    const uint32_t tmp = pd_iq_u32(sc + 8u);
-    const uint32_t kmask1 = 0x03030303u, kmask2 = 0x0f0f0f0fu;
-    aux[2] = ((aux[0] >> 4) & kmask2) | (((tmp >> 4) & kmask1) << 4);
-    aux[3] = ((aux[1] >> 4) & kmask2) | (((tmp >> 6) & kmask1) << 4);
-    aux[0] = (aux[0] & kmask2) | (((tmp >> 0) & kmask1) << 4);
-    aux[1] = (aux[1] & kmask2) | (((tmp >> 2) & kmask1) << 4);
-    for (uint32_t i = 0; i < 16u; ++i)
-        out[i] = (int8_t)((int)((aux[i >> 2] >> (8u * (i & 3u))) & 0xFFu) - 32);
+                                                     int8_t out[16]) {
+    #pragma unroll
+    for (uint32_t i = 0; i < 16u; ++i) {
+        const uint32_t lo = (sc[i & 7u] >> (4u * (i >> 3u))) & 0xFu;
+        const uint32_t hi = (sc[8u + (i & 3u)] >> (2u * (i >> 2u))) & 0x3u;
+        out[i] = (int8_t)((int)(lo | (hi << 4u)) - 32);
+    }
 }
 
 // ---- repack: raw super-block -> (data payload, pd_iq_scb-byte scale record) --
@@ -247,209 +252,13 @@ __device__ __forceinline__ void pd_iq_repack_super(uint32_t dt, const uint8_t* _
     }
 }
 
-// ---- full-tensor dequant of a raw super-block (ggml dequantize_row_* port) --
-__device__ __forceinline__ void pd_iq_dequant_super(uint32_t dt, const uint8_t* __restrict__ s,
-                                                    float* __restrict__ y) {
-    switch (dt) {
-        case PD_KQ_Q2K_ID: {
-            // ggml dequantize_row_q2_K: y = d*sc*q - dmin*m, sub-block of 16
-            const float d = pd_iq_f16(s + 80u), dmin = pd_iq_f16(s + 82u);
-            const uint8_t* q = s + 16u;
-            uint32_t is = 0;
-            for (uint32_t n = 0; n < 256u; n += 128u) {
-                for (uint32_t j = 0; j < 4u; ++j) {
-                    for (uint32_t lb = 0; lb < 2u; ++lb) {
-                        const uint8_t sc = s[is++];
-                        const float dl = d * (float)(sc & 0xFu), ml = dmin * (float)(sc >> 4u);
-                        for (uint32_t l = 0; l < 16u; ++l)
-                            y[n + 32u * j + 16u * lb + l] =
-                                dl * (float)((q[n / 4u + 16u * lb + l] >> (2u * j)) & 3u) - ml;
-                    }
-                }
-            }
-            break;
-        }
-        case PD_KQ_Q3K_ID: {
-            // ggml dequantize_row_q3_K: q = low2 - (hbit ? 0 : 4), y = d*scale*q
-            const float d = pd_iq_f16(s + 108u);
-            const uint8_t* hm = s;
-            const uint8_t* q = s + 32u;
-            int8_t scs[16];
-            pd_q3k_unpack_scales(s + 96u, scs);
-            uint32_t is = 0, mbit = 0;
-            for (uint32_t n = 0; n < 256u; n += 128u) {
-                for (uint32_t j = 0; j < 4u; ++j, ++mbit) {
-                    for (uint32_t lb = 0; lb < 2u; ++lb) {
-                        const float dl = d * (float)scs[is++];
-                        for (uint32_t l = 0; l < 16u; ++l) {
-                            const uint32_t i = 16u * lb + l;
-                            const int qv = (int)((q[n / 4u + i] >> (2u * j)) & 3u) -
-                                           (((hm[i] >> mbit) & 1u) ? 0 : 4);
-                            y[n + 32u * j + i] = dl * (float)qv;
-                        }
-                    }
-                }
-            }
-            break;
-        }
-        case PD_KQ_IQ2XXS: {
-            const float d = pd_iq_f16(s);
-            const uint8_t* qs = s + 2u;
-            for (uint32_t ib32 = 0; ib32 < 8u; ++ib32) {
-                const uint32_t a0 = pd_iq_u32(qs + 8u * ib32), a1 = pd_iq_u32(qs + 8u * ib32 + 4u);
-                const float db = d * (0.5f + (float)(a1 >> 28)) * 0.25f;
-                for (uint32_t l = 0; l < 4u; ++l) {
-                    const unsigned long long grid = PD_IQ2XXS_GRID[(a0 >> (8u * l)) & 0xFFu];
-                    const uint8_t signs = (uint8_t)pd_iq_ksign((a1 >> (7u * l)) & 127u);
-                    for (uint32_t j = 0; j < 8u; ++j)
-                        y[ib32 * 32u + l * 8u + j] =
-                            db * (float)((grid >> (8u * j)) & 0xFFu) * ((signs >> j) & 1u ? -1.f : 1.f);
-                }
-            }
-            break;
-        }
-        case PD_KQ_IQ2XS: {
-            const float d = pd_iq_f16(s);
-            const uint8_t* qs = s + 2u;
-            const uint8_t* scales = s + 66u;
-            for (uint32_t ib32 = 0; ib32 < 8u; ++ib32) {
-                const float db0 = d * (0.5f + (float)(scales[ib32] & 0xFu)) * 0.25f;
-                const float db1 = d * (0.5f + (float)(scales[ib32] >> 4u)) * 0.25f;
-                for (uint32_t l = 0; l < 4u; ++l) {
-                    const uint16_t q = pd_iq_u16(qs + 8u * ib32 + 2u * l);
-                    const unsigned long long grid = PD_IQ2XS_GRID[q & 511u];
-                    const uint8_t signs = (uint8_t)pd_iq_ksign(q >> 9u);
-                    const float dl = l < 2u ? db0 : db1;
-                    for (uint32_t j = 0; j < 8u; ++j)
-                        y[ib32 * 32u + l * 8u + j] =
-                            dl * (float)((grid >> (8u * j)) & 0xFFu) * ((signs >> j) & 1u ? -1.f : 1.f);
-                }
-            }
-            break;
-        }
-        case PD_KQ_IQ2S: {
-            const float d = pd_iq_f16(s);
-            const uint8_t* qs = s + 2u;
-            const uint8_t* signs = qs + 32u;
-            const uint8_t* qh = s + 66u;
-            const uint8_t* scales = s + 74u;
-            for (uint32_t ib32 = 0; ib32 < 8u; ++ib32) {
-                const float db0 = d * (0.5f + (float)(scales[ib32] & 0xFu)) * 0.25f;
-                const float db1 = d * (0.5f + (float)(scales[ib32] >> 4u)) * 0.25f;
-                for (uint32_t l = 0; l < 4u; ++l) {
-                    const uint32_t idx = qs[4u * ib32 + l] | (((uint32_t)qh[ib32] << (8u - 2u * l)) & 0x300u);
-                    const unsigned long long grid = PD_IQ2S_GRID[idx];
-                    const uint8_t sg = signs[4u * ib32 + l];
-                    const float dl = l < 2u ? db0 : db1;
-                    for (uint32_t j = 0; j < 8u; ++j)
-                        y[ib32 * 32u + l * 8u + j] =
-                            dl * (float)((grid >> (8u * j)) & 0xFFu) * ((sg >> j) & 1u ? -1.f : 1.f);
-                }
-            }
-            break;
-        }
-        case PD_KQ_IQ3XXS: {
-            const float d = pd_iq_f16(s);
-            const uint8_t* qs = s + 2u;
-            const uint8_t* sas = qs + 64u;
-            for (uint32_t ib32 = 0; ib32 < 8u; ++ib32) {
-                const uint32_t aux = pd_iq_u32(sas + 4u * ib32);
-                const float db = d * (0.5f + (float)(aux >> 28)) * 0.5f;
-                for (uint32_t l = 0; l < 4u; ++l) {
-                    const uint8_t signs = (uint8_t)pd_iq_ksign((aux >> (7u * l)) & 127u);
-                    const uint32_t g1 = PD_IQ3XXS_GRID[qs[8u * ib32 + 2u * l]];
-                    const uint32_t g2 = PD_IQ3XXS_GRID[qs[8u * ib32 + 2u * l + 1u]];
-                    for (uint32_t j = 0; j < 4u; ++j) {
-                        y[ib32 * 32u + l * 8u + j] =
-                            db * (float)((g1 >> (8u * j)) & 0xFFu) * ((signs >> j) & 1u ? -1.f : 1.f);
-                        y[ib32 * 32u + l * 8u + 4u + j] =
-                            db * (float)((g2 >> (8u * j)) & 0xFFu) * ((signs >> (j + 4u)) & 1u ? -1.f : 1.f);
-                    }
-                }
-            }
-            break;
-        }
-        case PD_KQ_IQ3S: {
-            const float d = pd_iq_f16(s);
-            const uint8_t* qs = s + 2u;
-            const uint8_t* qh = s + 66u;
-            const uint8_t* signs = s + 74u;
-            const uint8_t* scales = s + 106u;
-            for (uint32_t ib32 = 0; ib32 < 8u; ++ib32) {
-                const uint8_t sc = scales[ib32 >> 1u];
-                const float db = d * (1.f + 2.f * (float)((ib32 & 1u) ? (sc >> 4u) : (sc & 0xFu)));
-                for (uint32_t l = 0; l < 4u; ++l) {
-                    const uint32_t i1 = qs[8u * ib32 + 2u * l] | (((uint32_t)qh[ib32] << (8u - 2u * l)) & 256u);
-                    const uint32_t i2 = qs[8u * ib32 + 2u * l + 1u] | (((uint32_t)qh[ib32] << (7u - 2u * l)) & 256u);
-                    const uint32_t g1 = PD_IQ3S_GRID[i1], g2 = PD_IQ3S_GRID[i2];
-                    const uint8_t sg = signs[4u * ib32 + l];
-                    for (uint32_t j = 0; j < 4u; ++j) {
-                        y[ib32 * 32u + l * 8u + j] =
-                            db * (float)((g1 >> (8u * j)) & 0xFFu) * ((sg >> j) & 1u ? -1.f : 1.f);
-                        y[ib32 * 32u + l * 8u + 4u + j] =
-                            db * (float)((g2 >> (8u * j)) & 0xFFu) * ((sg >> (j + 4u)) & 1u ? -1.f : 1.f);
-                    }
-                }
-            }
-            break;
-        }
-        case PD_KQ_IQ1S: {
-            const float d = pd_iq_f16(s);
-            const uint8_t* qs = s + 2u;
-            const uint8_t* qh = s + 34u;
-            for (uint32_t ib = 0; ib < 8u; ++ib) {
-                const uint16_t h = pd_iq_u16(qh + 2u * ib);
-                const float dl = d * (float)(2u * ((h >> 12) & 7u) + 1u);
-                const float delta = (h & 0x8000u) ? -PD_IQ1S_DELTA : PD_IQ1S_DELTA;
-                for (uint32_t l = 0; l < 4u; ++l) {
-                    const unsigned long long grid = PD_IQ1S_GRID[qs[4u * ib + l] | (((h >> (3u * l)) & 7u) << 8u)];
-                    for (uint32_t j = 0; j < 8u; ++j)
-                        y[ib * 32u + l * 8u + j] = dl * ((float)(int8_t)((grid >> (8u * j)) & 0xFFu) + delta);
-                }
-            }
-            break;
-        }
-        case PD_KQ_IQ1M: {
-            const uint8_t* qs = s;
-            const uint8_t* qh = s + 32u;
-            const uint8_t* scb = s + 48u;
-            const float d = pd_iq1m_d(scb);
-            for (uint32_t ib = 0; ib < 8u; ++ib) {
-                const uint16_t sc = pd_iq_u16(scb + 2u * (ib >> 1u));
-                const uint32_t sh = 6u * (ib & 1u);
-                const float dl1 = d * (float)(2u * ((sc >> sh) & 7u) + 1u);
-                const float dl2 = d * (float)(2u * ((sc >> (sh + 3u)) & 7u) + 1u);
-                const uint8_t h0 = qh[2u * ib], h1 = qh[2u * ib + 1u];
-                const uint32_t idx[4] = {
-                    qs[4u * ib] | (((uint32_t)h0 << 8u) & 0x700u),
-                    qs[4u * ib + 1u] | (((uint32_t)h0 << 4u) & 0x700u),
-                    qs[4u * ib + 2u] | (((uint32_t)h1 << 8u) & 0x700u),
-                    qs[4u * ib + 3u] | (((uint32_t)h1 << 4u) & 0x700u)};
-                const float delta[4] = {(h0 & 0x08u) ? -PD_IQ1S_DELTA : PD_IQ1S_DELTA,
-                                        (h0 & 0x80u) ? -PD_IQ1S_DELTA : PD_IQ1S_DELTA,
-                                        (h1 & 0x08u) ? -PD_IQ1S_DELTA : PD_IQ1S_DELTA,
-                                        (h1 & 0x80u) ? -PD_IQ1S_DELTA : PD_IQ1S_DELTA};
-                for (uint32_t l = 0; l < 4u; ++l) {
-                    const unsigned long long grid = PD_IQ1S_GRID[idx[l]];
-                    const float dl = l < 2u ? dl1 : dl2;
-                    for (uint32_t j = 0; j < 8u; ++j)
-                        y[ib * 32u + l * 8u + j] = dl * ((float)(int8_t)((grid >> (8u * j)) & 0xFFu) + delta[l]);
-                }
-            }
-            break;
-        }
-        default: {  // IQ4_NL
-            for (uint32_t j = 0; j < 8u; ++j) {
-                const uint8_t* blk = s + j * 18u;
-                const float d = pd_iq_f16(blk);
-                for (uint32_t l = 0; l < 16u; ++l) {
-                    y[j * 32u + l] = d * (float)PD_KVALUES_IQ4NL[blk[2u + l] & 0xFu];
-                    y[j * 32u + 16u + l] = d * (float)PD_KVALUES_IQ4NL[blk[2u + l] >> 4u];
-                }
-            }
-            break;
-        }
-    }
+// 16 payload bytes. The weight planes are read once per pass and want the
+// streaming (evict-first) hint; the load-time dequant below hands the same
+// unpack a LOCAL scratch copy, where ld.global would be an illegal address.
+// One space check per 16-byte load is noise next to the gather it feeds.
+__device__ __forceinline__ uint4 pd_iq_ld16(const uint8_t* p) {
+    return __isGlobal(p) ? __ldcs(reinterpret_cast<const uint4*>(p))
+                         : *reinterpret_cast<const uint4*>(p);
 }
 
 // ---- window unpack over the REPACKED streams: 16 weights -> 4 packed s8 ----
@@ -569,7 +378,7 @@ __device__ __forceinline__ void pd_iq_win_unpack_t(uint32_t dt, const uint8_t* _
             const uint8_t sc = rec[4u + w];
             *f = pd_iq_f16a(rec) * (float)(sc & 0xFu);
             *g = -pd_iq_f16a(rec + 2u) * (float)(sc >> 4u);
-            const uint4 qa = __ldcs((const uint4*)(sb + 32u * n + 16u * lb));
+            const uint4 qa = pd_iq_ld16((sb + 32u * n + 16u * lb));
             const uint32_t qw[4] = {qa.x, qa.y, qa.z, qa.w};
             #pragma unroll
             for (uint32_t k = 0; k < 4u; ++k) wq[k] = (int)((qw[k] >> (2u * j)) & 0x03030303u);
@@ -579,8 +388,8 @@ __device__ __forceinline__ void pd_iq_win_unpack_t(uint32_t dt, const uint8_t* _
             const uint32_t n = w >> 3u, j = (w >> 1u) & 3u, lb = w & 1u;
             const uint32_t mbit = 4u * n + j;
             *f = pd_iq_f16a(rec) * (float)((const int8_t*)rec)[2u + w];
-            const uint4 qa = __ldcs((const uint4*)(sb + 32u * n + 16u * lb));
-            const uint4 ha = __ldcs((const uint4*)(sb + 64u + 16u * lb));
+            const uint4 qa = pd_iq_ld16((sb + 32u * n + 16u * lb));
+            const uint4 ha = pd_iq_ld16((sb + 64u + 16u * lb));
             const uint32_t qw[4] = {qa.x, qa.y, qa.z, qa.w};
             const uint32_t hw[4] = {ha.x, ha.y, ha.z, ha.w};
             #pragma unroll
@@ -699,7 +508,7 @@ __device__ __forceinline__ void pd_iq_win_unpack_t(uint32_t dt, const uint8_t* _
         }
         default: {  // IQ4_NL: block ib's lo (w even) / hi (w odd) nibbles
             *f = pd_iq_f16a(rec + 2u * ib);
-            const uint4 qa = __ldcs((const uint4*)(sb + ib * 16u));
+            const uint4 qa = pd_iq_ld16((sb + ib * 16u));
             const uint32_t qw[4] = {qa.x, qa.y, qa.z, qa.w};
             const bool hi = (w & 1u) != 0u;
             #pragma unroll
@@ -721,4 +530,26 @@ __device__ __forceinline__ void pd_iq_win_unpack(uint32_t dt, const uint8_t* __r
                                                  const uint8_t* __restrict__ rec, uint32_t w,
                                                  int wq[4], float* f, float* g) {
     pd_iq_win_unpack_t(dt, sb, rec, w, wq, f, g, pd_iq_tabs_global(dt));
+}
+
+// ---- full-tensor dequant of a RAW super-block: repack, unpack, widen ----
+// Not a second decoder. The raw block is repacked into a local payload +
+// record exactly as the load path does, read back through the same 16-weight
+// window unpack every serving lane uses, and widened as f * s8 + g. The f32
+// a load-time dequant yields is therefore, by construction, the number the
+// dp4a lanes multiply - one decoder to test, one to trust.
+__device__ __forceinline__ void pd_iq_dequant_super(uint32_t dt, const uint8_t* __restrict__ s,
+                                                    float* __restrict__ y) {
+    __align__(16) uint8_t payload[128];  // pd_iq_datab max (IQ4_NL)
+    __align__(16) uint8_t rec[24];       // pd_iq_scb max (Q2_K / Q3_K)
+    pd_iq_repack_super(dt, s, payload, rec);
+    #pragma unroll 1
+    for (uint32_t w = 0; w < 16u; ++w) {
+        int wq[4];
+        float f, g;
+        pd_iq_win_unpack(dt, payload, rec, w, wq, &f, &g);
+        #pragma unroll
+        for (uint32_t j = 0; j < 16u; ++j)
+            y[16u * w + j] = f * (float)(int8_t)((wq[j >> 2u] >> (8u * (j & 3u))) & 0xFFu) + g;
+    }
 }

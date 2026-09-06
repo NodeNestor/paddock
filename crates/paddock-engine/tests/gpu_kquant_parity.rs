@@ -2763,6 +2763,16 @@ fn iq_pair_check(exec: &GpuExecutor, map: &MappedGguf, names: &[String; 3], raws
     let mut d_xs = exec.alloc(batch * embd / 32).expect("xs");
     exec.quantize_q8(&d_x, &mut d_xq, &mut d_xs, batch * embd)
         .expect("quantize");
+    // formats with a per-16 mu term need the activation sums - the pack
+    // refuses a launch without them (Q2_K seats did exactly that on the MTP
+    // repo's UD-IQ2_XXS file, whose blk.40 experts are Q2_K/Q3_K)
+    let raw_needs_sums = |raw: u32| matches!(raw, 2 | 10 | 12 | 13); // Q4_0, Q2_K, Q4_K, Q5_K
+    let mut d_sums = exec.alloc(batch * embd / 16).expect("sums");
+    let gu_needs = raw_needs_sums(raws[0]) || raw_needs_sums(raws[1]);
+    if gu_needs {
+        exec.q8_sums_strided(&d_xq, &mut d_sums, embd, batch)
+            .expect("sums");
+    }
     let mut d_fused = exec.alloc(batch * n_active * ff).expect("fused");
     exec.kquant_moe_gate_up(
         &gate,
@@ -2770,7 +2780,7 @@ fn iq_pair_check(exec: &GpuExecutor, map: &MappedGguf, names: &[String; 3], raws
         &d_idx,
         &d_xq,
         &d_xs,
-        None,
+        gu_needs.then_some(&d_sums),
         &mut d_fused,
         n_active,
         batch,
@@ -2836,8 +2846,22 @@ fn iq_pair_check(exec: &GpuExecutor, map: &MappedGguf, names: &[String; 3], raws
     exec.quantize_q8(&d_fused, &mut d_fq, &mut d_fs, batch * n_active * ff)
         .expect("fq quant");
     let mut d_out = exec.alloc(batch * embd).expect("out");
+    let d_needs = raw_needs_sums(raws[2]);
+    let mut d_fsums = exec.alloc(batch * n_active * ff / 16).expect("fsums");
+    if d_needs {
+        exec.q8_sums_strided(&d_fq, &mut d_fsums, ff, batch * n_active)
+            .expect("fsums");
+    }
     exec.kquant_moe_down(
-        &down, &d_idx, &d_topk, &d_fq, &d_fs, None, &mut d_out, n_active, batch,
+        &down,
+        &d_idx,
+        &d_topk,
+        &d_fq,
+        &d_fs,
+        d_needs.then_some(&d_fsums),
+        &mut d_out,
+        n_active,
+        batch,
     )
     .expect("down");
     let out_gpu = exec.to_host(&d_out).expect("out host");

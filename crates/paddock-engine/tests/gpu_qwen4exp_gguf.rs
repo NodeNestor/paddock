@@ -206,7 +206,9 @@ fn gguf_q8_dense_lanes_match() {
         };
         // f64 reference off the raw Q8_0 blocks (f16 d, 32 int8)
         let deq: Vec<f32> = raw
-            .chunks_exact(34)
+            .as_chunks::<34>()
+            .0
+            .iter()
             .flat_map(|b| {
                 let d = half::f16::from_le_bytes([b[0], b[1]]).to_f32();
                 (0..32).map(move |i| (b[2 + i] as i8) as f32 * d)
@@ -346,7 +348,10 @@ fn gguf_kq_dense_lanes_match() {
         let mut d_sums = exec.alloc(batch * in_dim / 16).expect("sums");
         exec.q8_sums_strided(&d_xq, &mut d_sums, in_dim, batch)
             .expect("sums");
-        let needs = matches!(k.ty, GgmlType::Q4K | GgmlType::Q5K | GgmlType::Q4_0);
+        let needs = matches!(
+            k.ty,
+            GgmlType::Q4K | GgmlType::Q5K | GgmlType::Q4_0 | GgmlType::Q2K
+        );
         let mut d_y = exec.alloc(batch * out_dim).expect("y");
         exec.kquant_gemm_dp4a(k, &d_xq, &d_xs, needs.then_some(&d_sums), &mut d_y, batch)
             .expect("dp4a");
@@ -387,7 +392,9 @@ fn gguf_l0_outproj_check() {
     let dir = std::path::PathBuf::from(dir);
     let rd = |n: &str| -> Vec<f32> {
         let b = std::fs::read(dir.join(n)).expect(n);
-        b.chunks_exact(4)
+        b.as_chunks::<4>()
+            .0
+            .iter()
             .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
             .collect()
     };

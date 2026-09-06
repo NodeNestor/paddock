@@ -2742,11 +2742,11 @@ struct KernelTableV1 {
                             const void*, const void*, uint32_t, uint32_t, uint32_t,
                             uint32_t, uint32_t, uint32_t, uint32_t, float, uint32_t,
                             void*);
-    // slot 539
+    // slot 577
     int (*moe_topk_batch_s)(const void*, const void*, uint32_t, uint32_t, uint32_t, void*, void*, uint32_t, void*);
-    // slot 540
+    // slot 578
     int (*q4x_add_gated_row_s)(void*, const void*, const void*, uint32_t, uint32_t, uint32_t, void*);
-    // slot 541
+    // slot 579
     int (*gated_delta_recurrent_runs_pn)(const void*, const void*, const void*, const void*, const void*, void*, void*, const void*, const void*, const void*, uint32_t, uint32_t, uint32_t, uint32_t, void*, void*);
     // slot 542 (EXPERIMENT: cuBLASLt datapath-ceiling probe; stub in shipped packs)
     int (*exp_lt_gemm)(const void*, const void*, void*, uint32_t, uint32_t, uint32_t, void*);
@@ -2803,14 +2803,14 @@ struct KernelTableV1 {
     // bytes[6] (host u64 arrays), stream).
     int (*moe_cache_fill)(const void*, const void*, uint32_t, const void*,
                           const void*, const void*, void*);
-    // 539: kquant_iq - capability marker: the k-quant repack/dequant and the
+    // 577: kquant_iq - capability marker: the k-quant repack/dequant and the
     // token-batched MoE pair serve the ggml i-quant family + IQ4_NL.
     int (*kquant_iq)(void);
-    // 540: kquant_iq_dense - capability marker: the dense k-quant entry points
+    // 578: kquant_iq_dense - capability marker: the dense k-quant entry points
     // (gemv, gather, the W4A8 gemv / nc / multi / glu, the dp4a and mma_ks
     // GEMMs) serve the i-quant family + IQ4_NL (quant/iquant_dense.cuh).
     int (*kquant_iq_dense)(void);
-    // 541: q4x_gdn_split_widen_tiled - the GDN conv split with the GGUF
+    // 579: q4x_gdn_split_widen_tiled - the GDN conv split with the GGUF
     // lane's tiled value-head order (key head vh % hk); same signature as
     // q4x_gdn_split_widen (slot for the interleave map).
     int (*q4x_gdn_split_widen_tiled)(const void*, void*, void*, void*, uint32_t,

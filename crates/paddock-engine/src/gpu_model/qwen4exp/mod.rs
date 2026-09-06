@@ -28,7 +28,6 @@ use crate::gpu::{
     DeviceTensor, ExpertCache, F8RowPlane, GpuError, GpuExecutor, HostMappedKq, Nvf4MoePlane,
     QuantTensor, QuantW, RepackedKQ,
 };
-use paddock_models::ggml_type::GgmlType;
 
 /// Which class the dense projections load in. bf16 is the parity class and
 /// the default; anything else is the chartered throughput lane and is LOSSY,

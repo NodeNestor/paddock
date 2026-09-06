@@ -1,3 +1,4 @@
+// Contributed by NodeNestor (github.com/Nodenester) in truespar/paddock PR #17.
 // i-quant DENSE lanes: the ggml IQ1/IQ2/IQ3 family + IQ4_NL on the repacked
 // k-quant streams for the projections that are not MoE expert seats - the
 // attention / GDN / FFN planes, the head and the token embedding of a file
@@ -576,7 +577,7 @@ int pd_kq_iq_dense_gather(const void* data, const void* scales, const void* toke
     return pd_launch_status();
 }
 
-// slot 540: capability marker - the dense k-quant entry points (gemv, gather,
+// slot 578: capability marker - the dense k-quant entry points (gemv, gather,
 // the W4A8 gemv / nc / multi / glu and the dp4a / mma_ks GEMMs) serve the
 // i-quant family + IQ4_NL through these lanes.
 PD_EXPORT

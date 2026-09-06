@@ -210,7 +210,12 @@ fn ple_row_dequant(ty: GgmlType, row: &[u8], out: &mut [f32]) {
             }
         }
         GgmlType::Q8_0 => {
-            for (blk, o) in row.chunks_exact(34).zip(out.chunks_exact_mut(32)) {
+            for (blk, o) in row
+                .as_chunks::<34>()
+                .0
+                .iter()
+                .zip(out.as_chunks_mut::<32>().0.iter_mut())
+            {
                 let d = half::f16::from_le_bytes([blk[0], blk[1]]).to_f32();
                 for j in 0..32 {
                     o[j] = (blk[2 + j] as i8) as f32 * d;
@@ -218,7 +223,12 @@ fn ple_row_dequant(ty: GgmlType, row: &[u8], out: &mut [f32]) {
             }
         }
         GgmlType::Q4_0 => {
-            for (blk, o) in row.chunks_exact(18).zip(out.chunks_exact_mut(32)) {
+            for (blk, o) in row
+                .as_chunks::<18>()
+                .0
+                .iter()
+                .zip(out.as_chunks_mut::<32>().0.iter_mut())
+            {
                 let d = half::f16::from_le_bytes([blk[0], blk[1]]).to_f32();
                 for j in 0..16 {
                     let q = blk[2 + j];
@@ -228,7 +238,12 @@ fn ple_row_dequant(ty: GgmlType, row: &[u8], out: &mut [f32]) {
             }
         }
         GgmlType::Iq4Nl => {
-            for (blk, o) in row.chunks_exact(18).zip(out.chunks_exact_mut(32)) {
+            for (blk, o) in row
+                .as_chunks::<18>()
+                .0
+                .iter()
+                .zip(out.as_chunks_mut::<32>().0.iter_mut())
+            {
                 let d = half::f16::from_le_bytes([blk[0], blk[1]]).to_f32();
                 for j in 0..16 {
                     let q = blk[2 + j];
@@ -371,6 +386,11 @@ struct Scratch {
     /// slot-544 warmup's dummy output (kept alive; also marks warmup done)
     #[allow(dead_code)]
     d_lowm_warm: CudaSlice<f32>,
+    /// The low-M cluster warm-up was refused on this card (sm_120 consumer
+    /// Blackwell answers cudaErrorNotSupported): the lane stays OFF, whatever
+    /// the opt-in says - a refused warm-up used to only print and leave the
+    /// decode gate to elect the lane anyway.
+    lowm_refused: bool,
     /// split-KV fmha partials (slot 545): [rows<=64][n_heads][S<=16][hd+2],
     /// caller-owned and address-stable (graph capture)
     d_fmha_part: CudaSlice<f32>,
@@ -750,13 +770,23 @@ impl Qwen4ExpGpu {
         } else {
             Some(exec.alloc(slots * (cfg.ple_conv - 1) * PLE_DILATION * cfg.hc_width())?)
         };
-        let sc = Scratch::new(exec, &cfg, max_tokens, slots)?;
+        // only the GGUF lane seats k-quant planes (safetensors is bf16 / NVFP4)
+        let kq_lanes = matches!(st, PleSource::Gguf { .. });
+        let sc = Scratch::new(exec, &cfg, max_tokens, slots, kq_lanes)?;
         // the widest activation any dense plane reads is the 4-stream state
         let stage = DenseStage {
             q: exec.alloc_i8(max_tokens * cfg.hc_width())?,
             rs: exec.alloc(max_tokens)?,
-            xs: exec.alloc(max_tokens * cfg.hc_width() / 32)?,
-            ssums: exec.alloc(max_tokens * cfg.hc_width() / 16)?,
+            xs: exec.alloc(if kq_lanes {
+                max_tokens * cfg.hc_width() / 32
+            } else {
+                1
+            })?,
+            ssums: exec.alloc(if kq_lanes {
+                max_tokens * cfg.hc_width() / 16
+            } else {
+                1
+            })?,
             // the widest activation any dense plane reads is the 4-stream state
             x16: exec.alloc_f16(max_tokens * cfg.hc_width())?,
             xb16: exec.stream_alloc_bf16(max_tokens * cfg.hc_width())?,
@@ -1722,7 +1752,7 @@ impl Qwen4ExpGpu {
         // elect it while the wave (n>8) cannot, splitting the two prefill
         // paths into different f32 orders - prefill_wave_matches_serial
         // FAILED exactly there in the round-4b battery.
-        stage.lowm_ok = matches!(phase, Phase::Decode | Phase::DecodeBatch);
+        stage.lowm_ok = matches!(phase, Phase::Decode | Phase::DecodeBatch) && !sc.lowm_refused;
         // MIRROR EXPIRY (walk-scoped). A bf16 mirror is valid only inside the
         // walk that wrote it. The buffers never move, so a pointer match alone
         // survives across walks: a mirror written on an n==1 walk was matched
@@ -3421,7 +3451,9 @@ fn kq_moe_routed(
         Some(cc) => (&cc.gate, &cc.up, &cc.down),
         None => (gate.kq(), up.kq(), down.kq()),
     };
-    let needs = |t: GgmlType| matches!(t, GgmlType::Q4K | GgmlType::Q5K | GgmlType::Q4_0);
+    // one place decides which formats carry a per-16 mu term (Q2_K included -
+    // the pack refuses a Q2_K seat launched without its sums)
+    let needs = crate::gpu::kq_needs_sums;
     // block input -> int8 per 32
     e.quantize_q8(&sc.d_bi, &mut sc.d_xq, &mut sc.d_xs, n * h)?;
     let ng = needs(g.ty) || needs(u.ty);
@@ -3790,12 +3822,38 @@ impl Scratch {
         c: &Qwen4ExpConfig,
         t: usize,
         slots: usize,
+        // the GGUF lane's k-quant dense planes / expert seats read int8
+        // activations; the safetensors lane never does, and the pair below
+        // is ~15 KB per token of max_ctx (2 GB at 128k), so it is a stub there
+        kq_lanes: bool,
     ) -> Result<Self, GpuModelError> {
         let (h, hw, hc) = (c.hidden, c.hc_width(), c.hc_count);
         let kv_dim = c.n_kv_heads * c.head_dim;
         let q_dim = c.n_heads * c.head_dim;
         let vdim = c.gdn_v_heads * c.gdn_v_dim;
         let kdim = c.gdn_v_heads * c.gdn_k_dim;
+        let mut lowm_refused = false;
+        let d_lowm_warm: CudaSlice<f32> = {
+            let w = e.f16_to_device(&vec![half::f16::from_f32(0.0); 64 * 128])?;
+            let xd: CudaSlice<f32> = e.alloc(128)?;
+            // slot 544 stores a full 64-row TILE, not 64 scalars: memcheck
+            // flags a 4-byte write 1 past a 64-float y here, which fails
+            // the whole load under compute-sanitizer. Slack, not 64.
+            let mut yd: CudaSlice<f32> = e.alloc(256)?;
+            // The lane is opt-in (PADDOCK_Q38FN_LOWM) and bf16-only; a
+            // card that refuses its cluster launch (sm_120 consumer
+            // Blackwell answers cudaErrorNotSupported) must not lose the
+            // whole model over a warm-up for a lane it will never take.
+            match e.lowm_warmup(&w, &xd, &mut yd) {
+                Ok(_) => e.synchronize()?,
+                Err(err) => {
+                    lowm_refused = true;
+                    tracing::warn!("qwen4exp: low-M cluster warm-up refused ({err}) - lane off");
+                    eprintln!("[q4x] low-M cluster warm-up refused ({err}) - lane off");
+                }
+            }
+            yd
+        };
         Ok(Self {
             d_blk_tab: e
                 .to_device_u32(&(0..(slots * (t / 16)).max(1) as u32).collect::<Vec<u32>>())?,
@@ -3842,28 +3900,8 @@ impl Scratch {
             // slot-544 contract: the low-M kernel's first cluster launch
             // must happen on a quiet context (cluster_fork_probe law) -
             // here, at model build, before any fork or capture exists.
-            d_lowm_warm: {
-                let w = e.f16_to_device(&vec![half::f16::from_f32(0.0); 64 * 128])?;
-                let xd: CudaSlice<f32> = e.alloc(128)?;
-                // slot 544 stores a full 64-row TILE, not 64 scalars: memcheck
-                // flags a 4-byte write 1 past a 64-float y here, which fails
-                // the whole load under compute-sanitizer. Slack, not 64.
-                let mut yd: CudaSlice<f32> = e.alloc(256)?;
-                // The lane is opt-in (PADDOCK_Q38FN_LOWM) and bf16-only; a
-                // card that refuses its cluster launch (sm_120 consumer
-                // Blackwell answers cudaErrorNotSupported) must not lose the
-                // whole model over a warm-up for a lane it will never take.
-                match e.lowm_warmup(&w, &xd, &mut yd) {
-                    Ok(_) => e.synchronize()?,
-                    Err(err) => {
-                        tracing::warn!(
-                            "qwen4exp: low-M cluster warm-up refused ({err}) - lane off"
-                        );
-                        eprintln!("[q4x] low-M cluster warm-up refused ({err}) - lane off");
-                    }
-                }
-                yd
-            },
+            d_lowm_warm,
+            lowm_refused,
             d_zero_bias: e.alloc(c.n_expert)?,
             // widest split-K out_dim this model routes is the router row set
             // sized by the RUNTIME split (env can raise it above the const;
@@ -3871,11 +3909,23 @@ impl Scratch {
             d_skp: e.alloc((c.n_expert + 1) * (sk_split().max(2) as usize))?,
             d_skc: e.alloc_u32(c.n_expert + 1)?,
             d_idx: e.alloc_u32(t * c.n_active)?,
-            d_xq: e.alloc_i8(t * h)?,
-            d_xs: e.alloc(t * h / 32)?,
-            d_ssums: e.alloc(t * h.max(c.n_active * c.moe_ff) / 16)?,
-            d_fq: e.alloc_i8(t * c.n_active * c.moe_ff)?,
-            d_fs: e.alloc(t * c.n_active * c.moe_ff / 32)?,
+            d_xq: e.alloc_i8(if kq_lanes { t * h } else { 1 })?,
+            d_xs: e.alloc(if kq_lanes { t * h / 32 } else { 1 })?,
+            d_ssums: e.alloc(if kq_lanes {
+                t * h.max(c.n_active * c.moe_ff) / 16
+            } else {
+                1
+            })?,
+            d_fq: e.alloc_i8(if kq_lanes {
+                t * c.n_active * c.moe_ff
+            } else {
+                1
+            })?,
+            d_fs: e.alloc(if kq_lanes {
+                t * c.n_active * c.moe_ff / 32
+            } else {
+                1
+            })?,
             d_topw: e.alloc(t * c.n_active)?,
             d_act: e.alloc(t * c.n_active * c.moe_ff)?,
             d_par: e.alloc_u32(t.max(1) * 4)?,

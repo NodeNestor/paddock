@@ -1,8 +1,26 @@
+//! The original reference and its gates were contributed by NodeNestor
+//! (github.com/Nodenester) in truespar/paddock PR #17; this rewrite keeps
+//! that API and its bit-identity contract.
 //! CPU reference dequant for the ggml i-quant family (IQ1_S, IQ1_M, IQ2_XXS,
-//! IQ2_XS, IQ2_S, IQ3_XXS, IQ3_S) and IQ4_NL - a line-for-line port of
-//! ggml-quants.c's `dequantize_row_*`, in the same f32 operation order the
-//! pack's `pd_iq_dequant_super` (quant/iquant.cuh) uses, so the GPU gate is a
-//! bit-identity check. Codebooks in `iq_grids.rs`.
+//! IQ2_XS, IQ2_S, IQ3_XXS, IQ3_S), IQ4_NL and the two low-bit k-quants
+//! (Q2_K, Q3_K). Written from the block layouts (ggml-common.h - the byte
+//! order and the codebooks in `iq_grids.rs` are the format itself), not from
+//! anyone's decoder, and structured around what the codebook formats share:
+//!
+//!   a 256-weight super-block is 8 blocks of 32, each 4 groups of 8;
+//!   a group is ONE codebook entry (8 bytes, one weight each), ONE 8-bit sign
+//!   field and ONE scale (shared by 8, 16 or 32 weights).
+//!
+//! Every codebook format is therefore a small extractor that yields that
+//! triple per group ([`Group`]), and a single loop widens it. IQ1 differs only
+//! in that its grid bytes are signed and carry a +-1/8 offset instead of a
+//! sign field. Q2_K / Q3_K (2- and 3-bit fields, no codebook) and IQ4_NL
+//! (nibble codebook, 32-weight blocks) get a per-weight walk of their own.
+//!
+//! Numerics: every factor is a few bits wide (an f16 `d`, a <= 6-bit scale, a
+//! <= 8-bit grid value), so each product is exact in f32 and the pack's
+//! `pd_iq_dequant_super` - repack, window unpack, widen - agrees with this
+//! module bit for bit. The gate in tests/gpu_kquant_parity.rs relies on that.
 
 use super::DequantError;
 use super::iq_grids::*;
@@ -19,7 +37,8 @@ pub const IQ3_S: u32 = 21;
 pub const IQ2_S: u32 = 22;
 pub const IQ1_M: u32 = 29;
 
-const IQ1S_DELTA: f32 = 0.125;
+/// IQ1's per-group offset: every weight is `scale * (grid +- 1/8)`.
+const IQ1_DELTA: f32 = 0.125;
 
 /// Raw bytes per 256-weight super-block, or None when `raw_type` is not
 /// served here. IQ4_NL is 8 x 18-byte blocks.
@@ -51,253 +70,229 @@ fn u32le(b: &[u8]) -> u32 {
     u32::from_le_bytes([b[0], b[1], b[2], b[3]])
 }
 
-fn sgn(signs: u32, j: u32) -> f32 {
-    if (signs >> j) & 1 == 1 { -1.0 } else { 1.0 }
+/// Nibble `hi` (upper) or `!hi` (lower) of a byte, as f32.
+fn nibble(b: u8, hi: bool) -> f32 {
+    (if hi { b >> 4 } else { b & 0xF }) as f32
 }
 
-fn gb(grid: u64, j: u32) -> f32 {
-    ((grid >> (8 * j)) & 0xFF) as f32
+/// The 7-bit sign index of IQ2_XXS / IQ2_XS / IQ3_XXS widened to its 8-sign
+/// byte: the format stores 7 bits and fixes the eighth so the byte has even
+/// parity (what ggml tabulates as `ksigns_iq2xs`).
+fn signs7(idx: u32) -> u8 {
+    (idx | ((idx.count_ones() & 1) << 7)) as u8
 }
 
-fn gb32(grid: u32, j: u32) -> f32 {
-    ((grid >> (8 * j)) & 0xFF) as f32
+/// One 8-weight group of a codebook format.
+struct Group {
+    /// The codebook entry: byte j is weight j. Unsigned magnitudes for the
+    /// IQ2 / IQ3 grids, signed `{-1, 0, 1}` for the IQ1 grid.
+    grid: u64,
+    /// Bit j set = weight j is negated (IQ2 / IQ3 only; IQ1 carries none).
+    signs: u8,
+    scale: f32,
+    /// IQ1's per-group offset, `+-IQ1_DELTA`; 0 for the sign-field formats.
+    delta: f32,
+    signed_grid: bool,
 }
 
-fn iq1m_d(scales: &[u8]) -> f32 {
-    let s = |i: usize| u16le(&scales[2 * i..]);
-    let u = (s(0) >> 12) | ((s(1) >> 8) & 0x00f0) | ((s(2) >> 4) & 0x0f00) | (s(3) & 0xf000);
-    half::f16::from_bits(u).to_f32()
+impl Group {
+    fn widen(&self, y: &mut [f32]) {
+        for (j, out) in y.iter_mut().enumerate() {
+            let byte = ((self.grid >> (8 * j)) & 0xFF) as u8;
+            *out = if self.signed_grid {
+                self.scale * (byte as i8 as f32 + self.delta)
+            } else {
+                let mag = byte as f32;
+                self.scale
+                    * if (self.signs >> j) & 1 == 1 {
+                        -mag
+                    } else {
+                        mag
+                    }
+            };
+        }
+    }
+}
+
+/// IQ2_XXS block layout: d f16 | per 32-weight block: 4 grid-index bytes,
+/// then a u32 of 4 x 7-bit sign indices with the block scale in its top 4 bits.
+fn iq2_xxs(s: &[u8], ib: usize, l: usize) -> Group {
+    let d = f16(s);
+    let idx = u32le(&s[2 + 8 * ib..]);
+    let sig = u32le(&s[2 + 8 * ib + 4..]);
+    Group {
+        grid: IQ2XXS_GRID[((idx >> (8 * l)) & 0xFF) as usize],
+        signs: signs7((sig >> (7 * l)) & 127),
+        scale: d * (0.5 + (sig >> 28) as f32) * 0.25,
+        delta: 0.0,
+        signed_grid: false,
+    }
+}
+
+/// IQ2_XS: d f16 | 32 x u16 (9-bit grid index, 7-bit sign index) | 8 scale
+/// bytes, a nibble per 16 weights.
+fn iq2_xs(s: &[u8], ib: usize, l: usize) -> Group {
+    let d = f16(s);
+    let q = u16le(&s[2 + 8 * ib + 2 * l..]);
+    Group {
+        grid: IQ2XS_GRID[(q & 511) as usize],
+        signs: signs7((q >> 9) as u32),
+        scale: d * (0.5 + nibble(s[66 + ib], l >= 2)) * 0.25,
+        delta: 0.0,
+        signed_grid: false,
+    }
+}
+
+/// IQ2_S: d f16 | 32 grid-index bytes | 32 sign bytes | 8 bytes of index
+/// high bits (2 per group) | 8 scale bytes, a nibble per 16 weights.
+fn iq2_s(s: &[u8], ib: usize, l: usize) -> Group {
+    let d = f16(s);
+    let hi = ((s[66 + ib] as usize) >> (2 * l)) & 3;
+    Group {
+        grid: IQ2S_GRID[s[2 + 4 * ib + l] as usize | (hi << 8)],
+        signs: s[34 + 4 * ib + l],
+        scale: d * (0.5 + nibble(s[74 + ib], l >= 2)) * 0.25,
+        delta: 0.0,
+        signed_grid: false,
+    }
+}
+
+/// IQ3_XXS: d f16 | 64 grid-index bytes (two 4-weight entries per group) |
+/// per block a u32 of 4 x 7-bit sign indices with the scale in its top 4 bits.
+fn iq3_xxs(s: &[u8], ib: usize, l: usize) -> Group {
+    let d = f16(s);
+    let sig = u32le(&s[66 + 4 * ib..]);
+    let lo = IQ3XXS_GRID[s[2 + 8 * ib + 2 * l] as usize] as u64;
+    let hi = IQ3XXS_GRID[s[2 + 8 * ib + 2 * l + 1] as usize] as u64;
+    Group {
+        grid: lo | (hi << 32),
+        signs: signs7((sig >> (7 * l)) & 127),
+        scale: d * (0.5 + (sig >> 28) as f32) * 0.5,
+        delta: 0.0,
+        signed_grid: false,
+    }
+}
+
+/// IQ3_S: d f16 | 64 grid-index bytes | 8 bytes of index high bits (1 per
+/// 4-weight entry) | 32 sign bytes | 4 scale bytes, a nibble per block.
+fn iq3_s(s: &[u8], ib: usize, l: usize) -> Group {
+    let d = f16(s);
+    let qh = s[66 + ib] as usize;
+    let lo = IQ3S_GRID[s[2 + 8 * ib + 2 * l] as usize | (((qh >> (2 * l)) & 1) << 8)] as u64;
+    let hi =
+        IQ3S_GRID[s[2 + 8 * ib + 2 * l + 1] as usize | (((qh >> (2 * l + 1)) & 1) << 8)] as u64;
+    Group {
+        grid: lo | (hi << 32),
+        signs: s[74 + 4 * ib + l],
+        scale: d * (1.0 + 2.0 * nibble(s[106 + (ib >> 1)], ib & 1 == 1)),
+        delta: 0.0,
+        signed_grid: false,
+    }
+}
+
+/// IQ1_S: d f16 | 32 grid-index bytes | per block a u16: 4 x 3 index high
+/// bits, a 3-bit scale, and the block's offset sign in bit 15.
+fn iq1_s(s: &[u8], ib: usize, l: usize) -> Group {
+    let d = f16(s);
+    let h = u16le(&s[34 + 2 * ib..]) as usize;
+    Group {
+        grid: IQ1S_GRID[s[2 + 4 * ib + l] as usize | (((h >> (3 * l)) & 7) << 8)],
+        signs: 0,
+        scale: d * (2 * ((h >> 12) & 7) + 1) as f32,
+        delta: if h & 0x8000 != 0 {
+            -IQ1_DELTA
+        } else {
+            IQ1_DELTA
+        },
+        signed_grid: true,
+    }
+}
+
+/// IQ1_M: 32 grid-index bytes | 16 bytes of high bits, one per two groups
+/// (3 index bits + an offset sign per nibble) | 4 x u16 scales, each holding
+/// two 3-bit scales per block pair plus a nibble of the shared `d`.
+fn iq1_m(s: &[u8], ib: usize, l: usize) -> Group {
+    let sc = &s[48..56];
+    let d = {
+        let s16 = |i: usize| u16le(&sc[2 * i..]);
+        // d's 16 bits are the top nibble of each scale word, low word first
+        let bits = (0..4).fold(0u16, |acc, i| acc | ((s16(i) >> 12) << (4 * i)));
+        half::f16::from_bits(bits).to_f32()
+    };
+    let hq = s[32 + 2 * ib + (l >> 1)] as usize;
+    let nib = if l & 1 == 1 { hq >> 4 } else { hq & 0xF };
+    let sw = u16le(&sc[2 * (ib >> 1)..]) as usize;
+    let shift = 6 * (ib & 1) + 3 * (l >> 1);
+    Group {
+        grid: IQ1S_GRID[s[4 * ib + l] as usize | ((nib & 7) << 8)],
+        signs: 0,
+        scale: d * (2 * ((sw >> shift) & 7) + 1) as f32,
+        delta: if nib & 8 != 0 { -IQ1_DELTA } else { IQ1_DELTA },
+        signed_grid: true,
+    }
 }
 
 /// One 256-weight super-block of `raw_type` -> 256 f32.
-/// Q3_K's 16 six-bit scales out of the packed 12 bytes (ggml's kmask shuffle),
-/// with the -32 applied.
-fn q3k_scales(sc: &[u8]) -> [i32; 16] {
-    let mut aux = [u32le(&sc[0..]), u32le(&sc[4..]), 0u32, 0u32];
-    let tmp = u32le(&sc[8..]);
-    let (k1, k2) = (0x0303_0303u32, 0x0f0f_0f0fu32);
-    aux[2] = ((aux[0] >> 4) & k2) | (((tmp >> 4) & k1) << 4);
-    aux[3] = ((aux[1] >> 4) & k2) | (((tmp >> 6) & k1) << 4);
-    aux[0] = (aux[0] & k2) | ((tmp & k1) << 4);
-    aux[1] = (aux[1] & k2) | (((tmp >> 2) & k1) << 4);
-    let mut out = [0i32; 16];
-    for (i, o) in out.iter_mut().enumerate() {
-        *o = ((aux[i >> 2] >> (8 * (i & 3))) & 0xff) as i32 - 32;
-    }
-    out
-}
-
 pub fn dequant_iq_super(raw_type: u32, s: &[u8], y: &mut [f32]) {
+    let group: Option<fn(&[u8], usize, usize) -> Group> = match raw_type {
+        IQ2_XXS => Some(iq2_xxs),
+        IQ2_XS => Some(iq2_xs),
+        IQ2_S => Some(iq2_s),
+        IQ3_XXS => Some(iq3_xxs),
+        IQ3_S => Some(iq3_s),
+        IQ1_S => Some(iq1_s),
+        IQ1_M => Some(iq1_m),
+        _ => None,
+    };
+    if let Some(group) = group {
+        for ib in 0..8 {
+            for l in 0..4 {
+                let at = 32 * ib + 8 * l;
+                group(s, ib, l).widen(&mut y[at..at + 8]);
+            }
+        }
+        return;
+    }
     match raw_type {
         Q2_K => {
-            // ggml dequantize_row_q2_K: y = d*sc*q - dmin*m, sub-blocks of 16
-            let d = f16(&s[80..]);
-            let dmin = f16(&s[82..]);
-            let q = &s[16..80];
-            let mut is = 0usize;
-            for n in (0..256).step_by(128) {
-                for j in 0..4 {
-                    for lb in 0..2 {
-                        let sc = s[is];
-                        is += 1;
-                        let dl = d * (sc & 0xf) as f32;
-                        let ml = dmin * (sc >> 4) as f32;
-                        for l in 0..16 {
-                            y[n + 32 * j + 16 * lb + l] =
-                                dl * ((q[n / 4 + 16 * lb + l] >> (2 * j)) & 3) as f32 - ml;
-                        }
-                    }
-                }
+            // scales[16] (a nibble each of scale | min per 16 weights) | qs[64]
+            // (2-bit fields: byte 32*(i/128) + i%32, bits 2*((i/32)%4)) | d | dmin
+            let (d, dmin) = (f16(&s[80..]), f16(&s[82..]));
+            for (i, out) in y.iter_mut().enumerate() {
+                let sc = s[i / 16];
+                let q = (s[16 + 32 * (i / 128) + i % 32] >> (2 * ((i / 32) % 4))) & 3;
+                *out = d * (sc & 0xF) as f32 * q as f32 - dmin * (sc >> 4) as f32;
             }
         }
         Q3_K => {
-            // ggml dequantize_row_q3_K: q = low2 - (hbit ? 0 : 4), y = d*scale*q
+            // hmask[32] (bit i/32 of byte i%32 is the weight's third bit) |
+            // qs[64] (low two bits, laid out as Q2_K's) | 12 packed 6-bit
+            // scales | d. Values are the 3-bit field minus 4.
             let d = f16(&s[108..]);
-            let hm = &s[0..32];
-            let q = &s[32..96];
-            let scs = q3k_scales(&s[96..108]);
-            let (mut is, mut mbit) = (0usize, 0u32);
-            for n in (0..256).step_by(128) {
-                for j in 0..4 {
-                    for lb in 0..2 {
-                        let dl = d * scs[is] as f32;
-                        is += 1;
-                        for l in 0..16 {
-                            let i = 16 * lb + l;
-                            let hb = (hm[i] >> mbit) & 1;
-                            let qv = ((q[n / 4 + i] >> (2 * j)) & 3) as i32
-                                - if hb == 1 { 0 } else { 4 };
-                            y[n + 32 * j + i] = dl * qv as f32;
-                        }
-                    }
-                    mbit += 1;
-                }
-            }
-        }
-        IQ2_XXS => {
-            let d = f16(s);
-            let qs = &s[2..];
-            for ib32 in 0..8usize {
-                let a0 = u32le(&qs[8 * ib32..]);
-                let a1 = u32le(&qs[8 * ib32 + 4..]);
-                let db = d * (0.5 + (a1 >> 28) as f32) * 0.25;
-                for l in 0..4u32 {
-                    let grid = IQ2XXS_GRID[((a0 >> (8 * l)) & 0xFF) as usize];
-                    let signs = KSIGNS_IQ2XS[((a1 >> (7 * l)) & 127) as usize] as u32;
-                    for j in 0..8u32 {
-                        y[ib32 * 32 + l as usize * 8 + j as usize] =
-                            db * gb(grid, j) * sgn(signs, j);
-                    }
-                }
-            }
-        }
-        IQ2_XS => {
-            let d = f16(s);
-            let qs = &s[2..];
-            let scales = &s[66..];
-            for ib32 in 0..8usize {
-                let db0 = d * (0.5 + (scales[ib32] & 0xF) as f32) * 0.25;
-                let db1 = d * (0.5 + (scales[ib32] >> 4) as f32) * 0.25;
-                for l in 0..4usize {
-                    let q = u16le(&qs[8 * ib32 + 2 * l..]);
-                    let grid = IQ2XS_GRID[(q & 511) as usize];
-                    let signs = KSIGNS_IQ2XS[(q >> 9) as usize] as u32;
-                    let dl = if l < 2 { db0 } else { db1 };
-                    for j in 0..8u32 {
-                        y[ib32 * 32 + l * 8 + j as usize] = dl * gb(grid, j) * sgn(signs, j);
-                    }
-                }
-            }
-        }
-        IQ2_S => {
-            let d = f16(s);
-            // qs[64] = 32 grid-index bytes then 32 sign bytes; qh follows qs
-            let qs = &s[2..];
-            let signs = &s[34..];
-            let qh = &s[66..];
-            let scales = &s[74..];
-            for ib32 in 0..8usize {
-                let db0 = d * (0.5 + (scales[ib32] & 0xF) as f32) * 0.25;
-                let db1 = d * (0.5 + (scales[ib32] >> 4) as f32) * 0.25;
-                for l in 0..4usize {
-                    let idx =
-                        qs[4 * ib32 + l] as usize | (((qh[ib32] as usize) << (8 - 2 * l)) & 0x300);
-                    let grid = IQ2S_GRID[idx];
-                    let sg = signs[4 * ib32 + l] as u32;
-                    let dl = if l < 2 { db0 } else { db1 };
-                    for j in 0..8u32 {
-                        y[ib32 * 32 + l * 8 + j as usize] = dl * gb(grid, j) * sgn(sg, j);
-                    }
-                }
-            }
-        }
-        IQ3_XXS => {
-            let d = f16(s);
-            let qs = &s[2..];
-            let sas = &qs[64..];
-            for ib32 in 0..8usize {
-                let aux = u32le(&sas[4 * ib32..]);
-                let db = d * (0.5 + (aux >> 28) as f32) * 0.5;
-                for l in 0..4usize {
-                    let signs = KSIGNS_IQ2XS[((aux >> (7 * l as u32)) & 127) as usize] as u32;
-                    let g1 = IQ3XXS_GRID[qs[8 * ib32 + 2 * l] as usize];
-                    let g2 = IQ3XXS_GRID[qs[8 * ib32 + 2 * l + 1] as usize];
-                    for j in 0..4u32 {
-                        y[ib32 * 32 + l * 8 + j as usize] = db * gb32(g1, j) * sgn(signs, j);
-                        y[ib32 * 32 + l * 8 + 4 + j as usize] =
-                            db * gb32(g2, j) * sgn(signs, j + 4);
-                    }
-                }
-            }
-        }
-        IQ3_S => {
-            let d = f16(s);
-            let qs = &s[2..];
-            let qh = &s[66..];
-            let signs = &s[74..];
-            let scales = &s[106..];
-            for ib32 in 0..8usize {
-                let sc = scales[ib32 >> 1];
-                let nib = if ib32 & 1 == 1 { sc >> 4 } else { sc & 0xF };
-                let db = d * (1.0 + 2.0 * nib as f32);
-                for l in 0..4usize {
-                    let i1 = qs[8 * ib32 + 2 * l] as usize
-                        | (((qh[ib32] as usize) << (8 - 2 * l)) & 256);
-                    let i2 = qs[8 * ib32 + 2 * l + 1] as usize
-                        | (((qh[ib32] as usize) << (7 - 2 * l)) & 256);
-                    let (g1, g2) = (IQ3S_GRID[i1], IQ3S_GRID[i2]);
-                    let sg = signs[4 * ib32 + l] as u32;
-                    for j in 0..4u32 {
-                        y[ib32 * 32 + l * 8 + j as usize] = db * gb32(g1, j) * sgn(sg, j);
-                        y[ib32 * 32 + l * 8 + 4 + j as usize] = db * gb32(g2, j) * sgn(sg, j + 4);
-                    }
-                }
-            }
-        }
-        IQ1_S => {
-            let d = f16(s);
-            let qs = &s[2..];
-            let qh = &s[34..];
-            for ib in 0..8usize {
-                let h = u16le(&qh[2 * ib..]);
-                let dl = d * (2 * ((h >> 12) & 7) + 1) as f32;
-                let delta = if h & 0x8000 != 0 {
-                    -IQ1S_DELTA
-                } else {
-                    IQ1S_DELTA
-                };
-                for l in 0..4usize {
-                    let idx = qs[4 * ib + l] as usize | ((((h >> (3 * l)) & 7) as usize) << 8);
-                    let grid = IQ1S_GRID[idx];
-                    for j in 0..8u32 {
-                        let g = ((grid >> (8 * j)) & 0xFF) as u8 as i8 as f32;
-                        y[ib * 32 + l * 8 + j as usize] = dl * (g + delta);
-                    }
-                }
-            }
-        }
-        IQ1_M => {
-            let qs = &s[0..];
-            let qh = &s[32..];
-            let scb = &s[48..];
-            let d = iq1m_d(scb);
-            for ib in 0..8usize {
-                let sc = u16le(&scb[2 * (ib >> 1)..]);
-                let sh = 6 * (ib & 1) as u16;
-                let dl1 = d * (2 * ((sc >> sh) & 7) + 1) as f32;
-                let dl2 = d * (2 * ((sc >> (sh + 3)) & 7) + 1) as f32;
-                let (h0, h1) = (qh[2 * ib] as usize, qh[2 * ib + 1] as usize);
-                let idx = [
-                    qs[4 * ib] as usize | ((h0 << 8) & 0x700),
-                    qs[4 * ib + 1] as usize | ((h0 << 4) & 0x700),
-                    qs[4 * ib + 2] as usize | ((h1 << 8) & 0x700),
-                    qs[4 * ib + 3] as usize | ((h1 << 4) & 0x700),
-                ];
-                let dd = |bit: bool| if bit { -IQ1S_DELTA } else { IQ1S_DELTA };
-                let delta = [
-                    dd(h0 & 0x08 != 0),
-                    dd(h0 & 0x80 != 0),
-                    dd(h1 & 0x08 != 0),
-                    dd(h1 & 0x80 != 0),
-                ];
-                for l in 0..4usize {
-                    let grid = IQ1S_GRID[idx[l]];
-                    let dl = if l < 2 { dl1 } else { dl2 };
-                    for j in 0..8u32 {
-                        let g = ((grid >> (8 * j)) & 0xFF) as u8 as i8 as f32;
-                        y[ib * 32 + l * 8 + j as usize] = dl * (g + delta[l]);
-                    }
-                }
+            let sc6 = |i: usize| -> i32 {
+                let lo = (s[96 + (i & 7)] >> (4 * (i >> 3))) & 0xF;
+                let hi = (s[104 + (i & 3)] >> (2 * (i >> 2))) & 3;
+                (lo | (hi << 4)) as i32 - 32
+            };
+            for (i, out) in y.iter_mut().enumerate() {
+                let lo2 = ((s[32 + 32 * (i / 128) + i % 32] >> (2 * ((i / 32) % 4))) & 3) as i32;
+                let hb = ((s[i % 32] >> (i / 32)) & 1) as i32;
+                // `+ 0.0` mirrors the pack's widen (`f * s8 + g`, g = 0 here): a
+                // zero field under a negative scale is -0.0 as a bare product
+                // and +0.0 after the add, and the gate compares bits. Q3_K is
+                // the one format in the family whose fields can be 0.
+                *out = d * sc6(i / 16) as f32 * (lo2 + 4 * hb - 4) as f32 + 0.0;
             }
         }
         _ => {
-            // IQ4_NL: 8 blocks of {f16 d, 16 nibble bytes}
-            for j in 0..8usize {
-                let blk = &s[j * 18..];
+            // IQ4_NL: 8 blocks of {d f16, 16 nibble bytes}; low nibbles are
+            // the block's first 16 weights, high nibbles the last 16, each
+            // through the 16-entry codebook
+            for (j, blk) in s.as_chunks::<18>().0.iter().enumerate() {
                 let d = f16(blk);
-                for l in 0..16usize {
-                    y[j * 32 + l] = d * KVALUES_IQ4NL[(blk[2 + l] & 0xF) as usize] as f32;
-                    y[j * 32 + 16 + l] = d * KVALUES_IQ4NL[(blk[2 + l] >> 4) as usize] as f32;
+                for (l, &b) in blk[2..18].iter().enumerate() {
+                    y[32 * j + l] = d * KVALUES_IQ4NL[(b & 0xF) as usize] as f32;
+                    y[32 * j + 16 + l] = d * KVALUES_IQ4NL[(b >> 4) as usize] as f32;
                 }
             }
         }

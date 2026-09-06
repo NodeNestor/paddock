@@ -53,12 +53,12 @@ impl GpuExecutor {
 
     /// True when the pack serves the i-quant family (IQ1/IQ2/IQ3, IQ4_NL)
     /// on the k-quant streams - repack, dequant and the token-batched MoE
-    /// pair. Capability marker slot 539.
+    /// pair. Capability marker slot 577.
     pub fn has_kquant_iq(&self) -> bool {
         self.kernels.kquant_iq.is_some()
     }
 
-    /// The pack serves the i-quant family on the DENSE lanes too (slot 540).
+    /// The pack serves the i-quant family on the DENSE lanes too (slot 578).
     pub fn has_kquant_iq_dense(&self) -> bool {
         self.kernels.kquant_iq_dense.is_some()
     }
@@ -119,14 +119,15 @@ impl GpuExecutor {
                 }
             }
             // the i-quant family on the dense lanes needs both markers: the
-            // repack/dequant (539) and the dense entry points (540)
+            // repack/dequant (577) and the dense entry points (578)
             ty if kq_is_iq(ty) => {
                 if !self.has_kquant_iq() || !self.has_kquant_iq_dense() {
                     return Err(GpuError::Unsupported(format!(
                         "{name} is {ty:?} but the kernel pack has no dense i-quant lanes \
-                         (slots 539/540) - rebuild packs/cuda"
+                         (slots 577/578) - rebuild packs/cuda"
                     )));
                 }
+                self.note_dense_iq();
                 Ok(QuantW::Kq(self.repack_kquant(map, name)?))
             }
             ty if kq_params(ty).is_some() => {
@@ -217,14 +218,14 @@ impl GpuExecutor {
         } else {
             if ty != GgmlType::Iq4Nl || !in_dim.is_multiple_of(32) {
                 return Err(GpuError::Driver(format!(
-                    "kquant repack {what}: in_dim {in_dim} is not superblock-aligned and {ty:?}                      has no flat 32-block row layout (IQ4_NL only)"
+                    "kquant repack {what}: in_dim {in_dim} is not superblock-aligned and {ty:?} has no flat 32-block row layout (IQ4_NL only)"
                 )));
             }
             let per_row = in_dim / 32;
             let per_expert = per_row * dims.get(1).copied().unwrap_or(1);
             if !per_expert.is_multiple_of(8) {
                 return Err(GpuError::Driver(format!(
-                    "kquant repack {what}: {per_expert} blocks per [{in_dim} x {}] plane is not a                      whole number of superblocks",
+                    "kquant repack {what}: {per_expert} blocks per [{in_dim} x {}] plane is not a whole number of superblocks",
                     dims.get(1).copied().unwrap_or(1)
                 )));
             }

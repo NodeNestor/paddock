@@ -1,6 +1,6 @@
 //! A dense i-quant file end to end: Qwen3.5-9B UD-IQ2_XXS (every projection,
 //! the head and the embedding IQ2_XXS / IQ2_S / IQ3_S) through the qwen35
-//! walk on the dense i-quant lanes (slot 540). Heavy: `QWEN35_IQ2_GGUF`
+//! walk on the dense i-quant lanes (slot 578). Heavy: `QWEN35_IQ2_GGUF`
 //! names the file.
 //!
 //! Gate: llama.cpp's greedy path on the same file, teacher forced
@@ -31,7 +31,7 @@ fn iq2_dense_file_serves_at_llama_parity() {
         return;
     };
     if !exec.has_kquant_iq() || !exec.has_kquant_iq_dense() {
-        eprintln!("pack lacks the dense i-quant lanes (slots 539/540) - skipping");
+        eprintln!("pack lacks the dense i-quant lanes (slots 577/578) - skipping");
         return;
     }
     let map = MappedGguf::open(&path).expect("open gguf");

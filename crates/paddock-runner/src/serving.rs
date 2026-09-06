@@ -1433,7 +1433,7 @@ fn build_generator(
                     let budget = headroom.saturating_sub(512 << 20);
                     let seated = model.enable_moe_cache(budget).map_err(|e| e.to_string())?;
                     eprintln!(
-                        "[q4x-moe] {:.1} GiB of experts host-mapped; slot cache on {seated} layers                          from {:.2} GiB headroom",
+                        "[q4x-moe] {:.1} GiB of experts host-mapped; slot cache on {seated} layers from {:.2} GiB headroom",
                         host as f64 / (1u64 << 30) as f64,
                         headroom as f64 / (1u64 << 30) as f64
                     );

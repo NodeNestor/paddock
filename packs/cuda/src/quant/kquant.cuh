@@ -832,7 +832,7 @@ __global__ void pd_kquant_dequant_rp_kernel(const uint8_t* __restrict__ data,
 PD_EXPORT
 int pd_kquant_q40(void) { return 0; }
 
-// Capability marker (slot 539): present iff the k-quant repack, dequant and
+// Capability marker (slot 577): present iff the k-quant repack, dequant and
 // token-batched MoE pair serve the ggml i-quant family (IQ1_S/M, IQ2_XXS/XS/S,
 // IQ3_XXS/S) and IQ4_NL - see quant/iquant.cuh. Same reason as the Q4_0
 // marker: the dtypes ride existing entry points.

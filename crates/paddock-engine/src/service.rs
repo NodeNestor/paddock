@@ -4174,6 +4174,20 @@ fn run_batched(
                                 let _ = s.events.send(TokenEvent::Error(EngineError::from_gen(&e)));
                             }
                         }
+                        // The backend still holds the failed chunked prefills
+                        // in its own queue; clearing only OUR set left every
+                        // later prefill_begin on those slots refusing with
+                        // "slot already has a chunked prefill in flight" -
+                        // one bad prompt poisoned the slot for the server's
+                        // lifetime (seen 2026-09-06 on a dense i-quant file
+                        // whose >64-row GEMM was refused). Drop them there too.
+                        for &k in chunking.iter() {
+                            if !generator.prefill_abort(k) {
+                                tracing::warn!(
+                                    "serve: slot {k}: backend kept its chunked prefill after the failed tick"
+                                );
+                            }
+                        }
                         chunking.clear();
                     }
                 }

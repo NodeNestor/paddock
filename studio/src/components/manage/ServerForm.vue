@@ -380,6 +380,10 @@ const AF_CARDS: { hd: string; fields: AfField[] }[] = [
       // The Simple tab's "How much of the card" writes this key, and Advanced
       // had no row for it - so opening Advanced and saving deleted the cage.
       { key: 'vram_budget', kind: 'num', int: true, hint: 'hard VRAM cage for this endpoint, MiB · empty = size against free VRAM at load' },
+      // `graph_scratch_mib` (config.rs, PR #14): the fixed 3 GiB graph/prefill
+      // scratch reserve, sized for 16-48 GB cards; on an 8 GB card it eats the
+      // whole KV grant and starves the [moe_offload] slot cache.
+      { key: 'graph_scratch_mib', kind: 'num', int: true, hint: 'graph/prefill scratch reserve, MiB · empty = 3072 · lower it on 8 GB cards' },
     ],
   },
   // These hints named 1.0 / 0 / 1.0 as the fallback, which was true until the

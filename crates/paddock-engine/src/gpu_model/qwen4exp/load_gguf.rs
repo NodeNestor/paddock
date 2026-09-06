@@ -1,3 +1,4 @@
+//! Contributed by NodeNestor (github.com/Nodenester) in truespar/paddock PR #18.
 //! Qwen3.8-Flash-Next off a llama.cpp `qwen4exp` GGUF - the Unsloth UD
 //! exports (UD-IQ1_S, UD-Q2_K_XL, UD-Q4_K_XL, ...) and any requant of them.
 //!

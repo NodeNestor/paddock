@@ -227,7 +227,7 @@ pub const QWEN36_35B_A3B_UD_Q4: &[&str] = &[
     "Qwen3.6-35B-A3B-UD-Q4_K_XL.gguf",
 ];
 /// A DENSE i-quant file: every projection IQ2_XXS / IQ2_S / IQ3_S, the head
-/// and the embedding included (the dense i-quant lanes, slot 540).
+/// and the embedding included (the dense i-quant lanes, slot 578).
 pub const QWEN35_9B_UD_IQ2: &[&str] = &[
     "Qwen3.5-9B-GGUF/Qwen3.5-9B-UD-IQ2_XXS.gguf",
     "Qwen3.5-9B-IQ2/Qwen3.5-9B-UD-IQ2_XXS.gguf",

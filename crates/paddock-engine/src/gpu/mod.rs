@@ -74,6 +74,12 @@ pub struct GpuExecutor {
     /// Atomic (not Cell) because the executor is shared across threads;
     /// in practice only the model walk's thread touches it.
     side_armed: std::sync::atomic::AtomicBool,
+    /// A dense i-quant plane was loaded here. INTERIM seam for the missing
+    /// i-quant mma tile lane: prefill over 64 rows then needs the row-major
+    /// int8 activations as well as the mmq tiles (qwen35/ops.rs
+    /// `prefill_quant`), and only the loader knows a plane's type. Goes
+    /// with the tile lane when it lands.
+    dense_iq_seen: std::sync::atomic::AtomicBool,
     /// The forked branch's completion event, recorded by `side_end` and
     /// stream-waited by `side_join` before the joint consumer launches.
     /// Parked here so the event outlives graph capture.
@@ -135,6 +141,16 @@ pub struct GpuExecutor {
         std::sync::Mutex<Option<(cudarc::driver::CudaSlice<u8>, cudarc::driver::CudaSlice<u8>)>>,
 }
 impl GpuExecutor {
+    /// See the `dense_iq_seen` field.
+    pub fn dense_iq_seen(&self) -> bool {
+        self.dense_iq_seen
+            .load(std::sync::atomic::Ordering::Relaxed)
+    }
+    pub(crate) fn note_dense_iq(&self) {
+        self.dense_iq_seen
+            .store(true, std::sync::atomic::Ordering::Relaxed);
+    }
+
     /// Load a pack from a path. The bring-up/bench/example entry point, and
     /// what a dev build has always used.
     pub fn new(ordinal: usize, pack_path: &std::path::Path) -> Result<Self, GpuError> {
@@ -270,6 +286,7 @@ impl GpuExecutor {
             copy_stream,
             side_stream,
             side_armed: std::sync::atomic::AtomicBool::new(false),
+            dense_iq_seen: std::sync::atomic::AtomicBool::new(false),
             side_pending: std::sync::Mutex::new(None),
             pack,
             kernels,
@@ -709,6 +726,7 @@ impl GpuExecutor {
             copy_stream,
             side_stream,
             side_armed: std::sync::atomic::AtomicBool::new(false),
+            dense_iq_seen: std::sync::atomic::AtomicBool::new(false),
             side_pending: std::sync::Mutex::new(None),
             pack: self.pack.clone(),
             kernels: self.kernels,

@@ -512,7 +512,7 @@ int pd_q4x_gdn_split_widen(const void* conv, void* q, void* k, void* v,
     return pd_launch_status();
 }
 
-// slot 540: the same split with the TILED head map (GGUF lane).
+// slot 579: the same split with the TILED head map (GGUF lane).
 PD_EXPORT
 int pd_q4x_gdn_split_widen_tiled(const void* conv, void* q, void* k, void* v,
                            uint32_t rows, uint32_t k_heads, uint32_t v_heads,
